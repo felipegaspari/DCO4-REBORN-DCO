@@ -100,7 +100,34 @@ enum PWLimitDir {
     PW_LIMIT_LOW,
     PW_LIMIT_HIGH
   };
-  
+
+// Result structure used by the new reusable PW-limit search helpers.
+struct PWLimitSearchResult {
+  bool     ok;                  // true if at least one valid sample was found
+  uint16_t limitPW;             // PW value chosen as limit
+  double   finalDutyPercent;    // measured duty at limitPW in percent, or < 0 if unknown
+};
+
+// New, more reusable PW-limit calibration helpers. These do *not* replace the
+// existing find_PW_limit() yet; they are intended as a clearer alternative
+// that can be adopted and iterated on.
+
+// Low-level search routine that assumes the DCO is already configured for
+// PW calibration on the desired note/voice. It scans from centerPW toward
+// the requested direction and returns the PW that best matches targetDuty.
+PWLimitSearchResult search_PW_limit_from_center(
+  uint8_t     voiceIdx,
+  uint16_t    centerPW,
+  PWLimitDir  dir,
+  double      periodUs,
+  double      targetDuty
+);
+
+// High-level wrapper that mirrors the intent of find_PW_limit(), but is built
+// on top of the search_PW_limit_from_center() core so that the scanning logic
+// is reusable for both LOW and HIGH limits.
+void find_PW_limit_v2(PWLimitDir dir);
+
 
 /*********************** VCO calibration  ********************/
 /**********************                    *******************/

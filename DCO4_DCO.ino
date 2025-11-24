@@ -221,7 +221,6 @@ ra_loop0_MIDI_and_serial.addValue((float)(micros() - loop0_micros));
 void loop1() {
   // unsigned long loop1_start_time = micros();
   // unsigned long loop1_total_time;
-
   millisTimer();
 
   if (calibrationFlag == true) {
