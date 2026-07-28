@@ -26,6 +26,7 @@ unsigned long voice_task_max_time = 0;
 const unsigned long TIMING_PRINT_INTERVAL = 1000;  // Print every 5 seconds
 #endif
 
+// Boot init: seed notes, build pitch tables, apply voice mode, run one voice_task_main().
 void init_voices() {
 
   for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
@@ -93,6 +94,8 @@ static inline float noteIndex_to_freqFloat(float noteIndex) {
 #endif
 
 #ifndef USE_FLOAT_VOICE_TASK
+// Fixed-point realtime voice engine (portamento, modifiers, clkdiv, amp, PIO/PWM/PW).
+// Selected by voice_task_main() when USE_FLOAT_VOICE_TASK is not defined.
 inline void voice_task() {
 #ifdef RUNNING_AVERAGE
   unsigned long voice_task_start_time = micros();
@@ -748,6 +751,7 @@ inline void voice_task_main() {
 }
 
 #ifdef USE_FLOAT_VOICE_TASK
+// Float realtime voice engine (same stages as voice_task, in Hz). Current default with USE_FLOAT_ENGINE.
 inline void voice_task_float() {
   #ifdef RUNNING_AVERAGE
     unsigned long voice_task_start_time = micros();
@@ -1314,6 +1318,7 @@ inline void voice_task_float() {
 }
 #endif  // USE_FLOAT_VOICE_TASK
 
+// Legacy simplified float path for reference/debug. Currently unused (call in loop1 is commented out).
 inline void voice_task_simple() {
   for (int i = 0; i < NUM_VOICES; i++) {
 
@@ -1449,6 +1454,7 @@ inline void voice_task_simple() {
   }
 }
 
+// Round-robin free-voice allocator. Called from note_on() when polyMode == 1.
 inline uint8_t get_free_voice_sequential() {
   uint8_t nextVoice;
   uint8_t freeVoices = 0;
@@ -1490,6 +1496,7 @@ inline uint8_t get_free_voice_sequential() {
   return nextVoice;
 }
 
+// Oldest-voice / steal allocator. Called from note_on() when polyMode == 0.
 inline uint8_t get_free_voice() {
   uint32_t oldest_time = millis();
   uint8_t oldest_voice = 0;
@@ -1513,6 +1520,7 @@ inline uint8_t get_free_voice() {
   return oldest_voice;
 }
 
+// Map voiceMode → NUM_VOICES / STACK_VOICES. Called from init_voices and apply_param_voice_mode.
 inline void setVoiceMode() {
   switch (voiceMode) {
     case 0:
@@ -1530,6 +1538,8 @@ inline void setVoiceMode() {
   }
 }
 
+// Reconfigure PIO sideset pins for oscillator sync topology and retrigger voices.
+// Called from apply_param_sync_mode (Serial2).
 void setSyncMode() {
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
     uint8_t sidesetPin;
@@ -1703,6 +1713,7 @@ inline uint16_t get_chan_level_float(float freqHz, uint8_t voiceN) {
 }
 #endif  // USE_FLOAT_AMP_COMP
 
+// Map raw PW counter into calibrated center/limits for a voice. Used on the 99 µs PW update path.
 inline uint16_t get_PW_level_interpolated(uint16_t PWval, uint8_t voiceN) {
 
   uint16_t chanLevel;
@@ -1737,7 +1748,7 @@ inline uint16_t get_PW_level_interpolated(uint16_t PWval, uint8_t voiceN) {
   }
 }
 
-// PER OSCILLATOR AUTOTUNE FUNCTION
+// Drive one oscillator for calibration measurement (manual cal and nested auto-cal probes).
 void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValue) {
 
   float freq;
@@ -1822,6 +1833,7 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
   }
 }
 
+// Debug float voice path with extra reporting. Currently unused (call in loop1 is commented out).
 void voice_task_debug() {
 
   for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
@@ -2093,6 +2105,7 @@ inline float interpolateRatioFloat_cached(float x, int dcoIndex) {
   float ratio = yTab / (float)multiplierTableScale;
   return ratio;
 }
+// Build integer/float pitch-multiplier tables and slopes (boot). Called from init_voices().
 void initMultiplierTables() {
 
   float y_value;
@@ -2158,6 +2171,7 @@ void initMultiplierTables() {
 }
 
 #ifdef RUNNING_AVERAGE
+// Print RUNNING_AVERAGE timing stats for voice-task phases. Called from print_running_averages().
 void print_voice_task_timings() {
   Serial.println("\n=== VOICE_TASK TIMING STATISTICS (microseconds) ===");
   Serial.print("Pitch Bend Calc:      ");

@@ -1,3 +1,4 @@
+// Configure range PWM (per DCO, DIV_COUNTER) and PW PWM (per voice, DIV_COUNTER_PW). Called from setup1().
 void init_pwm()
 {
   for (int i = 0; i < NUM_VOICES_TOTAL * 2; i++)

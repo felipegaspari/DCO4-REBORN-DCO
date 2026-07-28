@@ -2,6 +2,7 @@
 //   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 // }
 
+// Convert uint64 to decimal C string. Currently unused (only commented use in irq_tuner).
 char * uintToStr( const uint64_t num, char *str )
 {
   uint8_t i = 0;
@@ -21,6 +22,7 @@ char * uintToStr( const uint64_t num, char *str )
   return str;
 }
 
+// Linear → logarithmic mapping (0..maxValue). Used by init_ADSR for linToLogLookup.
 uint16_t linearToLogarithmic(uint16_t linearValue, float base, uint16_t maxValue) {
   if (linearValue < 0) linearValue = 0;
   if (linearValue > maxValue) linearValue = maxValue;
@@ -33,6 +35,7 @@ uint16_t linearToLogarithmic(uint16_t linearValue, float base, uint16_t maxValue
   return scaledLogValue;
 }
 
+// Linear → exponential mapping (0..maxValue). Currently unused.
 uint16_t linearToExponential(uint16_t linearValue, float base, uint16_t maxValue) {
 
   if (linearValue < 0) linearValue = 0;
@@ -46,12 +49,14 @@ uint16_t linearToExponential(uint16_t linearValue, float base, uint16_t maxValue
   return scaledExpValue;
 }
 
+// Fader-style cubic-ish exp curve. Currently unused.
 uint16_t faderExpConverter(uint16_t readingValue) {
   uint16_t pow3Calc = readingValue / 4;
   uint16_t expValOut = pow3Calc * pow3Calc * pow3Calc / 20000;
   return expValOut;
 }
 
+// Exp curve → float (x^2 / curve). Used by params/LFO drift and related control mapping.
 float expConverterFloat(uint16_t readingValue, uint16_t curve) {
   uint16_t pow3Calc = readingValue;
   float expValOut = (float)pow3Calc * pow3Calc / curve;
@@ -61,6 +66,7 @@ float expConverterFloat(uint16_t readingValue, uint16_t curve) {
   return expValOut;
 }
 
+// Exp curve → uint16 (x^2 / curve). Used e.g. by apply_param_portamento_time.
 uint16_t expConverter(uint16_t readingValue, uint16_t curve) {
   uint16_t pow3Calc = readingValue;
   uint16_t expValOut = (float)pow3Calc * pow3Calc / curve;
@@ -70,16 +76,19 @@ uint16_t expConverter(uint16_t readingValue, uint16_t curve) {
   return expValOut;
 }
 
+// Inverse of expConverter (sqrt). Currently unused.
 uint16_t expConverterReverse(uint16_t readingValue, uint16_t curve) {
   uint16_t expValOut = sqrt((float)readingValue / curve);
   return expValOut;
 }
 
+// Inverse of expConverterFloat. Currently unused.
 uint16_t expConverterFloatReverse(float readingValue, uint16_t curve) {
   uint16_t expValOut = sqrt(readingValue / curve);
   return expValOut;
 }
 
+// Cubic exp curve variant (x^3 / curve). Currently unused.
 uint16_t expConverter2(uint16_t readingValue, uint16_t curve) {
   uint16_t pow3Calc = readingValue;
   uint16_t expValOut = pow3Calc * pow3Calc * pow3Calc / curve;
@@ -97,6 +106,7 @@ uint16_t expConverter2(uint16_t readingValue, uint16_t curve) {
 //9 LFO1toDCO
 //10 ADSR3toDETUNE1
 
+// Legacy numbered formula update (body commented out). Currently unused.
 void formula_update(byte formulaN) {
   // switch (formulaN) {
   //   case 1:
@@ -139,6 +149,7 @@ void formula_update(byte formulaN) {
   // }
 }
 
+// Map raw control values into float params (LFO speeds / LFO1→DCO). Currently unused.
 void controls_formula_update(byte formulaN) {
   switch (formulaN) {
     case 1:
@@ -156,6 +167,7 @@ void controls_formula_update(byte formulaN) {
 }
 
 
+// Clear onboard LED after blink window. Currently unused (no callers).
 void led_blinking_task() {
   if (millis() - LED_BLINK_START < 50)
     return;

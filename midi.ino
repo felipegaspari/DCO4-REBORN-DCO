@@ -1,4 +1,5 @@
 
+// Init USB + DIN MIDI ports and register note/CC/program/pitch-bend handlers. Called from setup().
 void init_midi() {
   MIDI_USB.begin(MIDI_CHANNEL_OMNI);
   MIDI_USB.setHandleNoteOn(handleNoteOn);
@@ -17,13 +18,16 @@ void init_midi() {
 }
 
 
+// MIDI library callback → note_on(). Invoked from loop via MIDI_*.read().
 void handleNoteOn(byte channel, byte pitch, byte velocity) {
   note_on(pitch, velocity);
 }
+// MIDI library callback → note_off().
 void handleNoteOff(byte channel, byte pitch, byte velocity) {
   note_off(pitch);
 }
 
+// MIDI CC handler (CC 42 sets pitch-bend range in semitones and updates Q24 multiplier).
 void handleControlChange(byte channel, byte number, byte value) {
   // CC #42 is used to set the pitch bend range in semitones.
   if (number == 42) {
@@ -34,13 +38,16 @@ void handleControlChange(byte channel, byte number, byte value) {
   }
 }
 
+// MIDI program-change callback (currently unused / empty).
 void handleProgramChange(byte channel, byte program) {
 }
 
+// MIDI pitch-bend callback → midi_pitch_bend (offset to 0..16383 style).
 void handlePitchBend(byte channel, int pitchBend) {
   midi_pitch_bend = pitchBend + 8192;
 }
 
+// Allocate voice(s) from MIDI note-on per voiceMode/polyMode; set ADSR flags; notify mainboard.
 void note_on(uint8_t note, uint8_t velocity) {
 
   switch (voiceMode) {
@@ -122,6 +129,7 @@ void note_on(uint8_t note, uint8_t velocity) {
   last_midi_pitch_bend = 0;
 }
 
+// Release matching voice(s) on MIDI note-off; set noteEnd flags; notify mainboard.
 void note_off(uint8_t note) {
   // gate off
   for (int i = 0; i < NUM_VOICES_TOTAL; i++)  // REVISAR!! // Previously NUM_VOICES

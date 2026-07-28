@@ -1,5 +1,8 @@
 # Fixed-Point Migration Plan (FixMath)
 
+> **ARCHIVE — historical only.** This early FixMath migration plan was **not** the approach that landed (hand-rolled Q formats + optional float engine).  
+> Live build flags and precision/speed paths: **[`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)**.
+
 Reference: Arduino FixMath library docs: `FixMath.h` ([documentation link](https://tomcombriat.github.io/FixMath/docs/html/FixMath_8h.html)).
 
 ## Library Overview (Key Points)

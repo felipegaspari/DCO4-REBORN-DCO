@@ -1,3 +1,4 @@
+// Update soft timer flags (99 µs, ~1 ms, 200 ms, 1000 ms, …). Called every loop1() iteration.
 inline void millisTimer()
 {
 

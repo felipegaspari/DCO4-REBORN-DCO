@@ -2,7 +2,9 @@
 
 This document describes the **refactored** version of the autotune / DCO calibration code, focusing on structure, responsibilities, and how the pieces fit together after the clean‑up work.
 
-It is meant to complement `AUTOTUNE.md` (which explains the original behaviour and algorithms) by documenting **how** that behaviour is now organized in code.
+It is meant to complement [`AUTOTUNE.md`](AUTOTUNE.md) (which explains the original behaviour and algorithms) by documenting **how** that behaviour is now organized in code.
+
+Active headers: `autotune.h` (includes `autotune_constants.h`, `autotune_context.h`, `autotune_measurement.h`), `autotune.ino`, `PID.*`, `amp_comp.h`, `FS.*`. After tables are written, `precompute_amp_comp_for_engine()` prepares float or fixed lookup data per [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
 
 ---
 

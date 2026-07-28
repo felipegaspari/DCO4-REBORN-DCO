@@ -1,3 +1,4 @@
+// Configure Serial1 (MIDI DIN), Serial2 (mainboard @ 2.5M), USB CDC. Called from setup().
 void init_serial() {
   // init serial midi
   Serial1.setFIFOSize(256);
@@ -107,6 +108,8 @@ static SerialParserContext dcoSerial2Parser = {
 };
 
 // Main entry point for DCO <-> mainboard Serial2 receive.
+// Non-blocking Serial2 RX pump: feed bytes into shared parser / command handlers.
+// Called every loop() iteration on Core 0.
 void serial_STM32_task() {
   // First, expire any stale partial frame (only if we're in a frame).
   if (dcoSerial2Parser.state == SERIAL_READ_PAYLOAD) {
@@ -130,6 +133,7 @@ void serial_STM32_task() {
   }
 }
 
+// Send note-on frame 'n' to mainboard over Serial2. Called from note_on().
 inline void serial_send_note_on(uint8_t voice_n, uint8_t note_velo, uint8_t note) {
 
 
@@ -145,6 +149,7 @@ inline void serial_send_note_on(uint8_t voice_n, uint8_t note_velo, uint8_t note
   Serial2.write(sendArray, 4);
 }
 
+// Send note-off frame 'o' to mainboard over Serial2. Called from note_off().
 inline void serial_send_note_off(uint8_t voice_n) {
   byte sendArray[2] = { (uint8_t)'o', voice_n };
   //while (Serial2.availableForWrite() < 1) {}
@@ -153,6 +158,7 @@ inline void serial_send_note_off(uint8_t voice_n) {
   Serial2.write(sendArray, 2);
 }
 
+// Legacy generic 16-bit TX helper on uart1. Currently unused.
 void serial_send_generaldata(uint16_t data) {
 
   if (uart_is_writable(uart1) > 0) {
@@ -166,6 +172,7 @@ void serial_send_generaldata(uint16_t data) {
   }
 }
 
+// Send param32 frame 'x' upstream (manual cal offsets / gap debug). Serial2.
 inline void serialSendParam32(byte paramNumber, uint32_t paramValue) {
 
   uint8_t *b = (uint8_t *)&paramValue;

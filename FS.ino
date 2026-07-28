@@ -1,4 +1,6 @@
 #include "include_all.h"
+// Mount LittleFS and load amp-comp / PW / offset calibration into runtime arrays (float or Q8).
+// Called from setup1() and again at end of DCO_calibration().
 void init_FS() {
   LittleFS.begin();
 
@@ -142,6 +144,7 @@ void init_FS() {
   //singleFileDrive.begin("voiceTables", "voicetables.txt");
 }
 
+// Persist one oscillator's calibrationData slice into voiceTables. Called from DCO_calibration().
 void update_FS_voice(byte voiceN) {
   byte calibrationDataBytes[FSVoiceDataSize];
 
@@ -164,6 +167,7 @@ void update_FS_voice(byte voiceN) {
 }
 
 
+// Persist PW center for a voice. Called from find_PW_center().
 void update_FS_PWCenter(byte voiceN, uint16_t value) {
   byte calibrationDataBytes[FSPWDataSize];
   byte *b = (byte *)&value;
@@ -176,6 +180,7 @@ void update_FS_PWCenter(byte voiceN, uint16_t value) {
   filePWCenterFS.close();
 }
 
+// Persist PW high limit for a voice. Called from find_PW_limit_v2().
 void update_FS_PW_High_Limit(byte voiceN, uint16_t value) {
   byte calibrationDataBytes[FSPWDataSize];
   byte *b = (byte *)&value;
@@ -188,6 +193,7 @@ void update_FS_PW_High_Limit(byte voiceN, uint16_t value) {
   filePWHighLimitFS.close();
 }
 
+// Persist PW low limit for a voice. Called from find_PW_limit_v2().
 void update_FS_PW_Low_Limit(byte voiceN, uint16_t value) {
   byte calibrationDataBytes[FSPWDataSize];
   byte *b = (byte *)&value;
@@ -201,6 +207,7 @@ void update_FS_PW_Low_Limit(byte voiceN, uint16_t value) {
 }
 
 // Persist a single manualCalibrationOffset entry for the given oscillator index.
+// Persist one oscillator's manual calibration offset. Called from apply_param_manual_calibration_store().
 void update_FS_ManualCalibrationOffset(byte oscIndex, int8_t value) {
   if (oscIndex >= NUM_OSCILLATORS) {
     return;

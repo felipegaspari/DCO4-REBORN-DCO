@@ -342,6 +342,7 @@ void PID_find_highest_freq() {
 #endif  // LEGACY_PID_FIND_HIGHEST_FREQ
 #endif  // LEGACY_PID_DCO_CALIBRATION
 
+// Search highest usable DCO frequency (returns Hz*100). Called from calibrate_DCO().
 float find_highest_freq() {
 
   ampCompCalibrationVal = DIV_COUNTER;
@@ -632,6 +633,7 @@ void calibrate_DCO(DCOCalibrationContext& ctx, double dutyErrorFraction) {
 }
 
 
+// 3-point quadratic interpolate y at x. Used by calibrate_DCO helpers / find_lowest_freq.
 float quadraticInterpolation(float x0, float y0, float x1, float y1, float x2, float y2, float x) {
   // Calculate the coefficients of the quadratic polynomial
   float a = ((y2 - (x2 * (y1 - y0) + x1 * y0 - x0 * y1) / (x1 - x0)) / (x2 * (x2 - x0 - x1) + x0 * x1));
@@ -642,6 +644,7 @@ float quadraticInterpolation(float x0, float y0, float x1, float y1, float x2, f
   return a * x * x + b * x + c;
 }
 
+// Exponential interpolate between (x0,y0)-(x1,y1). Currently unused.
 uint16_t exponentialInterpolation(float x0, float y0, float x1, float y1, float x) {
   // Ensure y0 and y1 are not zero to avoid log(0)
   if (y0 <= 0 || y1 <= 0) {
@@ -658,6 +661,7 @@ uint16_t exponentialInterpolation(float x0, float y0, float x1, float y1, float 
   return round(y);
 }
 
+// Log interpolate between two points → uint16. Used by compute_initial_amp_for_note().
 uint16_t logarithmicInterpolation(float x0, float y0, float x1, float y1, float x) {
   // Ensure x0 and x1 are not zero or negative to avoid log(0) or log of negative number
   if (x0 <= 0 || x1 <= 0) {
@@ -674,6 +678,7 @@ uint16_t logarithmicInterpolation(float x0, float y0, float x1, float y1, float 
   return (uint16_t)round(y);
 }
 
+// Log interpolate (float). Currently unused.
 float logarithmicInterpolationFloat(float x0, float y0, float x1, float y1, float x) {
   // Ensure x0 and x1 are not zero or negative to avoid log(0) or log of negative number
   if (x0 <= 0 || x1 <= 0) {
@@ -690,6 +695,7 @@ float logarithmicInterpolationFloat(float x0, float y0, float x1, float y1, floa
   return y;
 }
 
+// Log interpolate (double). Currently unused.
 double logarithmicInterpolationDouble(double x0, double y0, double x1, double y1, double x) {
   // Ensure x0 and x1 are not zero or negative to avoid log(0) or log of negative number
   if (x0 <= 0 || x1 <= 0) {
@@ -706,6 +712,7 @@ double logarithmicInterpolationDouble(double x0, double y0, double x1, double y1
   return y;
 }
 
+// Linear interpolate between two points. Used by find_lowest_freq().
 float linearInterpolation(float x0, float y0, float x1, float y1, float x) {
   // Ensure x0 and x1 are not the same to avoid division by zero
   if (x0 == x1) {
@@ -724,6 +731,7 @@ float linearInterpolation(float x0, float y0, float x1, float y1, float x) {
   return y;
 }
 
+// Solve exponential interpolation for y at x (log-space lerp). Used by initMultiplierTables().
 double expInterpolationSolveY(double x, double x0, double x1, double y0, double y1) {
     if (x0 <= 0 || x1 <= 0) {
         // Handle error: x0 and x1 must be greater than 0 for exponential interpolation

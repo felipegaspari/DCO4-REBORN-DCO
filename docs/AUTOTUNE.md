@@ -2,6 +2,8 @@
 
 This document explains how the current “autotune” code for the DCO synth oscillators works and outlines a plan to improve its readability and maintainability.
 
+For how the refactored files are split today (`autotune_context.h`, `autotune_measurement.h`, etc.), see [`AUTOTUNE_REFACTORED.md`](AUTOTUNE_REFACTORED.md). Runtime amp-comp after calibration depends on the active engine flags in [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
+
 ### Objectives
 
 - **Primary goal**: Build, for each DCO, a mapping from **note frequency → range PWM value** (`ampCompCalibrationVal`) so that:

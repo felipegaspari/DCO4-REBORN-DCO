@@ -19,6 +19,8 @@ These files are intended to be MCU‑agnostic and copy‑pasteable between proje
 
 You can treat these as the “library core.”
 
+**DCO repo note:** this board does **not** ship `serial_input_protocol.h` (it only speaks the mainboard↔DCO protocol). Copy that header from `DCO4_Mainboard_Controller` or `DCO4_Input_Controller` if you need input-link command sizes here.
+
 ---
 
 ## 2. Using the parameter protocol in a new MCU

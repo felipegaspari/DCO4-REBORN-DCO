@@ -1,3 +1,4 @@
+// Boot: build Bézier/log tables and apply initial A/D/S/R to all voices. Called from setup1().
 void init_ADSR() {
   
   // Initialize ADSR Bézier lookup tables via library helper
@@ -16,6 +17,8 @@ void init_ADSR() {
   }
 }
 
+// ~10 kHz: process noteStart/noteEnd, advance envelopes into ADSR1Level[], lazy-apply params.
+// Called from loop1() play path when micros delta > 100.
 inline void ADSR_update() {
   tADSR = millis();
   for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
@@ -36,6 +39,7 @@ inline void ADSR_update() {
   ADSR_set_parameters();
 }
 
+// Debounced A/D/S/R push to all voices (only when values change). Called from ADSR_update().
 inline void ADSR_set_parameters() {
   if ((tADSR - tADSR_params) > 5) {
     // Only push new parameters to the voices when they actually change,
@@ -76,12 +80,14 @@ inline void ADSR_set_parameters() {
   }
 }
 
+// Apply ADSRRestart (legato vs retrigger) to all voices. Currently unused (no callers).
 void ADSR1_set_restart() {
   for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
     ADSRVoices[i].adsr1_voice.setResetAttack(ADSRRestart);
   }
 }
 
+// Re-apply A/D/S/R and restart after curve changes. Currently unused (no callers).
 void ADSR1_change_curves() {
   for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
     //ADSRVoices[i].adsr1_voice.changeCurves(ADSR_1_DACSIZE, ADSR1_curve1, ADSR1_curve2);

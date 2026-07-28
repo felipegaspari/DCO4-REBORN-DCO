@@ -113,6 +113,7 @@ RunningAverage ra_loop0_memcpy(2000);
 
 // ****************************************************************************************** //
 
+// Core 0 boot: serial, MIDI, LFOs, board fix pins, USB descriptors, calibration input pin.
 void setup() {
   //set_sys_clock_khz(sysClock, true);
   // EEPROM.begin(512);
@@ -142,6 +143,8 @@ void setup() {
   // gpio_pull_down(11);
 }
 
+// Core 1 boot: PID, LittleFS cal load, ADSR, amp-comp precompute, PWM/PIO, voices.
+// Clears calibrationFlag so the init_DCO_calibration block below is currently unreachable.
 void setup1() {
 
   //set_sys_clock_khz(sysClock, true);
@@ -169,6 +172,7 @@ void setup1() {
   }
 }
 
+// Core 0 forever loop: MIDI read, Serial2 parser, LFO1; ~100 µs LFO2 + drift + FIFO push of detune.
 void loop() {
   // unsigned long loop0_start_time = micros();
   // unsigned long loop0_total_time;
@@ -218,6 +222,7 @@ ra_loop0_MIDI_and_serial.addValue((float)(micros() - loop0_micros));
   // }
 }
 
+// Core 1 forever loop: soft timers; auto/manual calibration OR ADSR + FIFO pop + voice_task_main.
 void loop1() {
   // unsigned long loop1_start_time = micros();
   // unsigned long loop1_total_time;
@@ -281,6 +286,7 @@ void loop1() {
 }
 
 #ifdef RUNNING_AVERAGE
+// Debug: print Core0/Core1 timing averages (~1 Hz when timer1000msFlag). Calls print_voice_task_timings().
 void print_running_averages() {
   Serial.println("--------------------------------");
   Serial.println("RUNNING AVERAGES");

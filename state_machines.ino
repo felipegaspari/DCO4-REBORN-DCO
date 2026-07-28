@@ -1,3 +1,4 @@
+// Load frequency_sync_4_jumps into both PIO blocks and start all voice SMs. Called from setup1().
 void init_pio() {
 
   offset[0] = pio_add_program(pio[0], &frequency_sync_4_jumps_program);
@@ -7,6 +8,7 @@ void init_pio() {
   start_voice_sms();
 }
 
+// Configure each DCO SM (sync sideset from syncMode), preload pioPulseLength into Y.
 void start_voice_sms() {
 
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
@@ -42,16 +44,19 @@ void start_voice_sms() {
   }
 }
 
+// Basic SM init via init_sm_pin (non-sync path). Currently unused; live path uses init_sm_sync.
 void init_sm(PIO pio, uint sm, uint offset, uint pin) {
   init_sm_pin(pio, sm, offset, pin);
   pio_sm_set_enabled(pio, sm, true);
 }
 
+// Production SM init via frequency_sync_4_jumps. Called from start_voice_sms().
 void init_sm_sync(PIO pio, uint sm, uint offset, uint pin, uint pin2) {
   frequency_sync_4_jumps(pio, sm, offset, pin, pin2);
   pio_sm_set_enabled(pio, sm, true);
 }
 
+// Simple test helper to push a clock divider from Hz. Currently unused by the main engine.
 void set_frequency(PIO pio, uint sm, float freq) {
   uint32_t clk_div = sysClock_Hz / freq;
   if (freq == 0)

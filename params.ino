@@ -37,46 +37,55 @@
 //     ignores it (same as the old default: case).
 
 
-// ---- Apply functions for each parameter -----------------------------
+// ---- Apply functions for each parameter (invoked only via paramTable / update_parameters) ----
 
+// PARAM_SQR1_STATUS: OSC1 square/wave enable status.
 static void apply_param_sqr1_status(int16_t v) {
   sqr1Status = v;
   // update_waveSelector(4);  // keep commented behavior as in original code
 }
 
+// PARAM_ADSR3_TO_OSC_SELECT: which osc(s) receive ADSR3→detune/PWM routing.
 static void apply_param_adsr3_to_osc_select(int16_t v) {
   ADSR3ToOscSelect = v;
 }
 
+// PARAM_LFO1_WAVEFORM: set LFO1 waveform and refresh rate.
 static void apply_param_lfo1_waveform(int16_t v) {
   LFO1Waveform = v;
   LFO1_class.setWaveForm(LFO1Waveform);
   LFO1_class.setMode0Freq((float)LFO1Speed, micros());
 }
 
+// PARAM_LFO2_WAVEFORM: set LFO2 waveform and refresh rate.
 static void apply_param_lfo2_waveform(int16_t v) {
   LFO2Waveform = v;
   LFO2_class.setWaveForm(LFO2Waveform);
   LFO2_class.setMode0Freq((float)LFO2Speed, micros());
 }
 
+// PARAM_OSC1_INTERVAL: OSC1 transpose interval.
 static void apply_param_osc1_interval(int16_t v) {
   OSC1_interval = v;
 }
 
+// PARAM_OSC2_INTERVAL: OSC2 transpose interval.
 static void apply_param_osc2_interval(int16_t v) {
   OSC2_interval = v;
 }
 
+// PARAM_OSC2_DETUNE_VAL: OSC2 fine detune (stored inverted from UI value).
 static void apply_param_osc2_detune_val(int16_t v) {
   OSC2DetuneVal = 512 - v;
 }
 
+// PARAM_LFO2_TO_DETUNE2: LFO2 → OSC2 detune depth (Q24).
 static void apply_param_lfo2_to_detune2(int16_t v) {
   float lfo2_amt = (float)expConverterFloat((uint8_t)v, 500) / 275000.0f;
   LFO2toDETUNE2_q24 = (int32_t)(lfo2_amt * (float)(1 << 24) + 0.5f);
 }
 
+// PARAM_OSC_SYNC_MODE: osc sync / phase-align (updates phaseAlignOSC2, retriggers notes).
 static void apply_param_osc_sync_mode(int16_t v) {
   oscSync = v;
   if (oscSync < 2) {
@@ -121,6 +130,7 @@ static void apply_param_osc_sync_mode(int16_t v) {
   }
 }
 
+// PARAM_PORTAMENTO_TIME: map UI value to portamento_time (µs-scale glide).
 static void apply_param_portamento_time(int16_t v) {
   uint8_t portaSerial = (uint8_t)v;
   if (portaSerial == 0) {
@@ -132,28 +142,34 @@ static void apply_param_portamento_time(int16_t v) {
   }
 }
 
+// PARAM_PORTAMENTO_MODE: 0 = fixed-time glide, else slew-rate.
 static void apply_param_portamento_mode(int16_t v) {
   // Portamento mode: 0 = fixed-time glide, 1 = analog-style slew-rate
   portamento_mode = (v == 0) ? PORTA_MODE_TIME : PORTA_MODE_SLEW;
 }
 
+// PARAM_CALIBRATION_VALUE: reserved ID (no behavior).
 static void apply_param_calibration_value(int16_t /*v*/) {
   // Placeholder: original code did nothing but kept the ID reserved.
 }
 
+// PARAM_VOICE_MODE: mono/poly/stack → setVoiceMode().
 static void apply_param_voice_mode(int16_t v) {
   voiceMode = v;
   setVoiceMode();
 }
 
+// PARAM_UNISON_DETUNE: unison detune amount.
 static void apply_param_unison_detune(int16_t v) {
   unisonDetune = v;
 }
 
+// PARAM_ANALOG_DRIFT_AMOUNT: drift modulation depth.
 static void apply_param_analog_drift_amount(int16_t v) {
   analogDrift = v;
 }
 
+// PARAM_ANALOG_DRIFT_SPEED: recompute all drift LFO rates.
 static void apply_param_analog_drift_speed(int16_t v) {
   analogDriftSpeed = v;
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
@@ -165,6 +181,7 @@ static void apply_param_analog_drift_speed(int16_t v) {
   }
 }
 
+// PARAM_ANALOG_DRIFT_SPREAD: recompute per-osc drift speed offsets.
 static void apply_param_analog_drift_spread(int16_t v) {
   analogDriftSpread = v;
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
@@ -176,11 +193,13 @@ static void apply_param_analog_drift_spread(int16_t v) {
   }
 }
 
+// PARAM_SYNC_MODE: PIO sync topology → setSyncMode().
 static void apply_param_sync_mode(int16_t v) {
   syncMode = v;
   setSyncMode();
 }
 
+// PARAM_LFO1_TO_DCO: LFO1 → DCO detune depth (float + Q24).
 static void apply_param_lfo1_to_dco(int16_t v) {
   LFO1toDCOVal = v;
   // Compute LFO1->DCO modulation depth both in float (for any legacy use)
@@ -190,26 +209,31 @@ static void apply_param_lfo1_to_dco(int16_t v) {
   LFO1toDCO_q24 = (int32_t)(lfo1_amt * (float)(1 << 24) + 0.5f);
 }
 
+// PARAM_LFO1_SPEED: LFO1 rate in Hz (via expConverterFloat).
 static void apply_param_lfo1_speed(int16_t v) {
   LFO1SpeedVal = v;
   LFO1Speed = expConverterFloat(LFO1SpeedVal, 5000);
   LFO1_class.setMode0Freq((float)LFO1Speed, micros());
 }
 
+// PARAM_LFO2_SPEED: LFO2 rate in Hz (via expConverterFloat).
 static void apply_param_lfo2_speed(int16_t v) {
   LFO2SpeedVal = v;
   LFO2Speed = expConverterFloat(LFO2SpeedVal, 5000);
   LFO2_class.setMode0Freq((float)LFO2Speed, micros());
 }
 
+// PARAM_LFO2_TO_PW: LFO2 → pulse-width depth.
 static void apply_param_lfo2_to_pw(int16_t v) {
   LFO2toPW = (int16_t)v;
 }
 
+// PARAM_ADSR3_TO_PWM: ADSR → PWM depth (centered around 512).
 static void apply_param_adsr1_to_pwm(int16_t v) {
   ADSR1toPWM = (int16_t)v - 512;
 }
 
+// PARAM_ADSR3_TO_DETUNE1: ADSR → pitch detune depth + precomputed Q24 scale.
 static void apply_param_adsr1_to_detune1(int16_t v) {
   // ADSR1toDETUNE1 controls how much ADSR1 modulates pitch (detune).
   // Original float formula was:
@@ -232,26 +256,32 @@ static void apply_param_adsr1_to_detune1(int16_t v) {
   }
 }
 
+// PARAM_ADSR1_ATTACK_CURVE: reserved (no behavior yet).
 static void apply_param_adsr1_curve(int16_t /*v*/) {
   // = v " ADSR1 Curve" (reserved, no behavior yet)
 }
 
+// PARAM_ADSR1_DECAY_CURVE: reserved (no behavior yet).
 static void apply_param_adsr2_curve(int16_t /*v*/) {
   // = v " ADSR2 Curve" (reserved, no behavior yet)
 }
 
+// PARAM_PWM_POTS_CONTROL_MANUAL: manual PWM pot control flag.
 static void apply_param_pwm_pots_manual(int16_t v) {
   PWMPotsControlManual = v;
 }
 
+// PARAM_FUNCTION_KEY: reserved / handled elsewhere.
 static void apply_param_function_key(int16_t /*v*/) {
   // = v " FUNCTION KEY" (handled elsewhere or reserved)
 }
 
+// PARAM_CALIBRATION_FLAG: start/stop auto-cal (loop1 runs DCO_calibration when set).
 static void apply_param_calibration_flag(int16_t v) {
   calibrationFlag = v;
 }
 
+// PARAM_MANUAL_CALIBRATION_FLAG: enter/exit manual cal; rising edge TX offsets upstream.
 static void apply_param_manual_calibration_flag(int16_t v) {
   // When manual calibration is active, both flags follow this param.
   // Rising edge (0 -> non-zero): broadcast current offsets to mainboard/UI.
@@ -269,10 +299,12 @@ static void apply_param_manual_calibration_flag(int16_t v) {
   calibrationFlag       = v;
 }
 
+// PARAM_MANUAL_CALIBRATION_STAGE: which osc/stage is being edited in manual cal UI.
 static void apply_param_manual_calibration_stage(int16_t v) {
   manualCalibrationStage = (int8_t)v;
 }
 
+// PARAM_MANUAL_CALIBRATION_OFFSET: per-osc manual amp offset for current stage.
 static void apply_param_manual_calibration_offset(int16_t v) {
   manualCalibrationOffset[(uint8_t)manualCalibrationStage / 2] = (int8_t)v;
   // initManualAmpCompCalibrationVal[manualCalibrationStage / 2] =

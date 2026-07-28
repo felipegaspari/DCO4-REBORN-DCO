@@ -1,6 +1,9 @@
 # DCO4_DCO Project: Floating-Point Operations Analysis for Fixed-Point Conversion
 
-This document lists all floating-point operations within the `voice_task` function and its callees. It serves as a reference for migrating to fixed-point arithmetic using a library like `fixmath`.
+> **ARCHIVE — historical only.** This document describes a pre-/mid-migration inventory of float ops. It is **not** the live engine-options reference.  
+> Current float vs fixed flags, precision modes, and call paths: **[`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)**.
+
+This document lists all floating-point operations within the `voice_task` function and its callees. It served as a reference for migrating to fixed-point arithmetic using a library like `fixmath`.
 
 ---
 
