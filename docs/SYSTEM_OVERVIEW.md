@@ -40,10 +40,12 @@ flowchart LR
 | Mainboard `Serial2` | 2.5M | DCO | PD6 / PD5 |
 | Mainboard `Serial8` | 2.5M | Input | PE0 / PE1 — input control blocks and params |
 | Mainboard `Serial1` | 2.5M | Screen | PA10 / PA9 — param / UI traffic (`'p'`/`'x'`/`'y'`) |
-| Input `Serial2` | 2.5M | Mainboard | TX4 / RX5 — ADSR/filter/PW blocks + params |
+| Input `Serial2` | 2.5M | Mainboard | TX4 / RX5 — ADSR/filter/PW blocks + params to Mainboard `Serial8` |
 | Input `Serial1` | 2.5M | Screen | TX0 / RX1 — screen signals, preset names, mirrored UI data |
 | Screen `Serial2` | 2.5M | Mainboard | RX21 / TX20 |
 | Screen `Serial1` | 2.5M | Input | RX13 / TX12 |
+
+**Input RX note:** Mainboard→Input frames are expected on Input **Serial2** (RX5) per the pin map. The current Input firmware’s only live inbound parser (`serial_read_from_mainboard`, `'x'` cal offset) runs on **Serial1** — treat this as a firmware/wiring discrepancy to verify; do not assume Mainboard `Serial8` traffic is consumed on Serial2 today.
 
 **Naming note:** shared headers often call the mainboard↔input UART “Serial8” (STM32 side). On the Input and Screen RP2040s the physical UARTs are `Serial1` / `Serial2`.
 
