@@ -100,7 +100,6 @@
 #include "PID.h"
 #include "autotune.h"
 
-// #include "irq_tuner.h"
 
 #ifdef RUNNING_AVERAGE
 RunningAverage ra_loop1_ADSR_and_detune(2000);
@@ -134,7 +133,7 @@ void setup() {
   digitalWrite(24, HIGH);
 
   USBDevice.setManufacturerDescriptor("FELA         ");
-  USBDevice.setProductDescriptor("DCO-4        ");
+  USBDevice.setProductDescriptor("DCO3-MONO   ");
 
   pinMode(DCO_calibration_pin, INPUT_PULLUP);
 
@@ -232,7 +231,7 @@ void loop1() {
     if (manualCalibrationFlag == true) {
       VOICE_NOTES[0]               = manual_DCO_calibration_start_note;
       DCO_calibration_current_note = manual_DCO_calibration_start_note;
-      ampCompCalibrationVal = initManualAmpCompCalibrationValPreset + manualCalibrationOffset[manualCalibrationStage / 2];
+      ampCompCalibrationVal = initManualAmpCompCalibrationValPreset + manualCalibrationOffset[manualCalibrationStage];
       voice_task_autotune(0, ampCompCalibrationVal);
       // In manual calibration mode, continuously measure and report the duty
       // difference so the screen can display live feedback for the user.
@@ -266,9 +265,6 @@ void loop1() {
     //  loop1_start_time = micros();
     // Serial.println("pre voice task");
     voice_task_main();
-    //voice_task_gold_reference();
-    //voice_task_simple();
-    //voice_task_debug();
     // Serial.println("post voice task");
     // loop speed
     // loop1_total_time = micros() - loop1_start_time;

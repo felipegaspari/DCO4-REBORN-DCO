@@ -1,8 +1,8 @@
-# DCO4_DCO Engine Options (Float vs Fixed-Point)
+# DCO Engine Options (Float vs Fixed-Point)
 
-This firmware can run the real-time voice engine in **float** or **fixed-point** form. The goal is **maximum real-time speed without losing pitch / amplitude precision**. Which path you get depends on compile-time flags at the top of [`DCO4_DCO.ino`](DCO4_DCO.ino).
+This firmware can run the real-time voice engine in **float** or **fixed-point** form. The goal is **maximum real-time speed without losing pitch / amplitude precision**. Which path you get depends on compile-time flags at the top of [`DCO.ino`](DCO.ino).
 
-**Live source of truth for flags:** the “Voice engine build options” block in `DCO4_DCO.ino` (before project includes).  
+**Live source of truth for flags:** the “Voice engine build options” block in `DCO.ino` (before project includes).  
 **Historical migration notes:** [`FIXED_POINT_ANALYSIS.md`](FIXED_POINT_ANALYSIS.md) and [`FIXED_POINT_PLAN.md`](FIXED_POINT_PLAN.md) (archive only — not current flag docs).
 
 ---
@@ -33,7 +33,7 @@ After changing flags: clean rebuild, confirm LittleFS amp-comp tables still load
 
 ## 3. Master switches
 
-Defined in `DCO4_DCO.ino`:
+Defined in `DCO.ino`:
 
 ```text
 USE_FLOAT_ENGINE
@@ -112,7 +112,7 @@ Used only when `PITCH_USE_RATIO_Q16` is off:
 
 **Gotcha:** With the default `PITCH_USE_RATIO_Q16 1`, the Q8/Q12 macros are **inert on the hot path**. Slope arrays for Q8/Q12 may still be built at `initMultiplierTables()` if those macros remain defined.
 
-These flags are `#define`d in `DCO4_DCO.ino` even when `USE_FLOAT_ENGINE` is on (layout is not wrapped in `#ifndef USE_FLOAT_ENGINE`). They only change codegen when the fixed `voice_task()` is compiled.
+These flags are `#define`d in `DCO.ino` even when `USE_FLOAT_ENGINE` is on (layout is not wrapped in `#ifndef USE_FLOAT_ENGINE`). They only change codegen when the fixed `voice_task()` is compiled.
 
 ---
 
@@ -196,7 +196,7 @@ System clock used by clkdiv: `sysClock = 225000` kHz → `sysClock_Hz = 225e6` (
 - **Core 0 → core 1 FIFO:** LFO1 detune is always transferred as **Q24** (`DETUNE_INTERNAL_q24`). Float path converts each frame.
 - **PW PWM:** both engines end in `get_PW_level_interpolated` (integer map using calibrated center/limits).
 - **Autotune:** `voice_task_autotune()` uses float-style clkdiv math and `get_chan_level_for_engine`; it is compiled regardless of engine and is not the production note path.
-- **Legacy helpers:** `voice_task_simple()` / `voice_task_debug()` may still exist for reference; they are not called from `loop1`. `voice_task_gold_reference()` is **gone** (old docs may still mention it).
+- **Legacy helpers:** `voice_task_simple()` / `voice_task_debug()` / gold reference are **removed** (see `_removed/` if needed).
 
 ---
 
@@ -214,7 +214,7 @@ System clock used by clkdiv: `sysClock = 225000` kHz → `sysClock_Hz = 225e6` (
 
 ## 11. Change checklist
 
-1. Edit flags in `DCO4_DCO.ino` only (before includes).
+1. Edit flags in `DCO.ino` only (before includes).
 2. Full rebuild (both cores / clean if IDE caches oddly).
 3. Confirm `ENABLE_FS_CALIBRATION` load path matches amp-comp mode (no assert / empty tables).
 4. Play low and high notes; check for zippering, beating, or amp dropouts at plateau.
@@ -226,8 +226,8 @@ System clock used by clkdiv: `sysClock = 225000` kHz → `sysClock_Hz = 225e6` (
 
 | Concern | Files |
 |---------|-------|
-| Flag definitions | `DCO4_DCO.ino` |
+| Flag definitions | `DCO.ino` |
 | Dispatch + both voice tasks | `voices.ino` / `voices.h` |
 | Amp-comp dual path | `amp_comp.h`, `FS.ino` |
 | Note tables | `noteList.h` (`sNotePitches`, `sNotePitches_q24`) |
-| Loop call site | `DCO4_DCO.ino` `loop1()` → `voice_task_main()` |
+| Loop call site | `DCO.ino` `loop1()` → `voice_task_main()` |

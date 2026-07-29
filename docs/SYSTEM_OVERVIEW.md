@@ -1,8 +1,10 @@
-# DCO4 System Overview
+# DCO3-MONOSYNTH System Overview
 
-DCO4 is a **fully digitally controlled analog synthesizer**: digital control and calibration drive analog DCO / filter / VCA hardware. The goal includes patch saving for all parameters.
+DCO3-MONOSYNTH is a **fully digitally controlled analog monosynth**, forked from DCO4: digital control and calibration drive analog DCO / filter / VCA hardware. The goal includes patch saving for all parameters.
 
-The instrument is split across **four firmwares** in four repositories. This document describes how they fit together. Board-specific details live in each repo.
+The instrument is split across **four firmwares**. This document describes how they fit together. Board-specific details live in each board folder / docs.
+
+**DCO board (current):** Raspberry Pi Pico 2, **1 voice × 3 oscillators**, freq on PIO0/1/2 SM0, amp via RANGE PWM. Autotune stack from `autotune-improvements` retained (PW center/limits + amp-comp), re-indexed for one shared PW voice.
 
 ---
 
@@ -10,7 +12,7 @@ The instrument is split across **four firmwares** in four repositories. This doc
 
 | Board | Repo | MCU | Owns |
 |-------|------|-----|------|
-| **DCO (voice board)** | `DCO4_DCO` | RP2040 / RP2350-class | MIDI in (USB + DIN), voice allocation, 4 voices × 2 PIO DCOs, amp/PW calibration, LittleFS voice tables |
+| **DCO (voice board)** | `DCO` (this tree) | RP2350 Pico 2 | MIDI in (USB + DIN), voice allocation, 1×3 PIO DCOs, amp/PW calibration, LittleFS voice tables |
 | **Mainboard** | `DCO4_Mainboard_Controller` | STM32 | Modulation brain: ADSRs, LFOs, filter/VCA/PW CVs (PWM + I2C DACs), wave select, param routing between boards |
 | **Input controller** | `DCO4_Input_Controller` | RP2040 | Front panel (pots, encoders, buttons), preset storage (LittleFS), dual UART fan-out to mainboard and screen |
 | **Screen controller** | `DCO4_Screen_Controller` | RP2040 | ILI9488 TFT + LVGL UI (params, presets, calibration screens) |

@@ -57,9 +57,10 @@ inline void LFO2() {
   //LFO1Level = LFO1_CC_HALF - LFO1_class.getWave(micros());
   LFO2Level = LFO2_class.getWave(micros()) - LFO2_CC_HALF;
   //PW_MOD = (float)((float)LFO2Level * LFO2toPW);
-  // Produce OSC2-only detune modulation in Q24 fixed-point:
-  // detune2_q24 = (LFO2Level * LFO2toDETUNE2) * 2^24
+  // Produce OSC2/OSC3 detune modulation in Q24 fixed-point:
+  // detuneN_q24 = (LFO2Level * LFO2toDETUNEN) * 2^24
   DETUNE_INTERNAL2_q24 = (int32_t)LFO2Level * LFO2toDETUNE2_q24;
+  DETUNE_INTERNAL3_q24 = (int32_t)LFO2Level * LFO2toDETUNE3_q24;
 }
 
 // Update per-oscillator drift LFO levels into LFO_DRIFT_LEVEL[]. Called with LFO2 ~every 100 µs.

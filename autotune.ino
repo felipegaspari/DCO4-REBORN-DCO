@@ -17,58 +17,39 @@ static void disable_all_oscillators_and_range_pwm() {
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
     uint8_t pioNumber = VOICE_TO_PIO[i];
     PIO     pioN      = pio[VOICE_TO_PIO[i]];
-    uint8_t sm1N      = VOICE_TO_SM[i];
+    uint8_t smN = VOICE_TO_SM[i];
 
     // Original "park" frequency used to pre-charge the caps.
     uint32_t clk_div1 = 200;
 
     // Run the DCO SM at a known slow rate while driving the RANGE PWM.
-    pio_sm_set_enabled(pioN, sm1N, true);
-    pio_sm_put(pioN, sm1N, clk_div1);
-    pio_sm_exec(pioN, sm1N, pio_encode_pull(false, false));
+    pio_sm_set_enabled(pioN, smN, true);
+    pio_sm_put(pioN, smN, clk_div1);
+    pio_sm_exec(pioN, smN, pio_encode_pull(false, false));
 
     delay(200);
 
     // Stop the SM and hold the RANGE pin high as a plain GPIO output.
-    pio_sm_set_enabled(pioN, sm1N, false);
+    pio_sm_set_enabled(pioN, smN, false);
     gpio_init(RANGE_PINS[i]);
     gpio_set_dir(RANGE_PINS[i], GPIO_OUT);
     gpio_put(RANGE_PINS[i], 1);
   }
 
-  // After all RANGE caps are charged, park all PW PWM channels at 0% so the
+  // After all RANGE caps are charged, park shared PW PWM at max wrap so the
   // centre search can start from a known state. (Matches original behaviour.)
-  reset_even_pw_to_DIV_COUNTER_PW();
+  reset_pw_to_DIV_COUNTER_PW();
 }
 
-// Helper: set PW for all even-indexed voices to the center value.
-static void reset_even_pw_to_center() {
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
-    PW[i] = DIV_COUNTER_PW / 2;
-    pwm_set_chan_level(PW_PWM_SLICES[i], pwm_gpio_to_channel(PW_PINS[i]), PW[i]);
-  }
-}
 
-// Helper: set all voice PW PWM channels to 0. Currently unused.
-static void reset_even_pw_to_0() {
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
-    pwm_set_chan_level(PW_PWM_SLICES[i], pwm_gpio_to_channel(PW_PINS[i]), 0);
-  }
-}
 
-// Helper: park all voice PW PWM at max wrap (DIV_COUNTER_PW). Called from disable_all_oscillators_and_range_pwm().
-static void reset_even_pw_to_DIV_COUNTER_PW() {
+// Helper: park shared PW PWM at max wrap (DIV_COUNTER_PW). Called from disable_all_oscillators_and_range_pwm().
+static void reset_pw_to_DIV_COUNTER_PW() {
   for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
     pwm_set_chan_level(PW_PWM_SLICES[i], pwm_gpio_to_channel(PW_PINS[i]), DIV_COUNTER_PW);
   }
 }
 
-// Helper: set all voice PW PWM to mid wrap. Currently unused.
-static void reset_even_pw_to_mid_point() {
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
-    pwm_set_chan_level(PW_PWM_SLICES[i], pwm_gpio_to_channel(PW_PINS[i]), DIV_COUNTER_PW / 2);
-  }
-}
 
 // Initialize legacy PID-based DCO calibration state for oscillator 0.
 // Note: the main calibration now uses calibrate_DCO(); this is kept
@@ -104,25 +85,14 @@ void init_DCO_calibration() {
   PIDOutputLowerLimit = 70;
   PIDOutputHigherLimit = 100;
 
-  // TURN OFF ALL OSCILLATORS and reset PW for even voices.
+  // TURN OFF ALL OSCILLATORS and park shared PW voice.
   disable_all_oscillators_and_range_pwm();
-
-  // DISABLE PW PWM
-  // for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
-  //   PW[i] = PW_CENTER[i];
-  //   pwm_set_chan_level(PW_PWM_SLICES[i], pwm_gpio_to_channel(PW_PINS[i]), PW[i]);
-  //   pwm_set_enabled(PW_PWM_SLICES[i], false);
-  // }
 
   delay(100);
 
   DCO_calibration_difference = 4000;
-  lastDCODifference = 50000;
-  lastGapFlipCount = 0;
-  lastPIDgap = 50000;
   bestGap = 50000;
   bestCandidate = 50000;
-  lastampCompCalibrationVal = 0;
   edgeDetectionLastTime = 0;
   PIDMinGapCounter = 0;
   pulseCounter = 0;
@@ -132,14 +102,23 @@ void init_DCO_calibration() {
 /*************************************************************************************/
 /*************************************************************************************/
 // Main DCO amplitude-compensation calibration entry point.
-// For each DCO:
-//  - Optionally find PW center (for even-indexed oscillators),
-//  - Run calibrate_DCO() to build a [freq -> range PWM] table,
-//  - Persist that table via update_FS_voice().
+// Monosynth: calibrate shared PW on voice 0 once, then for each oscillator
+// run calibrate_DCO() to build a [freq -> range PWM] table and persist via update_FS_voice().
 void DCO_calibration() {
 
-  // TURN OFF ALL OSCILLATORS and reset PW for even voices.
+  // TURN OFF ALL OSCILLATORS and park shared PW voice.
   disable_all_oscillators_and_range_pwm();
+
+  // PW is per-voice (monosynth: voice 0 only). Calibrate once, then amp-comp per osc.
+  currentDCO = 0;
+  restart_DCO_calibration();
+  DCO_calibration_current_note = manual_DCO_calibration_start_note;
+  VOICE_NOTES[0] = DCO_calibration_current_note;
+  find_PW_center(0);
+  find_PW_limit_v2(PW_LIMIT_LOW);
+  find_PW_limit_v2(PW_LIMIT_HIGH);
+  pwm_set_chan_level(PW_PWM_SLICES[0], pwm_gpio_to_channel(PW_PINS[0]), PW_CENTER[0]);
+  PW[0] = PW_CENTER[0];
 
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
     currentDCO = i;
@@ -148,29 +127,6 @@ void DCO_calibration() {
 
     ampCompCalibrationVal = initManualAmpCompCalibrationVal[currentDCO] + manualCalibrationOffset[currentDCO];
     pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], pwm_gpio_to_channel(RANGE_PINS[currentDCO]), ampCompCalibrationVal);
-
-    DCO_calibration_current_note = manual_DCO_calibration_start_note;
-    VOICE_NOTES[0] = DCO_calibration_current_note;
-
-    if ((currentDCO % 2) == 0) {
-      // For each voice (even-indexed DCO), calibrate PW center, low limit,
-      // and high limit using the shared PW search routines.
-      // Mode 0 = low note PW center (used for both limits as well).
-      find_PW_center(0);
-      find_PW_limit_v2(PW_LIMIT_LOW);
-      find_PW_limit_v2(PW_LIMIT_HIGH);
-
-      // After PW calibration, set PW to the calibrated center for this voice
-      // so that subsequent DCO amplitude calibration runs from a good PW,
-      // and keep PW[] in sync for debug logging.
-      pwm_set_chan_level(PW_PWM_SLICES[currentDCO / 2],
-                         pwm_gpio_to_channel(PW_PINS[currentDCO / 2]),
-                         PW_CENTER[currentDCO / 2]);
-      PW[currentDCO / 2] = PW_CENTER[currentDCO / 2];
-    } else {
-      DCO_calibration_current_note = DCO_calibration_start_note;
-      VOICE_NOTES[0] = DCO_calibration_current_note;
-    }
 
     DCO_calibration_current_note = DCO_calibration_start_note;
     VOICE_NOTES[0] = DCO_calibration_current_note;
@@ -192,20 +148,13 @@ void DCO_calibration() {
     double dutyErrorFraction = 0.001;
     calibrate_DCO(ctx, dutyErrorFraction);
 
-    for (int i = 0; i < chanLevelVoiceDataSize; i++) {
-      Serial.println(calibrationData[i]);
+    for (int j = 0; j < chanLevelVoiceDataSize; j++) {
+      Serial.println(calibrationData[j]);
     }
 
     update_FS_voice(currentDCO);
 
     Serial.println((String) "DCO " + currentDCO + (String) " calibration finished.");
-
-    // if ((currentDCO % 2) == 0) {
-    //   //Falta agregar que use los nuevos datos antes de encontrar el centro
-    //   find_PW_center(1);
-    // find_PW_limit(PW_LIMIT_LOW);
-    // find_PW_limit(PW_LIMIT_HIGH);
-    // }
   }
   calibrationFlag = false;
   init_FS();
@@ -257,12 +206,8 @@ void restart_DCO_calibration() {
   delay(100);
 
   DCO_calibration_difference = 4000;
-  lastDCODifference = 50000;
-  lastGapFlipCount = 0;
-  lastPIDgap = 50000;
   bestGap = 50000;
   bestCandidate = 50000;
-  lastampCompCalibrationVal = 0;
   edgeDetectionLastTime = 0;
   PIDMinGapCounter = 0;
   pulseCounter = 0;
@@ -282,12 +227,8 @@ static uint16_t find_PW_for_target_duty(double targetDutyFraction,
                                         uint16_t pwMax) {
 
   DCO_calibration_difference = 4000;
-  lastDCODifference = 50000;
-  lastGapFlipCount = 0;
-  lastPIDgap = 50000;
   bestGap = 50000;
   bestCandidate = 50000;
-  lastampCompCalibrationVal = 0;
   edgeDetectionLastTime = 0;
   PIDMinGapCounter = 0;
   pulseCounter = 0;
@@ -343,11 +284,11 @@ static uint16_t find_PW_for_target_duty(double targetDutyFraction,
       break;
     }
 
-    pwm_set_chan_level(PW_PWM_SLICES[currentDCO / 2],
-                       pwm_gpio_to_channel(PW_PINS[currentDCO / 2]),
+    pwm_set_chan_level(PW_PWM_SLICES[0],
+                       pwm_gpio_to_channel(PW_PINS[0]),
                        pw);
     // Keep PW[] and debug tracker in sync so GAP logs show the actual PW tested.
-    PW[currentDCO / 2]        = pw;
+    PW[0]        = pw;
     g_lastPWMeasurementRaw    = pw;
     delay(30);
 
@@ -453,10 +394,10 @@ static uint16_t find_PW_for_target_duty(double targetDutyFraction,
           double t = fabs(prevGapDiff) / denom;  // weight towards the closer side
           uint16_t pwEst = (uint16_t)((double)prevPW + ((double)(pw - prevPW) * t));
           if (pwEst >= pwMin && pwEst <= pwMax) {
-            pwm_set_chan_level(PW_PWM_SLICES[currentDCO / 2],
-                               pwm_gpio_to_channel(PW_PINS[currentDCO / 2]),
+            pwm_set_chan_level(PW_PWM_SLICES[0],
+                               pwm_gpio_to_channel(PW_PINS[0]),
                                pwEst);
-            PW[currentDCO / 2]     = pwEst;
+            PW[0]     = pwEst;
             g_lastPWMeasurementRaw = pwEst;
             delay(30);
             GapMeasurement gmEst = measure_gap(2);
@@ -521,10 +462,10 @@ static uint16_t find_PW_for_target_duty(double targetDutyFraction,
         break;
       }
 
-      pwm_set_chan_level(PW_PWM_SLICES[currentDCO / 2],
-                         pwm_gpio_to_channel(PW_PINS[currentDCO / 2]),
+      pwm_set_chan_level(PW_PWM_SLICES[0],
+                         pwm_gpio_to_channel(PW_PINS[0]),
                          pw);
-      PW[currentDCO / 2]     = pw;
+      PW[0]     = pw;
       g_lastPWMeasurementRaw = pw;
       delay(30);
 
@@ -561,10 +502,10 @@ static uint16_t find_PW_for_target_duty(double targetDutyFraction,
       }
 
       uint16_t pwMid = (uint16_t)((pwLow + pwHigh) / 2);
-      pwm_set_chan_level(PW_PWM_SLICES[currentDCO / 2],
-                         pwm_gpio_to_channel(PW_PINS[currentDCO / 2]),
+      pwm_set_chan_level(PW_PWM_SLICES[0],
+                         pwm_gpio_to_channel(PW_PINS[0]),
                          pwMid);
-      PW[currentDCO / 2]     = pwMid;
+      PW[0]     = pwMid;
       g_lastPWMeasurementRaw = pwMid;
       delay(30);
 
@@ -663,7 +604,7 @@ static uint16_t find_PW_for_target_duty(double targetDutyFraction,
                          (String)" DCO=" + currentDCO +
                          (String)" bestGap=" + bestAbs +
                          (String)"us (> " + (double)targetGap * 10.0 +
-                         (String)"us); keeping PW_center=" + PW_CENTER[currentDCO / 2]);
+                         (String)"us); keeping PW_center=" + PW_CENTER[0]);
         }
         return PWCalibrationVal;
       }
@@ -683,10 +624,10 @@ static uint16_t find_PW_for_target_duty(double targetDutyFraction,
       const int kMaxLockInTries = 8;
 
       for (int li = 0; li < kMaxLockInTries && !lockedIn; ++li) {
-        pwm_set_chan_level(PW_PWM_SLICES[currentDCO / 2],
-                           pwm_gpio_to_channel(PW_PINS[currentDCO / 2]),
+        pwm_set_chan_level(PW_PWM_SLICES[0],
+                           pwm_gpio_to_channel(PW_PINS[0]),
                            chosenPW);
-        PW[currentDCO / 2]     = chosenPW;
+        PW[0]     = chosenPW;
         g_lastPWMeasurementRaw = chosenPW;
         delay(30);
 
@@ -737,10 +678,10 @@ static uint16_t find_PW_for_target_duty(double targetDutyFraction,
           const int kMaxLocalLockInTries = 8;
 
           for (int lli = 0; lli < kMaxLocalLockInTries && !localLocked; ++lli) {
-            pwm_set_chan_level(PW_PWM_SLICES[currentDCO / 2],
-                               pwm_gpio_to_channel(PW_PINS[currentDCO / 2]),
+            pwm_set_chan_level(PW_PWM_SLICES[0],
+                               pwm_gpio_to_channel(PW_PINS[0]),
                                testPW);
-            PW[currentDCO / 2]     = testPW;
+            PW[0]     = testPW;
             g_lastPWMeasurementRaw = testPW;
             delay(30);
 
@@ -809,7 +750,7 @@ static uint16_t find_PW_for_target_duty(double targetDutyFraction,
       Serial.println((String)"[PW_CENTER_ABORT] note=" + DCO_calibration_current_note +
                      (String)" DCO=" + currentDCO +
                      (String)" all candidates failed lock-in; keeping PW_center=" +
-                     PW_CENTER[currentDCO / 2]);
+                     PW_CENTER[0]);
     }
     return PWCalibrationVal;
   } else {
@@ -853,18 +794,18 @@ void find_PW_center(uint8_t mode) {
   
 
   if (firstTuneFlag == true) {
-    PW[currentDCO / 2] = DIV_COUNTER_PW / 2;
+    PW[0] = DIV_COUNTER_PW / 2;
     PWCalibrationVal = DIV_COUNTER_PW / 2;
-    PW_CENTER[currentDCO / 2] = DIV_COUNTER_PW / 2;
+    PW_CENTER[0] = DIV_COUNTER_PW / 2;
   } else {
 
-    PW[currentDCO / 2] = PW_CENTER[currentDCO / 2];
-    PWCalibrationVal = PW_CENTER[currentDCO / 2];
+    PW[0] = PW_CENTER[0];
+    PWCalibrationVal = PW_CENTER[0];
   }
   // Center the starting PW
-  pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO / 2],
-                     pwm_gpio_to_channel(RANGE_PINS[currentDCO / 2]),
-                     PW[currentDCO / 2]);
+  pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO],
+                     pwm_gpio_to_channel(RANGE_PINS[currentDCO]),
+                     PW[0]);
 
   voice_task_autotune(voiceTaskMode, ampCompCalibrationVal);
 
@@ -875,15 +816,15 @@ void find_PW_center(uint8_t mode) {
     DIV_COUNTER_PW
   );
   Serial.println("PW center found !!!");
-  update_FS_PWCenter(currentDCO / 2, centerPW);
-  PW_CENTER[currentDCO / 2] = centerPW;
+  update_FS_PWCenter(0, centerPW);
+  PW_CENTER[0] = centerPW;
 
   // Apply the newly found PW center immediately to the hardware so that the
   // effect is visible on the pulse waveform as soon as calibration finishes.
-  pwm_set_chan_level(PW_PWM_SLICES[currentDCO / 2],
-                     pwm_gpio_to_channel(PW_PINS[currentDCO / 2]),
+  pwm_set_chan_level(PW_PWM_SLICES[0],
+                     pwm_gpio_to_channel(PW_PINS[0]),
                      centerPW);
-  PW[currentDCO / 2]        = centerPW;
+  PW[0]        = centerPW;
   g_lastPWMeasurementRaw    = centerPW;
 }
 
@@ -1118,7 +1059,7 @@ void find_PW_limit_v2(PWLimitDir dir) {
   double freqHz   = (double)sNotePitches[DCO_calibration_current_note - 12];
   double periodUs = (freqHz > 0.0) ? (1000000.0 / freqHz) : 0.0;
 
-  uint8_t  voiceIdx = currentDCO / 2;
+  uint8_t  voiceIdx = 0;
   uint16_t centerPW = PW_CENTER[voiceIdx];
 
   // Direction-dependent target duty HIGH (porcentaje en nivel alto).

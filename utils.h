@@ -1,8 +1,8 @@
 #ifndef __UTILS_H__
 #define __UTILS_H__
 
-
-long map(long x, long in_min, long in_max, long out_min, long out_max);
-char * uintToStr( const uint64_t num, char *str );
+uint16_t linearToLogarithmic(uint16_t linearValue, float base, uint16_t maxValue);
+float expConverterFloat(uint16_t readingValue, uint16_t curve);
+uint16_t expConverter(uint16_t readingValue, uint16_t curve);
 
 #endif

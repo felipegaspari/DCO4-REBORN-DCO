@@ -23,7 +23,7 @@ Active headers: `autotune.h` (includes `autotune_constants.h`, `autotune_context
   - `DCOCalibrationContext` – a small context struct grouping the main calibration state for `calibrate_DCO`.
   - `autotune_measurement.h` – wrapper around `find_gap()` returning a structured `GapMeasurement`.
   - Small helper functions to:
-    - Turn oscillators off and reset PW center (`disable_all_oscillators_and_range_pwm`, `reset_even_pw_to_center`).
+    - Turn oscillators off and reset PW center (`disable_all_oscillators_and_range_pwm`, `reset_pw_to_DIV_COUNTER_PW`).
     - Measure gap for a given PWM (`measure_gap_for_amp`).
     - Detect sign changes in the duty error (`did_sign_change`).
     - Evaluate neighbour measurements (`update_best_from_neighbours`).
@@ -73,7 +73,7 @@ Defines **global state** used by autotune, now with clearer comments:
 Holds **PID controller state** for legacy calibration routines, now documented:
 
 - Main variables: `PIDSetpoint`, `PIDInput`, `PIDOutput`.
-- Tunings: `aggKp`, `midKp`, `consKp` plus `PIDKMultiplier`.
+- Tunings: `consKp` / `consKi` / `consKd` plus `PIDKMultiplier` (runtime `SetTunings` in search paths).
 - Search helpers: `PIDMinGap`, `PIDMinGapCounter`, `bestGap`, `bestCandidate`.
 - Output bounds: `PIDOutputLowerLimit`, `PIDOutputHigherLimit`, `PIDLimitsFormula`.
 - Timing: `sampleTime`, `PIDComputeTimer`.
@@ -138,9 +138,8 @@ Main DCO autotune orchestration. Key pieces after refactor:
       - Sets PIO SM clock divider and pulls.
       - Sets range PWM channel to 0.
     - Used wherever a global “all off” state is needed.
-  - `static void reset_even_pw_to_center()`:
-    - For each even voice:
-      - Sets `PW[i] = DIV_COUNTER_PW / 2` and writes it via PWM.
+  - `static void reset_pw_to_DIV_COUNTER_PW()`:
+    - Parks shared PW PWM channels at max wrap (`DIV_COUNTER_PW`).
     - Used to ensure a known PW configuration before calibration.
 
 - **`init_DCO_calibration()`** (legacy):
@@ -148,27 +147,20 @@ Main DCO autotune orchestration. Key pieces after refactor:
   - Initializes `calibrationData`, timers, PID bounds.
   - Now uses:
     - `disable_all_oscillators_and_range_pwm();`
-    - `reset_even_pw_to_center();`
+    - `reset_pw_to_DIV_COUNTER_PW();`
   - Kept for compatibility; main path uses `DCO_calibration()` + `calibrate_DCO`.
 
 - **`DCO_calibration()`** – main entry point:
   - Uses helpers:
     - `disable_all_oscillators_and_range_pwm();`
-    - `reset_even_pw_to_center();`
-  - For each DCO:
+    - `reset_pw_to_DIV_COUNTER_PW();`
+  - Calibrates shared PW on voice 0 once (`find_PW_center` / `find_PW_limit_v2`), then for each oscillator:
     - Sets `currentDCO`.
     - Calls `restart_DCO_calibration()` to reset state and `calibrationData` header.
     - Sets `ampCompCalibrationVal` from `initManualAmpCompCalibrationVal + manualCalibrationOffset`.
-    - For even DCOs:
-      - Calls `find_PW_center(0)` to locate PW center.
-    - For odd DCOs:
-      - Resets `DCO_calibration_current_note` and `VOICE_NOTES[0]`.
-    - Builds a `DCOCalibrationContext ctx`:
-      - Binds `currentDCO`, `DCO_calibration_current_note`, `calibrationData`, `manualCalibrationOffset`, `initManualAmpCompCalibrationVal`.
-    - Calls `calibrate_DCO(ctx)` to fill the table.
+    - Builds a `DCOCalibrationContext ctx` and calls `calibrate_DCO(ctx)` to fill the table.
     - Persists via `update_FS_voice(currentDCO)`.
-    - Calls `restart_DCO_calibration()` again before the next DCO.
-  - After all DCOs:
+  - After all oscillators:
     - `calibrationFlag = false;`
     - `init_FS();`
     - `precompute_amp_comp_for_engine();`

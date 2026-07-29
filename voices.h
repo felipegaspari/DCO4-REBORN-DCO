@@ -22,32 +22,32 @@ enum PortamentoMode : uint8_t {
 };
 uint8_t portamento_mode = PORTA_MODE_SLEW;
 
-// Portamento state in Q24 (Hz * 2^24)
-int64_t portamento_start_q24[NUM_VOICES_TOTAL * 2];
-int64_t portamento_stop_q24[NUM_VOICES_TOTAL * 2];
-int64_t portamento_cur_freq_q24[NUM_VOICES_TOTAL * 2];
+// Portamento state in Q24 (Hz * 2^24) — one slot per oscillator
+int64_t portamento_start_q24[NUM_OSCILLATORS];
+int64_t portamento_stop_q24[NUM_OSCILLATORS];
+int64_t portamento_cur_freq_q24[NUM_OSCILLATORS];
 // per-microsecond step in Q24
-int64_t freqPortaStep_q24[NUM_VOICES_TOTAL * 2];
+int64_t freqPortaStep_q24[NUM_OSCILLATORS];
 
 // Portamento state in note-space (Q16 semitones) for slew-rate mode
-int32_t porta_note_start_q16[NUM_VOICES_TOTAL * 2];
-int32_t porta_note_stop_q16[NUM_VOICES_TOTAL * 2];
-int32_t porta_note_cur_q16[NUM_VOICES_TOTAL * 2];
-int32_t porta_note_step_q16[NUM_VOICES_TOTAL * 2];
+int32_t porta_note_start_q16[NUM_OSCILLATORS];
+int32_t porta_note_stop_q16[NUM_OSCILLATORS];
+int32_t porta_note_cur_q16[NUM_OSCILLATORS];
+int32_t porta_note_step_q16[NUM_OSCILLATORS];
 
 // Float portamento state for the float engine (Hz and semitone domains)
 #ifdef USE_FLOAT_VOICE_TASK
 // Time-based mode: linear in frequency (Hz)
-float porta_freq_start_f[NUM_VOICES_TOTAL * 2];
-float porta_freq_stop_f [NUM_VOICES_TOTAL * 2];
-float porta_freq_step_f [NUM_VOICES_TOTAL * 2];  // Hz per microsecond
-float porta_freq_cur_f  [NUM_VOICES_TOTAL * 2];
+float porta_freq_start_f[NUM_OSCILLATORS];
+float porta_freq_stop_f [NUM_OSCILLATORS];
+float porta_freq_step_f [NUM_OSCILLATORS];  // Hz per microsecond
+float porta_freq_cur_f  [NUM_OSCILLATORS];
 
 // Slew-rate mode: linear in note-space (semitones)
-float porta_note_start_f[NUM_VOICES_TOTAL * 2];
-float porta_note_stop_f [NUM_VOICES_TOTAL * 2];
-float porta_note_cur_f  [NUM_VOICES_TOTAL * 2];
-float porta_note_step_f [NUM_VOICES_TOTAL * 2];  // semitones per microsecond
+float porta_note_start_f[NUM_OSCILLATORS];
+float porta_note_stop_f [NUM_OSCILLATORS];
+float porta_note_cur_f  [NUM_OSCILLATORS];
+float porta_note_step_f [NUM_OSCILLATORS];  // semitones per microsecond
 #endif
 
 uint8_t highestNote = 124;
@@ -79,7 +79,7 @@ int32_t slopeQ8[multiplierTableSize - 1];
 int32_t slopeQ12[multiplierTableSize - 1];
 #endif
 // Per-DCO segment cache for interpolation (stores last 'low' index)
-int16_t interpSegCache[NUM_VOICES_TOTAL * 2];
+int16_t interpSegCache[NUM_OSCILLATORS];
 
 static const uint16_t maxFrequency = 4000;
 

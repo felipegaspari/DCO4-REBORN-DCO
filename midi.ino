@@ -138,7 +138,6 @@ void note_off(uint8_t note) {
       // gpio_put(GATE_PINS[i], 0);
       // VOICE_NOTES[i] = 0;
       VOICES[i] = 0;
-      VOICES_LAST[i] = note;
       noteEnd[i] = 1;
       noteStart[i] = 0;
       serial_send_note_off(i);

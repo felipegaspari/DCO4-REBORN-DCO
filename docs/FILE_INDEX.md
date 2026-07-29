@@ -1,4 +1,4 @@
-# DCO4_DCO File Index
+# DCO File Index
 
 Purpose of **every file**, and for each source function: **what it does**, **who calls it**, and **when**.
 
@@ -54,9 +54,9 @@ flowchart TD
 
 ## 1. Entry / build / globals
 
-### `DCO4_DCO.ino`
+### `DCO.ino`
 
-Main sketch: dual-core setup/loops, USB init, engine build flags.
+Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine build flags. Monosynth: 1 voice × 3 oscillators.
 
 **Functions**
 - `setup()` — Core 0 init: serial, MIDI, LFOs, pins, USB strings, cal pin.
@@ -126,10 +126,6 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `voice_task_float()` — Float hot path (current default).
   - **Called from:** `voice_task_main()` when `USE_FLOAT_VOICE_TASK`.
   - **When:** Every play-path `loop1` iter (current checkout).
-- `voice_task_simple()` — Legacy simplified float path.
-  - **Called from:** **none (dead)** — call in `loop1` is commented out.
-- `voice_task_debug()` — Debug float path.
-  - **Called from:** **none (dead)** — call in `loop1` is commented out.
 - `voice_task_autotune()` — Drive one osc for calibration measurement.
   - **Called from:** `loop1()` (manual cal); `measure_gap_for_amp` / PW & freq search helpers in `PID.ino` / `autotune.ino`; unreachable call in `setup1`.
   - **When:** Manual-cal every `loop1`; nested during auto-cal measurements.
@@ -186,16 +182,12 @@ PIO load and SM setup.
 - `init_pio()` — Load PIO program; `start_voice_sms()`.
   - **Called from:** `setup1()`.
   - **When:** Boot Core1.
-- `start_voice_sms()` — Per-DCO `init_sm_sync` + preload pulse length.
+- `start_voice_sms()` — Per-osc `init_sm_sync` + preload pulse length (OSC1–3 on pio0/1/2 SM0).
   - **Called from:** `init_pio()`.
   - **When:** Boot.
-- `init_sm()` — Basic SM init via `init_sm_pin`.
-  - **Called from:** **none (dead)** — live path uses `init_sm_sync`.
 - `init_sm_sync()` — Production SM init via `frequency_sync_4_jumps`.
   - **Called from:** `start_voice_sms()`.
   - **When:** Boot.
-- `set_frequency()` — Simple test frequency setter.
-  - **Called from:** **none (dead)**.
 
 ### `pico-dco.pio`
 
@@ -255,7 +247,7 @@ Amp-comp tables + dual-engine precompute/facade.
   - **Called from:** `setup1()`; end of `DCO_calibration()`.
   - **When:** Boot Core1; end of auto-cal.
 - `get_chan_level_for_engine()` — Hz → PWM via float or Q8 lookup.
-  - **Called from:** `voice_task_float()`, `voice_task_simple/debug`, `voice_task_autotune()`.
+  - **Called from:** `voice_task_float()`, `voice_task_autotune()`.
   - **When:** Float play path / cal / dead debug paths.
 
 ---
@@ -344,22 +336,16 @@ Constants only. **No function definitions.**
 ### `autotune.ino`
 
 **Functions**
-- `disable_all_oscillators_and_range_pwm()` — Mute oscs / zero range PWM (calls `reset_even_pw_to_DIV_COUNTER_PW`).
+- `disable_all_oscillators_and_range_pwm()` — Mute oscs / park RANGE GPIO; calls `reset_pw_to_DIV_COUNTER_PW`.
   - **Called from:** `init_DCO_calibration()`, `DCO_calibration()`, `restart_DCO_calibration()`.
   - **When:** Cal setup (note `init_DCO_calibration` unreachable at boot).
-- `reset_even_pw_to_center()` — PW → stored center.
-  - **Called from:** **none (dead)**.
-- `reset_even_pw_to_0()` — PW → 0.
-  - **Called from:** **none (dead)**.
-- `reset_even_pw_to_DIV_COUNTER_PW()` — PW → max wrap.
+- `reset_pw_to_DIV_COUNTER_PW()` — Shared PW PWM → max wrap.
   - **Called from:** `disable_all_oscillators_and_range_pwm()`.
   - **When:** Cal setup.
-- `reset_even_pw_to_mid_point()` — PW → mid wrap.
-  - **Called from:** **none (dead)**.
 - `init_DCO_calibration()` — Legacy/boot cal kickoff.
   - **Called from:** `setup1()` only if `calibrationFlag` — but flag is set `false` just above → **unreachable**.
   - **When:** Would be boot; currently never.
-- `DCO_calibration()` — Full auto-cal: PW center/limits, `calibrate_DCO`, FS write, reload, precompute; clears `calibrationFlag`.
+- `DCO_calibration()` — Full auto-cal: PW center/limits once on voice 0, then `calibrate_DCO` + FS write per osc 0..2, reload, precompute; clears `calibrationFlag`.
   - **Called from:** `loop1()` when `calibrationFlag && !manualCalibrationFlag`.
   - **When:** Auto-cal (blocking one-shot).
 - `restart_DCO_calibration()` — Reset state between oscillators.
@@ -746,7 +732,7 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 
 | Goal | Start here |
 |------|------------|
-| Engine float/fixed | `DCO4_DCO.ino` flags → `voice_task_main` |
+| Engine float/fixed | `DCO.ino` flags → `voice_task_main` |
 | New ParamId | `params_def.h` → `params.ino` table (only call path) |
 | Serial command | `serial_protocol.h` + `Serial.ino` handlers ← `serial_STM32_task` in `loop` |
 | Start auto-cal | Param → `apply_param_calibration_flag` → `loop1` → `DCO_calibration` |

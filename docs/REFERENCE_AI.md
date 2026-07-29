@@ -1,6 +1,6 @@
-## DCO4_DCO Project: AI Codebase Reference
+## DCO Project: AI Codebase Reference
 
-This document is a **semantic map** of the firmware for the DCO4 board (RP2040 / RP2350-class, 4 voices, 2 DCOs per voice).  
+This document is a **semantic map** of the DCO board firmware for the DCO3 monosynth (RP2040 / RP2350-class, **1 voice × 3 oscillators**).  
 It explains what each file does and how the main subsystems (voices, modulation, calibration, storage, I/O) fit together.
 
 Related docs:
@@ -14,7 +14,7 @@ Related docs:
 
 ## 1. Top-Level Sketch, Cores and Aggregated Includes
 
-- **`DCO4_DCO.ino`**  
+- **`DCO.ino`**  
   - Main application for the RP2040 / RP2350.  
   - Runs on both cores using the Arduino dual-core API:
     - `setup()` / `loop()` (core 0): USB/serial/MIDI I/O, LFO evaluation, cross‑core detune FIFO.
@@ -23,7 +23,7 @@ Related docs:
     - `USE_FLOAT_ENGINE` (current default **ON**) → defines `USE_FLOAT_VOICE_TASK` and `USE_FLOAT_AMP_COMP`.
     - Fixed-path knobs (active when float voice task is off): `PITCH_USE_RATIO_Q16`, `PITCH_INTERP_USE_Q12` / `Q8`, `HIGH_PRECISION_CLKDIV`.
     - See [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) for precision vs speed trade-offs.
-  - Configures USB product strings in `setup()` (via Adafruit TinyUSB), toggles board pins (23/24) for hardware fixes, and selects DCO calibration mode.
+  - Configures USB product strings in `setup()` (via Adafruit TinyUSB; product **DCO3-MONO**), toggles board pins (23/24) for hardware fixes, and selects DCO calibration mode.
   - Core‑0 pushes `DETUNE_INTERNAL_q24` (LFO1 detune) through `rp2040.fifo`; core‑1 pops it and uses it inside the voice task (float path converts Q24 → float each frame).
   - `loop1()` calls `voice_task_main()` (dispatch to float or fixed). Optionally prints detailed timing statistics when `RUNNING_AVERAGE` is enabled.
 
@@ -33,13 +33,13 @@ Related docs:
 
 - **`globals.h`**  
   - System‑wide constants and state:
-    - Voice/DCO counts: `NUM_VOICES_TOTAL = 4`, `NUM_OSCILLATORS = 8`.
+    - Voice/osc counts: `NUM_VOICES_TOTAL = 1`, `NUM_OSCILLATORS = 3` (monosynth; poly scaffolding kept).
     - Clock and PIO timing constants (`sysClock` = 225000 kHz → `sysClock_Hz`, `pioPulseLength`, OSR chunk sizes, timing overheads).
-    - Fixed‑point detune and pitch‑bend multipliers (`DETUNE_INTERNAL_q24`, `DETUNE_INTERNAL2_q24`, `pitchBendMultiplier_q24`).
-    - Global voice arrays (`VOICE_NOTES`, `VOICES`, `note_on_flag`, `PW`, etc.).
-    - Hardware pin mappings for reset, range and PW PWM pins and PIO/SM routing (active map: **WEACT**; Pico variant commented).
+    - Fixed‑point detune and pitch‑bend multipliers (`DETUNE_INTERNAL_q24`, `DETUNE_INTERNAL2_q24`, `DETUNE_INTERNAL3_q24`, `pitchBendMultiplier_q24`).
+    - Global voice arrays (`VOICE_NOTES`, `VOICES`, `note_on_flag`, shared `PW[0]`, etc.).
+    - Hardware pin mappings: RESET/RANGE for OSC1–3, single `PW_PINS[0]`; `VOICE_TO_PIO={0,1,2}` / `VOICE_TO_SM={0,0,0}` (provisional Pico 2 / WEACT-derived pins).
     - `DCO_calibration_pin = 10`; `ENABLE_FS_CALIBRATION`.
-    - Shared PIO array `pio[2]`, timer variables, MIDI pitch bend state and helper prototypes.
+    - Shared PIO array `pio[3]`, timer variables, MIDI pitch bend state and helper prototypes.
 
 ---
 
@@ -59,39 +59,36 @@ Related docs:
     - `voice_task_main()` → `voice_task_float()` **or** `voice_task()` depending on `USE_FLOAT_VOICE_TASK`.
 
     - **`voice_task()`** (fixed hot path, when `!USE_FLOAT_VOICE_TASK`):
-      - For each active MIDI voice (mapped to 2 DCOs):
+      - For each active MIDI voice (monosynth: one voice driving **OSC1/OSC2/OSC3**):
         - Computes per‑voice portamento in either **time‑based frequency space** or **slew‑rate note space** (Q24 / Q16).
         - Combines fixed‑point modulators:
           - Pitch‑bend (`calcPitchbend_q24`).
           - LFO1 detune (`DETUNE_INTERNAL_FIFO_q24` from the FIFO).
-          - Unison detune pattern.
-          - Per‑DCO drift LFO (`LFO_DRIFT_LEVEL`) with analog drift amount.
-          - ADSR‑to‑detune in Q24 using `ADSR1toDETUNE1_scale_q24` and `linToLogLookup`.
+          - Unison detune per osc (`OSC_UNISON_STEP` = `{0, +1, -1}`; optional poly voice-index term if `NUM_VOICES_TOTAL > 1`).
+          - Per‑osc drift LFO (`LFO_DRIFT_LEVEL`) with analog drift amount.
+          - ADSR‑to‑detune in Q24 using `ADSR1toDETUNE1_scale_q24` and `linToLogLookup` (select includes OSC3 / all).
         - Evaluates a **precomputed pitch multiplier table** using integer interpolation (`interpolateRatioQ16_cached` or `interpolatePitchMultiplierIntQ16_cached` + Q8/Q12/Q20 slope modes) to map summed modifiers to a frequency ratio. Flag behaviour: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
-        - Produces final DCO frequencies in **Q24 Hz**, then clock‑dividers via `HIGH_PRECISION_CLKDIV`:
+        - Produces final osc frequencies in **Q24 Hz**, then clock‑dividers via `HIGH_PRECISION_CLKDIV`:
           - **1**: 64‑bit divide on full Q24 Hz (~4 µs/voice, preferred low‑note accuracy).
           - **0**: compact **Q4 Hz** then 32‑bit divide (~1 µs/voice).
-          - Corrected OSR clock dividers (`clk_div1`, `clk_div2`) including OSC2 phase‑alignment support.
-        - Performs **amplitude compensation** via `get_chan_level_lookup_fast()` (Q8 Hz domain) using precomputed quadratic windows (`amp_comp.h`).
-        - Writes new dividers and amplitude levels into the PIO state machines and range PWM channels.
-        - At 99 µs intervals (`timer99microsFlag`), updates PW PWM per voice, combining ADSR1 and LFO2 modulation in integer math and using `get_PW_level_interpolated()` to map raw PW counters into calibrated duty levels.
+          - Corrected OSR clock dividers for OSC1–3 including OSC2 phase‑alignment; OSC3 free-running.
+        - Performs **amplitude compensation** via `get_chan_level_lookup_fast()` (Q8 Hz domain) using precomputed quadratic windows (`amp_comp.h`) → **RANGE PWM** (not PIO amp).
+        - Writes new dividers into PIO SM0 on pio0/1/2 and amp levels into range PWM channels.
+        - At 99 µs intervals (`timer99microsFlag`), updates shared PW PWM, combining ADSR1 and LFO2 modulation in integer math and using `get_PW_level_interpolated()`.
 
     - **`voice_task_float()`** (float hot path, when `USE_FLOAT_VOICE_TASK` — **current default**):
       - Same overall structure (portamento → modifiers → ratio → clkdiv → amp → PIO/PWM/PW), but in **Hz / float**:
-        - Float portamento state; pitch bend / LFO / ADSR / drift converted from Q24 globals where needed.
+        - Float portamento state; pitch bend / LFO / ADSR / drift / OSC3 interval+detune converted from Q24 globals where needed.
         - `interpolateRatioFloat_cached` (requires `PITCH_USE_RATIO_Q16`; the `#else` stub does not compile).
         - Clkdiv always `sysClock_Hz / freqHz` in float (`HIGH_PRECISION_CLKDIV` ignored).
         - Amp via `get_chan_level_for_engine()` → float or fixed facade depending on `USE_FLOAT_AMP_COMP`.
       - Details: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) §6.
 
-    - Reference/debug variants (not called from `loop1`):
-      - `voice_task_simple()` – legacy float‑based, simplified path.
-      - `voice_task_debug()` – float reference/debug implementation.
-      - `voice_task_gold_reference()` – **removed**; older docs may still mention it.
-    - Voice allocation helpers:
-      - `get_free_voice_sequential()` and `get_free_voice()` implement round‑robin and oldest‑voice‑steal strategies for poly/stack/unison modes.
-      - `setVoiceMode()` configures `NUM_VOICES` / `STACK_VOICES` for mono, 4‑voice poly and stacked modes.
-      - `setSyncMode()` reconfigures PIO sideset pins to implement different oscillator sync topologies and forces re‑trigger of all voices.
+    - Legacy `voice_task_simple` / `voice_task_debug` / gold reference: **removed** (see `_removed/` if needed).
+    - Voice allocation helpers (scaffolding; with `NUM_VOICES_TOTAL=1` they collapse to mono):
+      - `get_free_voice_sequential()` and `get_free_voice()` for poly/stack/unison modes.
+      - `setVoiceMode()` configures `NUM_VOICES` / `STACK_VOICES`.
+      - `setSyncMode()` reconfigures PIO sideset pins (OSC1↔OSC2 sync; OSC3 free-running) and forces re‑trigger.
     - Amplitude compensation helpers:
       - `get_chan_level_lookup_fast()` – optimized fixed‑point quadratic interpolation per DCO (when `!USE_FLOAT_AMP_COMP`), using cached window indices and Q28 reciprocals.
       - `get_chan_level_float()` / `get_chan_level_for_engine()` – float Hz path and engine-agnostic facade.
@@ -112,17 +109,16 @@ Related docs:
   - `frequency_sync_4_jumps_program` is the primary program used for production.
 
 - **`state_machines.h` / `state_machines.ino`**  
-  - `init_pio()` loads the PIO program into both PIO blocks and calls `start_voice_sms()`.
+  - `init_pio()` loads the PIO program into pio0/1/2 and calls `start_voice_sms()`.
   - `start_voice_sms()`:
-    - For each DCO, chooses the sideset pin (reset/sync pin) based on `syncMode`.
+    - For each oscillator, chooses the sideset pin (reset/sync pin) based on `syncMode` (OSC1↔OSC2; OSC3 free-running).
     - Calls `init_sm_sync()` to configure each state machine using the PIO program and the appropriate reset/sideset pins.
     - Preloads each SM with `pioPulseLength` and writes it to `pio_y` as the fixed high‑time base.
-  - `set_frequency()` – simple helper for test scenarios (not used in the main voice engine).
 
 - **`PWM.h` / `PWM.ino`**  
   - `init_pwm()` configures RP2040 PWM slices for:
-    - RANGE PWM (per DCO amplitude): `RANGE_PINS` mapped to `RANGE_PWM_SLICES`, `wrap = DIV_COUNTER`.
-    - PW PWM (per voice pulse width): `PW_PINS` mapped to `PW_PWM_SLICES`, `wrap = DIV_COUNTER_PW`.
+    - RANGE PWM (per oscillator amplitude): `RANGE_PINS` mapped to `RANGE_PWM_SLICES`, `wrap = DIV_COUNTER`.
+    - Shared PW PWM (voice 0): `PW_PINS` mapped to `PW_PWM_SLICES`, `wrap = DIV_COUNTER_PW`.
   - Provides the low‑level PWM targets used by both the voice task and calibration routines.
 
 ---
@@ -341,14 +337,10 @@ Related docs:
 
 - **`usb_descriptors.c`**  
   - USB MIDI device descriptors (much of the file is commented / legacy).  
-  - Product identity is also set from `setup()` (“FELA” / “DCO-4” style strings via TinyUSB APIs).
+  - Product identity is also set from `setup()` (USB product **DCO3-MONO** via TinyUSB APIs).
 
-- **`irq_tuner.h` / `irq_tuner.ino`**  
-  - Experimental/alternate DCO tuning method using IRQ‑based frequency measurement.  
-  - Currently not active in the main flow but kept as a future reference.
-
-- **`DCO4_DCO.code-workspace`**  
-  - Project workspace configuration for VSCode/Cursor (if present in the working tree).
+- **`irq_tuner.*`**  
+  - Experimental IRQ tuner — excised to `_removed/`; not in the live build.
 
 ---
 
@@ -366,17 +358,17 @@ These are **Arduino libraries** installed in the IDE / sketchbook `libraries` fo
 
 - `*.h` – Declarations, constants, global state and struct/class definitions.  
 - `*.ino` – Implementation files with function bodies and logic.  
-- Engine math flags – edit only the block at the top of `DCO4_DCO.ino`; see [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).  
+- Engine math flags – edit only the block at the top of `DCO.ino`; see [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).  
 - Shared serial/param headers – keep `ParamId` numbers stable across boards; see [`README_serial_and_params.md`](README_serial_and_params.md).
 
 ---
 
 ### Summary
 
-This firmware implements a **dual‑core DCO synthesizer** (RP2040 / RP2350-class) with:
+This firmware implements a **dual‑core 1-voice × 3-osc DCO monosynth** (RP2040 / RP2350-class) with:
 - A compile-time **float or fixed-point** voice engine (float is the current default) and matching amplitude-compensation paths — see [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
-- A table‑driven pitch path (per‑voice portamento, LFOs, drift, ADSR modulation) feeding PIO clock dividers and range/PW PWM.
-- Robust DCO and PWM calibration via edge‑timing (and optional PID), persisted in LittleFS.
+- A table‑driven pitch path (portamento, LFOs, drift, ADSR, OSC2/OSC3 interval+detune) feeding PIO clock dividers and RANGE/PW PWM.
+- Robust DCO and PW calibration via edge‑timing (and optional PID), persisted in LittleFS.
 - MIDI over USB and DIN, plus a high‑speed UART protocol to a main controller for parameters and UI.
 - Clean separation between the hot voice/control loops and slower calibration, storage and UI-facing code.
 
