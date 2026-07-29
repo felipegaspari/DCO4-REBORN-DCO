@@ -18,6 +18,10 @@ Branch baseline: `autotune-improvements` (refactored autotune / amp-comp), then 
 
 Poly/`setVoiceMode` scaffolding kept for a later paraphonic mode.
 
+## Hub mode (default after Phase 5)
+
+Default: Input on Serial2 + Screen on SerialPIO (see `DCO.ino`). Soft EnvVCA/EnvVCF always run; uncomment `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` / `ENABLE_MCP4728` for hardware writers. Legacy STM32 Mainboard: `#define ENABLE_LEGACY_MAINBOARD_LINK`. Docs: [`docs/MAINBOARD_ABSORPTION.md`](docs/MAINBOARD_ABSORPTION.md), [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md).
+
 ## Build
 
 ```bash
@@ -31,6 +35,10 @@ Main sketch: `DCO.ino`.
 
 ## Docs
 
-See `docs/` — especially `AUTOTUNE.md`, `SYSTEM_OVERVIEW.md`, `FILE_INDEX.md` (voice counts may still mention DCO4 in places; prefer this README for monosynth facts).
+See `docs/` — especially:
 
-Removed dead code (if any) lives under `_removed/` and is not compiled.
+- [`docs/PINOUT.md`](docs/PINOUT.md) — provisional hub + CV pin / UART map (Phase 0)
+- [`docs/MAINBOARD_ABSORPTION.md`](docs/MAINBOARD_ABSORPTION.md) — plan to absorb Mainboard into DCO
+- `AUTOTUNE.md`, `SYSTEM_OVERVIEW.md`, `FILE_INDEX.md` (some docs may still mention DCO4; prefer this README for monosynth facts)
+
+Removed dead code lives under `_removed/` and is not compiled.

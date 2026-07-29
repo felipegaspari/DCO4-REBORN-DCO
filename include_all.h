@@ -20,6 +20,9 @@
 #include "param_router.h"
 
 #include "globals.h"
+#include "cv_state.h"
+#include "cv_bezier.h"
+#include "cv_out.h"
 
 #include "FS.h"
 
@@ -36,6 +39,8 @@
 
 #include "LFO.h"
 #include "adsr.h"
+#include "wave_mux.h"
+#include "mcp4728_dco.h"
 
 #include "PID.h"
 #include "autotune.h"

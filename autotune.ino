@@ -1360,8 +1360,8 @@ void DCO_calibration_debug() {
   }
 
   // Send as a 32-bit PARAM_GAP_FROM_DCO value through the standard
-  // param protocol. Mainboard forwards this to the screen, which
-  // stores it in calibrationGap for the "GAP" display.
+  // param protocol. With ENABLE_SCREEN_UART this goes direct to Screen;
+  // otherwise Serial2 → Mainboard (which forwards to Screen).
   serialSendParam32(PARAM_GAP_FROM_DCO,
                     (int32_t)dutyErrorPercentTimes100);
 }

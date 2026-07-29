@@ -23,6 +23,24 @@
 // - For RP2350 (with FPU): leave defined to use the float-based engine.
 #define USE_FLOAT_ENGINE
 
+// ---------------------------------------------------------------------------
+// Serial hub (Phase 5 default) — DCO owns Input + Screen; no Mainboard peer.
+// For the old 4-board bench with STM32 Mainboard, uncomment:
+//   #define ENABLE_LEGACY_MAINBOARD_LINK
+// ---------------------------------------------------------------------------
+// #define ENABLE_LEGACY_MAINBOARD_LINK
+
+#ifndef ENABLE_LEGACY_MAINBOARD_LINK
+  #define ENABLE_INPUT_UART    // Serial2 GP20/21 = Input protocol
+  #define ENABLE_SCREEN_UART   // SerialPIO GP8/9 = Screen (gap 'x')
+#endif
+
+// Phase 3 CV hardware (provisional pins in globals.h / docs/PINOUT.md).
+// Leave commented on benches without filter/VCA/mux/DAC attached.
+// #define ENABLE_CV_OUTS
+// #define ENABLE_WAVE_MUX
+// #define ENABLE_MCP4728
+
 // Derived switches for the different subsystems:
 #ifdef USE_FLOAT_ENGINE
   // Use float-based voice task (pitch path, modifiers, clock-divider, etc.)
@@ -80,6 +98,8 @@
 #include "param_router.h"
 
 #include "globals.h"
+#include "cv_state.h"
+#include "cv_out.h"
 
 #include "FS.h"
 
@@ -96,6 +116,8 @@
 
 #include "LFO.h"
 #include "adsr.h"
+#include "wave_mux.h"
+#include "mcp4728_dco.h"
 
 #include "PID.h"
 #include "autotune.h"
@@ -153,6 +175,9 @@ void setup1() {
   init_FS();
 
   init_ADSR();
+  init_cv_out();
+  init_waveSelector();
+  init_MCP4728();
 
   // Select amplitude-compensation precompute based on engine type.
   precompute_amp_comp_for_engine();
@@ -179,7 +204,7 @@ void loop() {
 
   MIDI_USB.read();
   MIDI_SERIAL.read();
-  serial_STM32_task();
+  serial_panel_task();
 
   LFO1();
 
@@ -250,6 +275,7 @@ void loop1() {
       unsigned long t_loop1_ADSR_and_detune = micros();
 #endif
       ADSR_update();
+      update_CV_outs();
 
 #ifdef RUNNING_AVERAGE
       ra_loop1_ADSR_and_detune.addValue((float)(micros() - t_loop1_ADSR_and_detune));

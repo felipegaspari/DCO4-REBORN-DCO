@@ -3,6 +3,12 @@
 
 #include <mo-lfo.h>  // required for function generation
 
+// After Mainboard absorption, DCO is the sole LFO clock:
+//   LFO1 → pitch (FIFO Q24) + EnvVCA depth (LFO1toVCA)
+//   LFO2 → OSC2/3 detune + PW + EnvVCF depth (LFO2toVCF)
+//   drift LFOs → pitch drift + soft VCF_DRIFT
+// Do not run a second LFO engine on Mainboard in hub mode (Phase 5 archives it).
+
 //static constexpr uint16_t PWM_CC = 4096;
 static constexpr uint16_t LFO1_CC = 3400;
 static constexpr uint16_t LFO1_CC_HALF = LFO1_CC / 2;
@@ -32,7 +38,7 @@ float LFO_DRIFT_SPEED = 0.6;
 volatile int16_t LFO_DRIFT_LEVEL[NUM_OSCILLATORS];
 
 
-int16_t LFO1Level;
+volatile int16_t LFO1Level;  // Core0 write / Core1 CV read
 byte LFO1Waveform = 3;
 float LFO1Speed = 50;
 float LFO1toDCO = 0;

@@ -53,6 +53,7 @@ void note_on(uint8_t note, uint8_t velocity) {
   switch (voiceMode) {
     case 0:
       VOICE_NOTES[0] = note;
+      midi_velocity[0] = velocity;
       VOICES[0] = millis();
       note_on_flag[0] = 1;
       noteStart[0] = 1;
@@ -69,6 +70,7 @@ void note_on(uint8_t note, uint8_t velocity) {
           {
             if (VOICE_NOTES[i] == note) {
               VOICES[i] = millis();
+              midi_velocity[i] = velocity;
               note_on_flag[i] = 1;
               noteStart[i] = 1;
               serial_send_note_on(i, velocity, note - 36 + OSC1_interval);
@@ -81,6 +83,7 @@ void note_on(uint8_t note, uint8_t velocity) {
           uint8_t voice_num = get_free_voice();
           VOICES[voice_num] = millis();
           VOICE_NOTES[voice_num] = note;
+          midi_velocity[voice_num] = velocity;
           note_on_flag[voice_num] = 1;
           noteStart[voice_num] = 1;
           serial_send_note_on(voice_num, velocity, note - 36 + OSC1_interval);
@@ -93,6 +96,7 @@ void note_on(uint8_t note, uint8_t velocity) {
           {
             if (VOICE_NOTES[i] == note) {
               VOICES[i] = 1;
+              midi_velocity[i] = velocity;
               note_on_flag[i] = 1;
               noteStart[i] = 1;
               noteEnd[i] = 0;
@@ -105,6 +109,7 @@ void note_on(uint8_t note, uint8_t velocity) {
         uint8_t voice_num = get_free_voice_sequential();
         VOICES[voice_num] = 1;
         VOICE_NOTES[voice_num] = note;
+        midi_velocity[voice_num] = velocity;
         note_on_flag[voice_num] = 1;
         noteStart[voice_num] = 1;
         noteEnd[voice_num] = 0;
@@ -117,6 +122,7 @@ void note_on(uint8_t note, uint8_t velocity) {
       {
         VOICES[i] = 1;
         VOICE_NOTES[i] = note;
+        midi_velocity[i] = velocity;
         note_on_flag[i] = 1;
         noteStart[i] = 1;
         serial_send_note_on(i, velocity, note - 36 + OSC1_interval);
