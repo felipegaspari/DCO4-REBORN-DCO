@@ -31,8 +31,9 @@
 // #define ENABLE_LEGACY_MAINBOARD_LINK
 
 #ifndef ENABLE_LEGACY_MAINBOARD_LINK
-  #define ENABLE_INPUT_UART    // Serial2 GP20/21 = Input protocol
-  #define ENABLE_SCREEN_UART   // SerialPIO GP8/9 = Screen (gap 'x')
+  #define ENABLE_INPUT_UART    // Serial2 GP20/21 = Input protocol (panel + gap 'x')
+  // Opt-in only: direct Screen UART. Default hub relays gap via Input → Screen.
+  // #define ENABLE_SCREEN_UART   // SerialPIO GP8/9 = Screen (gap 'x')
 #endif
 
 // Phase 3 CV hardware (provisional pins in globals.h / docs/PINOUT.md).

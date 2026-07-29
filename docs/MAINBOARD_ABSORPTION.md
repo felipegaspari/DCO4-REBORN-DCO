@@ -25,7 +25,7 @@ flowchart LR
 
 | Core | Keep | Add | Remove |
 |------|------|-----|--------|
-| **Core0** (`setup`/`loop`) | USB MIDI, DIN MIDI (PIO or HW), LFO1/2 + drift sample, FIFO push LFO1→detune Q24 | **Input UART RX** (dense `'a'..'f'`, params), **Screen UART TX** (cal/gap `'x'`), optional Screen RX stub | `serial_STM32_task` / Mainboard `'n'`/`'o'` TX as envelope peer |
+| **Core0** (`setup`/`loop`) | USB MIDI, DIN MIDI (PIO or HW), LFO1/2 + drift sample, FIFO push LFO1→detune Q24 | **Input UART RX** (dense `'a'..'f'`, params) + gap/offset `'x'` TX; Screen via Input relay (opt-in direct Screen UART) | `serial_STM32_task` / Mainboard `'n'`/`'o'` TX as envelope peer |
 | **Core1** (`setup1`/`loop1`) | LittleFS, amp-comp, PIO voices, autotune/manual cal, **EnvDCO** (today’s ADSR1 → pitch/PW) | **EnvVCA** + **EnvVCF** Bézier engines; **`setPWMOuts`-class** CV writers; wave mux + `mcpUpdate` on param/cal edges | Dependence on remote note edges from Mainboard |
 
 **Default scheduling:** EnvVCA/EnvVCF + CV PWM on Core1 next to EnvDCO (shared `noteStart`/`noteEnd` from local MIDI). LFO levels for VCA/VCF read volatiles updated on Core0 (same pattern as LFO1 detune FIFO).
@@ -95,10 +95,10 @@ STM32 pin macros, soft-timer bank as-is (reimplement with Pico timers if needed)
 | **1** | Input UART + local params — **landed** (`ENABLE_INPUT_UART`, `cv_state.h`) |
 | **2** | EnvVCA/EnvVCF + CV math — **landed** (`adsr_vca`/`adsr_vcf`, `cv_out.ino` → `VCA_PWM`/`VCF_PWM`) |
 | **3** | Real PWM / I2C / 595 — **landed** (opt-in `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` / `ENABLE_MCP4728`) |
-| **4** | Unify LFOs; Screen UART; drop redundant forwards — **landed** (`ENABLE_SCREEN_UART`, gap→Screen, notes no-op in hub) |
+| **4** | Unify LFOs; Screen path; drop redundant forwards — **landed** (gap via Input relay; `ENABLE_SCREEN_UART` opt-in; notes no-op in hub) |
 | **5** | Remove Mainboard link; three-board overview; archive Mainboard — **landed** (hub default; `_archived/Mainboard`; `ENABLE_LEGACY_MAINBOARD_LINK` escape hatch) |
 
-**Phase 5 defaults:** `ENABLE_INPUT_UART` + `ENABLE_SCREEN_UART` unless `ENABLE_LEGACY_MAINBOARD_LINK`. Parser renamed `serial_panel_task` (alias `serial_STM32_task`).
+**Phase 5 defaults:** `ENABLE_INPUT_UART` unless `ENABLE_LEGACY_MAINBOARD_LINK`. Gap 154 is relayed Input→Screen (no DCO Screen UART by default). Parser renamed `serial_panel_task` (alias `serial_STM32_task`).
 
 ---
 

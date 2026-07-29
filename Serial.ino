@@ -252,7 +252,8 @@ void serialSendParam32ToScreen(byte paramNumber, uint32_t paramValue) {
 }
 #endif
 
-// Route 'x' frames: gap → Screen (if enabled); else Input hub or legacy Mainboard.
+// Route 'x' frames: optional direct Screen UART for gap; else Input hub (or legacy Mainboard).
+// Hub default: gap 154 + cal offset 155 both go Serial2 → Input (Input forwards 154 to Screen).
 void serialSendParam32(byte paramNumber, uint32_t paramValue) {
 #ifdef ENABLE_SCREEN_UART
   if (paramNumber == (byte)PARAM_GAP_FROM_DCO) {
@@ -262,7 +263,7 @@ void serialSendParam32(byte paramNumber, uint32_t paramValue) {
 #endif
 
 #if defined(ENABLE_INPUT_UART)
-  // Hub: cal offsets (155) and other 'x' go to Input (replaces Mainboard Serial8 forward).
+  // Hub: gap (154) and cal offsets (155) → Input; Input relays 154 on Serial1 to Screen.
   serial_write_param32_frame(Serial2, paramNumber, paramValue);
 #elif defined(ENABLE_SCREEN_UART)
   // Screen bring-up without Input/Mainboard: non-gap 'x' has no peer — drop.

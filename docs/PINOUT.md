@@ -13,7 +13,7 @@ Related: [`MAINBOARD_ABSORPTION.md`](MAINBOARD_ABSORPTION.md). Live constants st
 | Decision | Choice |
 |----------|--------|
 | Carrier | Target **RP2350B** for production; bench may use Pico 2 / WEACT if pins fit |
-| UART split | **Input + Screen on HW UARTs**; **DIN MIDI on PIO UART** (interim: HW MIDI @ GP0/1, Screen on PIO) |
+| UART split | **Input on HW UART**; Screen UI via Input (gap relay); **DIN MIDI on PIO UART** long-term (interim: HW MIDI @ GP0/1) |
 | Cut0 vs PW | Cut0 on **GP15** (slice 7 B) — **avoid sharing slice 1 with PW** (wrap 1024 vs CV ~4095) |
 | Reso1 | **GP7** (slice 3 B), not GP6 (would collide with RANGE OSC2 slice 3 A) |
 
@@ -23,14 +23,14 @@ Related: [`MAINBOARD_ABSORPTION.md`](MAINBOARD_ABSORPTION.md). Live constants st
 
 | Role | Peripheral | Pins (provisional) | Baud | Notes |
 |------|------------|--------------------|------|-------|
-| **Input** (panel) | HW `UART0` / `Serial1` | **GP20 TX / GP21 RX** | 2 500 000 | Recycle today’s Mainboard link pins |
-| **Screen** | HW `UART1` / `Serial2` | **GP8 TX / GP9 RX** | 2 500 000 | New; former Mainboard Serial1 peer |
-| **DIN MIDI** | **PIO UART** | **GP0 TX / GP1 RX** | 31 250 | Move off PL011; keep USB MIDI |
-| Mainboard link | — | *(removed)* | — | Today’s Serial2 @ GP20/21 retired |
+| **Input** (panel + gap) | HW `UART1` / `Serial2` | **GP20 TX / GP21 RX** | 2 500 000 | Panel + `'x'` 154/155; Input relays gap to Screen |
+| **Screen** (direct) | — / opt-in SerialPIO | **GP8 TX / GP9 RX** | 2 500 000 | Unused in hub default; free for future / `ENABLE_SCREEN_UART` |
+| **DIN MIDI** | HW `UART0` interim → **PIO UART** | **GP0 TX / GP1 RX** | 31 250 | Keep USB MIDI |
+| Mainboard link | — | *(removed)* | — | Use `ENABLE_LEGACY_MAINBOARD_LINK` for archived STM32 |
 
 Soft bit-bang at 2.5 M is not acceptable.
 
-**Interim bring-up (safer MIDI):** DIN on HW UART0 @ GP0/1; Screen on PIO UART @ GP8/9; Input on HW UART1 @ GP20/21.
+**Hub default (current):** DIN on HW UART0 @ GP0/1; Input on HW UART1 @ GP20/21; **no Screen UART on DCO** — gap display via Input→Screen Serial1. GP8/9 free unless `ENABLE_SCREEN_UART`.
 
 ---
 
@@ -83,7 +83,7 @@ From [`globals.h`](../globals.h) today:
 | 4 | Cutoff 1 PWM |
 | 5 | Resonance 0 PWM |
 | 7 | Resonance 1 PWM |
-| 8,9 | HW UART Screen |
+| 8,9 | Spare / opt-in Screen UART (`ENABLE_SCREEN_UART`) |
 | 10 | Cal sense |
 | 11 | VCA PWM |
 | 12–14 | 74HC595 |
@@ -113,9 +113,9 @@ Approx **24** GPIOs used → stock Pico 2 is tight; **RP2350B recommended** for 
 ENABLE_CV_OUTS      // PWM VCF/VCA/reso writers — landed (PWM.ino / cv_out.ino)
 ENABLE_WAVE_MUX     // 74HC595 — landed (wave_mux.ino)
 ENABLE_MCP4728      // Wire DAC levels — landed (mcp4728_dco.ino)
-ENABLE_INPUT_UART   // panel hub — landed
-ENABLE_SCREEN_UART  // UI / cal gap — landed (SerialPIO GP8/9 interim)
+ENABLE_INPUT_UART   // panel hub + gap 'x' — landed (default)
+ENABLE_SCREEN_UART  // opt-in direct Screen PIO UART GP8/9 (off by default; gap via Input)
 ENABLE_PIO_MIDI     // DIN on PIO UART — Phase 5 / next PCB bring-up
 ```
 
-Uncomment Phase 3 HW flags in `DCO.ino` as needed. Hub UARTs are **on by default** (Phase 5); use `ENABLE_LEGACY_MAINBOARD_LINK` for the archived STM32 peer.
+Uncomment Phase 3 HW flags in `DCO.ino` as needed. Hub Input UART is **on by default** (Phase 5); use `ENABLE_LEGACY_MAINBOARD_LINK` for the archived STM32 peer.
