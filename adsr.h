@@ -78,5 +78,9 @@ void ADSR_set_parameters();
 void ADSR1_set_restart();
 void ADSR_VCA_set_restart();
 void ADSR_VCF_set_restart();
+void ADSR_VCA_change_attack_curve(uint8_t adsrCurveAttack);
+void ADSR_VCA_change_decay_curve(uint8_t adsrCurveDecay);
+void ADSR_VCF_change_attack_curve(uint8_t adsrCurveAttack);
+void ADSR_VCF_change_decay_curve(uint8_t adsrCurveDecay);
 
 #endif

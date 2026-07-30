@@ -24,17 +24,9 @@
 #define USE_FLOAT_ENGINE
 
 // ---------------------------------------------------------------------------
-// Serial hub (Phase 5 default) — DCO owns Input + Screen; no Mainboard peer.
-// For the old 4-board bench with STM32 Mainboard, uncomment:
-//   #define ENABLE_LEGACY_MAINBOARD_LINK
+// Serial hub: Serial2 GP20/21 is the only peer link (Input panel protocol +
+// 'x' gap/cal TX). Screen is reached by Input relaying gap 154 on its own Screen port.
 // ---------------------------------------------------------------------------
-// #define ENABLE_LEGACY_MAINBOARD_LINK
-
-#ifndef ENABLE_LEGACY_MAINBOARD_LINK
-  #define ENABLE_INPUT_UART    // Serial2 GP20/21 = Input protocol (panel + gap 'x')
-  // Opt-in only: direct Screen UART. Default hub relays gap via Input → Screen.
-  // #define ENABLE_SCREEN_UART   // SerialPIO GP8/9 = Screen (gap 'x')
-#endif
 
 // Phase 3 CV hardware (provisional pins in globals.h / docs/PINOUT.md).
 // Leave commented on benches without filter/VCA/mux/DAC attached.
@@ -259,6 +251,7 @@ void loop1() {
       DCO_calibration_current_note = manual_DCO_calibration_start_note;
       ampCompCalibrationVal = initManualAmpCompCalibrationValPreset + manualCalibrationOffset[manualCalibrationStage];
       voice_task_autotune(0, ampCompCalibrationVal);
+      update_CV_outs_manual_calibration();
       // In manual calibration mode, continuously measure and report the duty
       // difference so the screen can display live feedback for the user.
       DCO_calibration_debug();

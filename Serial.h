@@ -6,16 +6,12 @@
 #include "serial_input_protocol.h"
 #include "serial_parser.h"
 
-// ENABLE_INPUT_UART  — Serial2 = Input protocol (hub)
-// ENABLE_SCREEN_UART — SerialPIO Screen @ GP8 TX / GP9 RX (interim; HW UART after PIO MIDI)
+// Serial1 = DIN MIDI @ 31250; Serial2 = Input panel protocol + 'x' TX @ 2.5M.
+// Screen has no DCO port: Input relays gap 154 to it on its own Screen port.
 
 void init_serial();
 void serial_panel_task();
-#define serial_STM32_task serial_panel_task  // legacy name
 
 void serialSendParam32(byte paramNumber, uint32_t paramValue);
-#ifdef ENABLE_SCREEN_UART
-void serialSendParam32ToScreen(byte paramNumber, uint32_t paramValue);
-#endif
 
 #endif

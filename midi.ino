@@ -47,7 +47,7 @@ void handlePitchBend(byte channel, int pitchBend) {
   midi_pitch_bend = pitchBend + 8192;
 }
 
-// Allocate voice(s) from MIDI note-on per voiceMode/polyMode; set ADSR flags; notify mainboard.
+// Allocate voice(s) from MIDI note-on per voiceMode/polyMode; set ADSR flags (EnvDCO/VCA/VCF are local).
 void note_on(uint8_t note, uint8_t velocity) {
 
   switch (voiceMode) {
@@ -57,7 +57,7 @@ void note_on(uint8_t note, uint8_t velocity) {
       VOICES[0] = millis();
       note_on_flag[0] = 1;
       noteStart[0] = 1;
-      serial_send_note_on(0, velocity, note - 36 + OSC1_interval);
+      noteEnd[0] = 0;
       return;
 
       break;
@@ -73,7 +73,6 @@ void note_on(uint8_t note, uint8_t velocity) {
               midi_velocity[i] = velocity;
               note_on_flag[i] = 1;
               noteStart[i] = 1;
-              serial_send_note_on(i, velocity, note - 36 + OSC1_interval);
               return;  // note already playing
             }
           }
@@ -86,7 +85,6 @@ void note_on(uint8_t note, uint8_t velocity) {
           midi_velocity[voice_num] = velocity;
           note_on_flag[voice_num] = 1;
           noteStart[voice_num] = 1;
-          serial_send_note_on(voice_num, velocity, note - 36 + OSC1_interval);
         }
       }
 
@@ -100,7 +98,6 @@ void note_on(uint8_t note, uint8_t velocity) {
               note_on_flag[i] = 1;
               noteStart[i] = 1;
               noteEnd[i] = 0;
-              serial_send_note_on(i, velocity, note - 36 + OSC1_interval);
               return;  // note already playing
             }
           }
@@ -113,7 +110,6 @@ void note_on(uint8_t note, uint8_t velocity) {
         note_on_flag[voice_num] = 1;
         noteStart[voice_num] = 1;
         noteEnd[voice_num] = 0;
-        serial_send_note_on(voice_num, velocity, note - 36 + OSC1_interval);
       }
       break;
 
@@ -125,7 +121,6 @@ void note_on(uint8_t note, uint8_t velocity) {
         midi_velocity[i] = velocity;
         note_on_flag[i] = 1;
         noteStart[i] = 1;
-        serial_send_note_on(i, velocity, note - 36 + OSC1_interval);
       }
       break;
     default:
@@ -135,7 +130,7 @@ void note_on(uint8_t note, uint8_t velocity) {
   last_midi_pitch_bend = 0;
 }
 
-// Release matching voice(s) on MIDI note-off; set noteEnd flags; notify mainboard.
+// Release matching voice(s) on MIDI note-off; set noteEnd flags for the local envelopes.
 void note_off(uint8_t note) {
   // gate off
   for (int i = 0; i < NUM_VOICES_TOTAL; i++)  // REVISAR!! // Previously NUM_VOICES
@@ -146,7 +141,6 @@ void note_off(uint8_t note) {
       VOICES[i] = 0;
       noteEnd[i] = 1;
       noteStart[i] = 0;
-      serial_send_note_off(i);
     }
   }
 }

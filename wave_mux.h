@@ -3,5 +3,6 @@
 
 void init_waveSelector();
 void update_waveSelector(byte wave);
+void waveSelector_manual_calibration(byte stage);
 
 #endif

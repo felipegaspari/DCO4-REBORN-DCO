@@ -9,6 +9,7 @@
 
 void init_cv_out();
 void update_CV_outs();
+void update_CV_outs_manual_calibration();
 void cv_update_mod_formulas();
 
 #endif

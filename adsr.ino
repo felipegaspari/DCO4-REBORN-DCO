@@ -130,6 +130,54 @@ void ADSR_VCF_set_restart() {
   }
 }
 
+// EnvVCA attack curve → engine; timing params must be re-applied after a curve change.
+void ADSR_VCA_change_attack_curve(uint8_t adsrCurveAttack) {
+  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+    ADSRVoices[i].adsr_vca_voice.adsrCurveAttack(adsrCurveAttack);
+    ADSRVoices[i].adsr_vca_voice.setAttack(ADSR_VCA_attack);
+    ADSRVoices[i].adsr_vca_voice.setDecay(ADSR_VCA_decay);
+    ADSRVoices[i].adsr_vca_voice.setSustain(ADSR_VCA_sustain);
+    ADSRVoices[i].adsr_vca_voice.setRelease(ADSR_VCA_release);
+    ADSRVoices[i].adsr_vca_voice.setResetAttack(VCAADSRRestart);
+  }
+}
+
+// EnvVCA decay curve → engine.
+void ADSR_VCA_change_decay_curve(uint8_t adsrCurveDecay) {
+  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+    ADSRVoices[i].adsr_vca_voice.adsrCurveDecay(adsrCurveDecay);
+    ADSRVoices[i].adsr_vca_voice.setAttack(ADSR_VCA_attack);
+    ADSRVoices[i].adsr_vca_voice.setDecay(ADSR_VCA_decay);
+    ADSRVoices[i].adsr_vca_voice.setSustain(ADSR_VCA_sustain);
+    ADSRVoices[i].adsr_vca_voice.setRelease(ADSR_VCA_release);
+    ADSRVoices[i].adsr_vca_voice.setResetAttack(VCAADSRRestart);
+  }
+}
+
+// EnvVCF attack curve → engine.
+void ADSR_VCF_change_attack_curve(uint8_t adsrCurveAttack) {
+  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+    ADSRVoices[i].adsr_vcf_voice.adsrCurveAttack(adsrCurveAttack);
+    ADSRVoices[i].adsr_vcf_voice.setAttack(ADSR_VCF_attack);
+    ADSRVoices[i].adsr_vcf_voice.setDecay(ADSR_VCF_decay);
+    ADSRVoices[i].adsr_vcf_voice.setSustain(ADSR_VCF_sustain);
+    ADSRVoices[i].adsr_vcf_voice.setRelease(ADSR_VCF_release);
+    ADSRVoices[i].adsr_vcf_voice.setResetAttack(VCFADSRRestart);
+  }
+}
+
+// EnvVCF decay curve → engine.
+void ADSR_VCF_change_decay_curve(uint8_t adsrCurveDecay) {
+  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+    ADSRVoices[i].adsr_vcf_voice.adsrCurveDecay(adsrCurveDecay);
+    ADSRVoices[i].adsr_vcf_voice.setAttack(ADSR_VCF_attack);
+    ADSRVoices[i].adsr_vcf_voice.setDecay(ADSR_VCF_decay);
+    ADSRVoices[i].adsr_vcf_voice.setSustain(ADSR_VCF_sustain);
+    ADSRVoices[i].adsr_vcf_voice.setRelease(ADSR_VCF_release);
+    ADSRVoices[i].adsr_vcf_voice.setResetAttack(VCFADSRRestart);
+  }
+}
+
 void ADSR1_change_curves() {
   for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
     ADSRVoices[i].adsr1_voice.setAttack(ADSR1_attack);

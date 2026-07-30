@@ -24,7 +24,7 @@ flowchart TD
   setup1 --> initCore1["init_FS / init_ADSR / init_pwm / init_pio / init_voices"]
 
   loop0 --> midiRead["MIDI_*.read → handle* → note_on/off"]
-  loop0 --> serialTask["serial_STM32_task → handlers"]
+  loop0 --> serialTask["serial_panel_task → handlers"]
   loop0 --> lfo["LFO1 every iter; LFO2/DRIFT ~100µs"]
   lfo --> fifo["FIFO Q24 detune → Core1"]
 
@@ -45,7 +45,7 @@ flowchart TD
 | Boot Core0 / Core1 | Inside `setup` / `setup1` |
 | Every `loop` / `loop1` | Realtime forever loops |
 | MIDI callback | Dispatched from `MIDI_*.read()` in `loop` |
-| Serial2 | Parser command on mainboard link |
+| Serial2 | Parser command on the Input link (DCO `Serial2`) |
 | Param table | Only via `paramTable[]` / `param_router_apply` |
 | Auto-cal / Manual-cal | `loop1` calibration branches |
 | Hot path | Inside `voice_task` / `voice_task_float` |
@@ -274,6 +274,12 @@ Globals / instances. **No function definitions.**
   - **Called from:** **none (dead)**.
 - `ADSR1_change_curves()` — Re-apply after curve change.
   - **Called from:** **none (dead)**.
+- `ADSR_VCA_set_restart()` / `ADSR_VCF_set_restart()` — Restart/legato for EnvVCA / EnvVCF.
+  - **Called from:** `apply_param_vca_adsr_restart()` / `apply_param_vcf_adsr_restart()` (`params.ino`).
+- `ADSR_VCA_change_attack_curve()` / `ADSR_VCA_change_decay_curve()` — EnvVCA curve shape, then re-apply A/D/S/R.
+  - **Called from:** `apply_param_adsr1_attack_curve()` / `apply_param_adsr1_decay_curve()` (`params.ino`).
+- `ADSR_VCF_change_attack_curve()` / `ADSR_VCF_change_decay_curve()` — EnvVCF curve shape, then re-apply A/D/S/R.
+  - **Called from:** `apply_param_adsr2_attack_curve()` / `apply_param_adsr2_decay_curve()` (`params.ino`).
 
 ### `LFO.h`
 
@@ -492,10 +498,10 @@ Prototypes / instances. **No function definitions.**
 - `handlePitchBend()` — Sets `midi_pitch_bend`.
   - **Called from:** MIDI library.
   - **When:** MIDI callback.
-- `note_on()` — Allocate voice(s), set ADSR/note flags, `serial_send_note_on`.
+- `note_on()` — Allocate voice(s), set ADSR/note flags (local envelopes only, nothing on the wire).
   - **Called from:** `handleNoteOn()`.
   - **When:** MIDI note-on.
-- `note_off()` — Release voice(s), flags, `serial_send_note_off`.
+- `note_off()` — Release voice(s), set `noteEnd[]` for the local envelopes.
   - **Called from:** `handleNoteOff()`.
   - **When:** MIDI note-off.
 
@@ -506,36 +512,34 @@ Prototype. **No function definitions.**
 ### `Serial.ino`
 
 **Functions**
-- `init_serial()` — Serial1 MIDI baud, Serial2 2.5M, USB CDC.
+- `init_serial()` — Serial1 MIDI baud (RX 1 / TX 0 @ 31250), Serial2 2.5M Input link against the Input's `Serial1` (RX 21 from Input TX GP0, TX 20 into Input RX GP1), USB CDC.
   - **Called from:** `setup()`.
   - **When:** Boot Core0.
-- `dco_handle_pw_update()` — `'f'` → `PW[]`.
-  - **Called from:** Serial2 parser command table.
+- `input_handle_adsr1()` / `input_handle_adsr2()` / `input_handle_adsr3()` — `'a'`/`'b'`/`'c'` → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times.
+  - **Called from:** Serial2 parser command table (`inputSerialCommands[]`).
   - **When:** Serial2 RX.
-- `dco_handle_adsr_block()` — `'s'` → ADSR1 A/D/S/R globals.
+- `input_handle_filter_block()` — `'d'` → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_update_mod_formulas()`.
   - **Called from:** Serial2 parser.
   - **When:** Serial2 RX.
-- `dco_handle_param16()` — `'p'` → `update_parameters`.
+- `input_handle_adsr1_to_vca()` — `'e'` → `ADSR1toVCA`.
   - **Called from:** Serial2 parser.
   - **When:** Serial2 RX.
-- `dco_handle_param8()` — `'w'` → `update_parameters`.
+- `input_handle_pw()` — `'f'` → `PW[0]` (BE, /4 scale).
   - **Called from:** Serial2 parser.
   - **When:** Serial2 RX.
-- `dco_handle_param32()` — `'x'` → `update_parameters`.
+- `input_handle_param16()` — `'p'` → `update_parameters`.
   - **Called from:** Serial2 parser.
   - **When:** Serial2 RX.
-- `serial_STM32_task()` — Non-blocking parser pump (`serial_parser_*`).
+- `input_handle_param8()` — `'w'` → `update_parameters`.
+  - **Called from:** Serial2 parser.
+  - **When:** Serial2 RX.
+- `input_handle_preset_name()` — `'q'` → `presetName[]` (8 chars).
+  - **Called from:** Serial2 parser.
+  - **When:** Serial2 RX.
+- `serial_panel_task()` — Non-blocking parser pump (`serial_parser_*`).
   - **Called from:** `loop()` every iteration.
   - **When:** Realtime Core0.
-- `serial_send_note_on()` — TX `'n'` to mainboard.
-  - **Called from:** `note_on()`.
-  - **When:** MIDI note-on.
-- `serial_send_note_off()` — TX `'o'` to mainboard.
-  - **Called from:** `note_off()`.
-  - **When:** MIDI note-off.
-- `serial_send_generaldata()` — Generic 16-bit TX helper.
-  - **Called from:** **none (dead)**.
-- `serialSendParam32()` — TX `'x'` param32 upstream.
+- `serialSendParam32()` — TX `'x'` param32 out Serial2 TX 20 into the Input's `Serial1` RX GP1 (gap 154, cal offset 155; Input relays 154 to Screen). Waits on `availableForWrite() < 1` — a HW UART reports 0/1, not free bytes.
   - **Called from:** `apply_param_manual_calibration_flag()`; `DCO_calibration_debug()`.
   - **When:** Manual-cal param / live gap report.
 
@@ -543,7 +547,7 @@ Prototype. **No function definitions.**
 
 **Functions**
 - `serial_protocol_payload_len()` — Command → payload length.
-  - **Called from:** **none (dead)** — lengths hardcoded in `dcoSerial2Commands[]`.
+  - **Called from:** **none (dead)** — lengths hardcoded in `inputSerialCommands[]`.
 
 ### `serial_param_protocol.h`
 
@@ -555,14 +559,14 @@ Prototype. **No function definitions.**
   - **Called from:** `decode_param_x()`.
   - **When:** Serial2 param decode.
 - `decode_param_p()` — Decode `'p'` frame.
-  - **Called from:** `dco_handle_param16()`.
+  - **Called from:** `input_handle_param16()`.
   - **When:** Serial2.
 - `decode_param_w()` — Decode `'w'` frame.
-  - **Called from:** `dco_handle_param8()`.
+  - **Called from:** `input_handle_param8()`.
   - **When:** Serial2.
 - `decode_param_x()` — Decode `'x'` frame.
-  - **Called from:** `dco_handle_param32()`.
-  - **When:** Serial2.
+  - **Called from:** **none on DCO** — the DCO only sends `'x'`; Input and Screen decode it.
+  - **When:** —
 
 ### `serial_parser.h`
 
@@ -574,10 +578,10 @@ Prototype. **No function definitions.**
   - **Called from:** `serial_parser_process_byte()`.
   - **When:** Serial2 parsing.
 - `serial_parser_check_timeout()` — Abort partial frame.
-  - **Called from:** `serial_STM32_task()` while in payload state.
+  - **Called from:** `serial_panel_task()` while in payload state.
   - **When:** Every `loop` during RX.
 - `serial_parser_process_byte()` — Feed one byte; invoke handler when complete.
-  - **Called from:** `serial_STM32_task()`.
+  - **Called from:** `serial_panel_task()`.
   - **When:** Every available Serial2 byte.
 
 ### `params_def.h`
@@ -734,8 +738,8 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 |------|------------|
 | Engine float/fixed | `DCO.ino` flags → `voice_task_main` |
 | New ParamId | `params_def.h` → `params.ino` table (only call path) |
-| Serial command | `serial_protocol.h` + `Serial.ino` handlers ← `serial_STM32_task` in `loop` |
+| Serial command | `serial_input_protocol.h` + `Serial.ino` handlers ← `serial_panel_task` in `loop` |
 | Start auto-cal | Param → `apply_param_calibration_flag` → `loop1` → `DCO_calibration` |
 | Manual cal UI | `apply_param_manual_calibration_*` → `loop1` manual branch |
-| MIDI notes | `loop` → MIDI `.read` → `note_on`/`note_off` → Serial2 `'n'/'o'` |
+| MIDI notes | `loop` → MIDI `.read` → `note_on`/`note_off` → local `noteStart[]`/`noteEnd[]` (no serial note frames) |
 | Play audio path | `loop1` → `ADSR_update` + `voice_task_main` |

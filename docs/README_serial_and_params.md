@@ -19,7 +19,7 @@ These files are intended to be MCU‑agnostic and copy‑pasteable between proje
 
 You can treat these as the “library core.”
 
-**DCO repo note:** this board does **not** ship `serial_input_protocol.h` (it only speaks the mainboard↔DCO protocol). Copy that header from `DCO4_Mainboard_Controller` or `DCO4_Input_Controller` if you need input-link command sizes here.
+**DCO repo note:** this board now ships `serial_input_protocol.h` and speaks the Input panel protocol on its `Serial2` — that is its only peer link since the Mainboard was archived. Both directions land on the Input's `Serial1`: the DCO's `Serial2` RX (GP21) is fed by the Input's TX (GP0), and the DCO's `Serial2` TX (GP20) drives the Input's RX (GP1).
 
 ---
 
@@ -218,11 +218,13 @@ On the sender MCU:
 
 ```cpp
 inline void serial_send_global_reset(uint8_t flag) {
-  while (Serial2.availableForWrite() < 2) {}
+  while (Serial2.availableForWrite() < 1) {}
   uint8_t bytes[2] = { (uint8_t)SERIAL_CMD_GLOBAL_RESET, flag };
   Serial2.write(bytes, 2);
 }
 ```
+
+Always wait on `< 1`, never on the frame length: an RP2040 hardware UART's `availableForWrite()` returns only 0 or 1, not the number of free FIFO bytes, so waiting for more would spin forever. `write()` itself blocks until the whole frame is queued.
 
 ---
 
@@ -291,7 +293,7 @@ inline void send_lfo3_to_vcf(uint16_t value) {
     lowByte(value),
     1  // finish
   };
-  while (Serial2.availableForWrite() < 5) {}
+  while (Serial2.availableForWrite() < 1) {}
   Serial2.write(bytes, 5);
 }
 ```

@@ -1319,8 +1319,8 @@ float find_gap(byte specialMode) {
 
 // Debug helper used during manual calibration: measure and report the
 // duty-cycle difference from the target duty (normally 50%) for the
-// current note/DCO. The result is sent to the mainboard as a 32-bit
-// PARAM_GAP_FROM_DCO value, which the screen shows as "GAP".
+// current note/DCO. The result is sent to the Input board as a 32-bit
+// PARAM_GAP_FROM_DCO value, which it relays to the screen as "GAP".
 void DCO_calibration_debug() {
   // Reuse the main gap-measurement path (which already handles polarity,
   // debouncing, and timeouts) so manual calibration sees the same notion
@@ -1360,8 +1360,7 @@ void DCO_calibration_debug() {
   }
 
   // Send as a 32-bit PARAM_GAP_FROM_DCO value through the standard
-  // param protocol. With ENABLE_SCREEN_UART this goes direct to Screen;
-  // otherwise Serial2 → Mainboard (which forwards to Screen).
+  // param protocol: Serial2 → Input, which relays it to the Screen.
   serialSendParam32(PARAM_GAP_FROM_DCO,
                     (int32_t)dutyErrorPercentTimes100);
 }

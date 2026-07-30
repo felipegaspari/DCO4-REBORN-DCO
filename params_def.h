@@ -127,10 +127,10 @@ enum ParamId : uint16_t {
   PARAM_MANUAL_CALIBRATION_STAGE = 152,
   PARAM_MANUAL_CALIBRATION_OFFSET= 153,
 
-  // 154: mainboard-only gap-from-DCO parameter (screen reporting)
+  // 154: gap from DCO — TX to Input on Serial2; Input relays it to the Screen
   PARAM_GAP_FROM_DCO             = 154,
 
-  // 155: manual calibration offsets reported from DCO back to mainboard/screen.
+  // 155: manual calibration offsets reported from DCO back to Input.
   PARAM_MANUAL_CALIBRATION_OFFSET_FROM_DCO = 155,
 
   // 156: explicit "store manual calibration offsets" command.

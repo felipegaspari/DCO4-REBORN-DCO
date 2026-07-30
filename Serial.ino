@@ -1,10 +1,5 @@
-// Configure Serial1 (MIDI DIN), Serial2 (Mainboard or Input @ 2.5M), optional Screen PIO UART.
-#ifdef ENABLE_SCREEN_UART
-#include <SerialPIO.h>
-// Interim: Screen on SerialPIO so MIDI keeps HW UART0 @ GP0/1 (see docs/PINOUT.md).
-// Claims a free PIO SM (not OSC freq SM0 on pio0/1/2). Move to HW UART1 when MIDI is PIO.
-SerialPIO SerialScreen(8, 9, 512);
-#endif
+// Configure Serial1 (MIDI DIN @ 31250) and Serial2 (Input hub @ 2.5M).
+// Screen has no DCO port: gap 'x' rides the Input link and Input relays it.
 
 void init_serial() {
   Serial1.setFIFOSize(256);
@@ -19,114 +14,12 @@ void init_serial() {
   Serial2.setTX(20);
   Serial2.begin(2500000);
 
-#ifdef ENABLE_SCREEN_UART
-  SerialScreen.begin(2500000);
-#endif
-
   Serial.begin(2000000);
 }
 
 /// -------------------------------
-// Serial2: legacy Mainboard protocol (default)
+// Serial2: Input panel protocol
 // -------------------------------
-
-#ifndef ENABLE_INPUT_UART
-
-static void dco_handle_pw_update(char, const uint8_t* payload, uint8_t len) {
-  if (len != SERIAL_PAYLOAD_LEN_PW_UPDATE) {
-    return;
-  }
-  uint16_t pwRaw = (uint16_t)payload[0] | (uint16_t(payload[1]) << 8);
-  PW[0] = pwRaw / 4;
-}
-
-static void dco_handle_adsr_block(char, const uint8_t* payload, uint8_t len) {
-  if (len != SERIAL_PAYLOAD_LEN_ADSR_BLOCK) {
-    return;
-  }
-  ADSR1_attack  = (uint16_t(payload[0]) << 8) | uint16_t(payload[1]);
-  ADSR1_decay   = (uint16_t(payload[2]) << 8) | uint16_t(payload[3]);
-  ADSR1_sustain = (uint16_t(payload[4]) << 8) | uint16_t(payload[5]);
-  ADSR1_release = (uint16_t(payload[6]) << 8) | uint16_t(payload[7]);
-}
-
-static void dco_handle_param16(char, const uint8_t* payload, uint8_t len) {
-  if (len != SERIAL_PAYLOAD_LEN_PARAM_16) {
-    return;
-  }
-  ParamFrame frame;
-  decode_param_p(payload, frame);
-  update_parameters(frame.id, (int16_t)frame.value);
-}
-
-static void dco_handle_param8(char, const uint8_t* payload, uint8_t len) {
-  if (len != SERIAL_PAYLOAD_LEN_PARAM_8) {
-    return;
-  }
-  ParamFrame frame;
-  decode_param_w(payload, frame);
-  update_parameters(frame.id, (int16_t)frame.value);
-}
-
-static void dco_handle_param32(char, const uint8_t* payload, uint8_t len) {
-  if (len != SERIAL_PAYLOAD_LEN_PARAM_32) {
-    return;
-  }
-  ParamFrame frame;
-  decode_param_x(payload, frame);
-  update_parameters(frame.id, (int16_t)frame.value);
-}
-
-static const SerialCommandDef dcoSerial2Commands[] = {
-  { SERIAL_CMD_PW_UPDATE,  SERIAL_PAYLOAD_LEN_PW_UPDATE,  dco_handle_pw_update  },
-  { SERIAL_CMD_ADSR_BLOCK, SERIAL_PAYLOAD_LEN_ADSR_BLOCK, dco_handle_adsr_block },
-  { SERIAL_CMD_PARAM_16,   SERIAL_PAYLOAD_LEN_PARAM_16,   dco_handle_param16    },
-  { SERIAL_CMD_PARAM_8,    SERIAL_PAYLOAD_LEN_PARAM_8,    dco_handle_param8     },
-  { SERIAL_CMD_PARAM_32,   SERIAL_PAYLOAD_LEN_PARAM_32,   dco_handle_param32    },
-};
-
-static SerialParserContext dcoSerial2Parser = {
-  SERIAL_WAIT_FOR_CMD, 0, nullptr, {0}, 0, 0, 0
-};
-
-void serial_panel_task() {
-  if (dcoSerial2Parser.state == SERIAL_READ_PAYLOAD) {
-    uint32_t now = micros();
-    serial_parser_check_timeout(dcoSerial2Parser, now);
-  }
-  if (Serial2.available() > 0) {
-    uint32_t now = micros();
-    while (Serial2.available() > 0) {
-      uint8_t b = Serial2.read();
-      serial_parser_process_byte(
-        dcoSerial2Parser,
-        dcoSerial2Commands,
-        sizeof(dcoSerial2Commands) / sizeof(dcoSerial2Commands[0]),
-        b,
-        now
-      );
-    }
-  }
-}
-
-// Legacy Mainboard envelope peer (EnvVCA/EnvVCF lived on STM32).
-inline void serial_send_note_on(uint8_t voice_n, uint8_t note_velo, uint8_t note) {
-  byte sendArray[4];
-  sendArray[0] = (uint8_t)'n';
-  sendArray[1] = voice_n;
-  sendArray[2] = note_velo;
-  sendArray[3] = note;
-  while (Serial2.availableForWrite() < 1) {}
-  Serial2.write(sendArray, 4);
-}
-
-inline void serial_send_note_off(uint8_t voice_n) {
-  byte sendArray[2] = { (uint8_t)'o', voice_n };
-  while (Serial2.availableForWrite() < 1) {}
-  Serial2.write(sendArray, 2);
-}
-
-#else  // ENABLE_INPUT_UART — Serial2 is Input hub
 
 // EnvVCA times ('a')
 static void input_handle_adsr1(char, const uint8_t* payload, uint8_t len) {
@@ -233,44 +126,11 @@ void serial_panel_task() {
   }
 }
 
-// No Mainboard envelope peer — note edges are local (EnvVCA/EnvVCF on Core1).
-inline void serial_send_note_on(uint8_t, uint8_t, uint8_t) {}
-inline void serial_send_note_off(uint8_t) {}
-
-#endif  // ENABLE_INPUT_UART
-
-static inline void serial_write_param32_frame(Stream& port, byte paramNumber, uint32_t paramValue) {
+// TX 'x' to Input: gap (154) and cal offsets (155). Input relays 154 on to the Screen.
+// availableForWrite() on a hardware UART reports 0/1, not free bytes — waiting for more hangs.
+void serialSendParam32(byte paramNumber, uint32_t paramValue) {
   uint8_t *b = (uint8_t *)&paramValue;
   byte bytesArray[7] = { (uint8_t)'x', paramNumber, b[0], b[1], b[2], b[3], 1 };
-  while (port.availableForWrite() < 7) {}
-  port.write(bytesArray, 7);
-}
-
-#ifdef ENABLE_SCREEN_UART
-void serialSendParam32ToScreen(byte paramNumber, uint32_t paramValue) {
-  serial_write_param32_frame(SerialScreen, paramNumber, paramValue);
-}
-#endif
-
-// Route 'x' frames: optional direct Screen UART for gap; else Input hub (or legacy Mainboard).
-// Hub default: gap 154 + cal offset 155 both go Serial2 → Input (Input forwards 154 to Screen).
-void serialSendParam32(byte paramNumber, uint32_t paramValue) {
-#ifdef ENABLE_SCREEN_UART
-  if (paramNumber == (byte)PARAM_GAP_FROM_DCO) {
-    serialSendParam32ToScreen(paramNumber, paramValue);
-    return;
-  }
-#endif
-
-#if defined(ENABLE_INPUT_UART)
-  // Hub: gap (154) and cal offsets (155) → Input; Input relays 154 on Serial1 to Screen.
-  serial_write_param32_frame(Serial2, paramNumber, paramValue);
-#elif defined(ENABLE_SCREEN_UART)
-  // Screen bring-up without Input/Mainboard: non-gap 'x' has no peer — drop.
-  (void)paramNumber;
-  (void)paramValue;
-#else
-  // Legacy: Serial2 → Mainboard (forwards gap to Screen / offsets to Input).
-  serial_write_param32_frame(Serial2, paramNumber, paramValue);
-#endif
+  while (Serial2.availableForWrite() < 1) {}
+  Serial2.write(bytesArray, 7);
 }

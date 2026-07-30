@@ -15,6 +15,9 @@ public:
   void setSustain(uint16_t) {}
   void setRelease(uint16_t) {}
   void setResetAttack(bool) {}
+  void adsrCurveAttack(uint8_t) {}
+  void adsrCurveDecay(uint8_t) {}
+  void adsrCurveRelease(uint8_t) {}
   void noteOn() {}
   void noteOff() {}
   uint16_t getWave() { return 0; }

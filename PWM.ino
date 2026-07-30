@@ -51,20 +51,24 @@ void init_cv_pwm() {
   pwm_set_enabled(VCA_PWM_SLICE, true);
 }
 
-// Push soft VCF/VCA/reso levels to Pico PWM compares.
-void write_cv_pwm() {
-  const uint16_t vcf = VCF_PWM[0];
+// Push raw compare values to the cutoff / resonance / VCA slices (already inverted).
+void write_cv_pwm_raw(uint16_t cutoff, uint16_t resonance, uint16_t vca) {
   for (int i = 0; i < NUM_FILTERS; i++) {
-    pwm_set_chan_level(CUTOFF_PWM_SLICES[i], CUTOFF_PWM_CHANS[i], vcf);
+    pwm_set_chan_level(CUTOFF_PWM_SLICES[i], CUTOFF_PWM_CHANS[i], cutoff);
 
-    uint16_t reso_level = RESONANCE_PWM;
+    uint16_t reso_level = resonance;
     if (RESO_PWM_SLICES[i] == RANGE_PWM_SLICES[1]) {
       // Shared wrap DIV_COUNTER with RANGE OSC2 — scale 0..4095 → 0..DIV_COUNTER.
-      reso_level = (uint16_t)(((uint32_t)RESONANCE_PWM * DIV_COUNTER) / DIV_COUNTER_CV);
+      reso_level = (uint16_t)(((uint32_t)resonance * DIV_COUNTER) / DIV_COUNTER_CV);
     }
     pwm_set_chan_level(RESO_PWM_SLICES[i], RESO_PWM_CHANS[i], reso_level);
   }
-  pwm_set_chan_level(VCA_PWM_SLICE, VCA_PWM_CHAN, VCA_PWM[0]);
+  pwm_set_chan_level(VCA_PWM_SLICE, VCA_PWM_CHAN, vca);
+}
+
+// Push soft VCF/VCA/reso levels to Pico PWM compares.
+void write_cv_pwm() {
+  write_cv_pwm_raw(VCF_PWM[0], RESONANCE_PWM, VCA_PWM[0]);
 }
 
 #endif  // ENABLE_CV_OUTS

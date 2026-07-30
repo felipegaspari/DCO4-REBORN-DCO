@@ -6,8 +6,8 @@
 // -----------------------------------------------------------------------------
 // Input-board → hub protocol: command bytes and payload sizes.
 //
-// Historically Mainboard Serial8; after absorption this is DCO Serial2 when
-// ENABLE_INPUT_UART is defined. Frame form:
+// Historically Mainboard Serial8; after absorption this is DCO Serial2.
+// Frame form:
 //
 //   [1 byte] command character
 //   [N bytes] payload (length depends on command)

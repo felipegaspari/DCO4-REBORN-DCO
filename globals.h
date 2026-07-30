@@ -214,10 +214,6 @@ bool PWMPotsControlManual;
 uint16_t PW[NUM_VOICES_TOTAL];
 
 void serial_panel_task();
-#define serial_STM32_task serial_panel_task
-void serial_send_voice_freq();
-void serial_send_note_on(uint8_t voice_n, uint8_t note_velo);
-void serial_send_note_off(uint8_t voice_n);
 float get_chan_level(float freq_to_amp_comp);
 
 volatile uint8_t note_on_flag[NUM_VOICES_TOTAL];

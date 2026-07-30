@@ -81,9 +81,29 @@ void update_waveSelector(byte wave) {
   waveMuxShiftOut();
 }
 
+// Manual calibration: isolate one oscillator's wave path (all others off).
+// Stage is the oscillator index 0..2; OSC3 has no mux hardware, so it stays silent.
+void waveSelector_manual_calibration(byte stage) {
+  for (int i = 0; i < 4; i++) {
+    waveMuxWritePin(sawPins[i], 1);
+    waveMuxWritePin(saw2Pins[i], 1);
+    waveMuxWritePin(triPins[i], 1);
+    waveMuxWritePin(sinePins[i], 1);
+  }
+
+  if (stage == 0) {
+    waveMuxWritePin(sawPins[0], 0);
+  } else if (stage == 1) {
+    waveMuxWritePin(saw2Pins[0], 0);
+  }
+
+  waveMuxShiftOut();
+}
+
 #else  // !ENABLE_WAVE_MUX
 
 void init_waveSelector() {}
 void update_waveSelector(byte) {}
+void waveSelector_manual_calibration(byte) {}
 
 #endif

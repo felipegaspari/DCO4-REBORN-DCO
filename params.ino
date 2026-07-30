@@ -220,7 +220,7 @@ static void apply_param_sqr1_level(int16_t v) {
   SQR1LevelVal = v;
   if (SQR1LevelVal < 0) SQR1LevelVal = 0;
   if (SQR1LevelVal > 128) SQR1LevelVal = 128;
-  SQR1Level = (uint16_t)constrain((int)SQR1LevelVal * 32, 0, 4095);
+  SQR1Level = lin_to_log_128[SQR1LevelVal];
   mcpUpdate();
 }
 
@@ -228,7 +228,7 @@ static void apply_param_sqr2_level(int16_t v) {
   SQR2LevelVal = v;
   if (SQR2LevelVal < 0) SQR2LevelVal = 0;
   if (SQR2LevelVal > 128) SQR2LevelVal = 128;
-  SQR2Level = (uint16_t)constrain((int)SQR2LevelVal * 32, 0, 4095);
+  SQR2Level = lin_to_log_128[SQR2LevelVal];
   mcpUpdate();
 }
 
@@ -319,8 +319,9 @@ static void apply_param_lfo2_speed(int16_t v) {
   LFO2_class.setMode0Freq((float)LFO2Speed, micros());
 }
 
+// PARAM_VCA_LEVEL: panel sends 0..128; scale to the 12-bit CV domain.
 static void apply_param_vca_level(int16_t v) {
-  VCALevel = (uint16_t)constrain((int)v, 0, 4095);
+  VCALevel = (uint16_t)constrain((int)v * 32, 0, 4095);
 }
 
 static void apply_param_lfo1_to_vca(int16_t v) {
@@ -361,21 +362,26 @@ static void apply_param_adsr1_to_detune1(int16_t v) {
   }
 }
 
-// PARAM_ADSR1_ATTACK_CURVE / DECAY: store for EnvVCA (engines Phase 2).
+// PARAM_ADSR1_ATTACK_CURVE / DECAY: EnvVCA curve shape.
 static void apply_param_adsr1_attack_curve(int16_t v) {
   ADSR1AttackCurveVal = (uint8_t)v;
+  ADSR_VCA_change_attack_curve(ADSR1AttackCurveVal);
 }
 
 static void apply_param_adsr1_decay_curve(int16_t v) {
   ADSR1DecayCurveVal = (uint8_t)v;
+  ADSR_VCA_change_decay_curve(ADSR1DecayCurveVal);
 }
 
+// PARAM_ADSR2_ATTACK_CURVE / DECAY: EnvVCF curve shape.
 static void apply_param_adsr2_attack_curve(int16_t v) {
   ADSR2AttackCurveVal = (uint8_t)v;
+  ADSR_VCF_change_attack_curve(ADSR2AttackCurveVal);
 }
 
 static void apply_param_adsr2_decay_curve(int16_t v) {
   ADSR2DecayCurveVal = (uint8_t)v;
+  ADSR_VCF_change_decay_curve(ADSR2DecayCurveVal);
 }
 
 // PARAM_PWM_POTS_CONTROL_MANUAL: manual PWM pot control flag.
@@ -412,6 +418,13 @@ static void apply_param_manual_calibration_flag(int16_t v) {
       // Send as 32-bit frame; receivers use lower 16 bits [index:8|offset:8].      
       serialSendParam32(PARAM_MANUAL_CALIBRATION_OFFSET_FROM_DCO, (uint32_t)packed);
     }
+  }
+
+  // Falling edge: manual cal forced the SQR levels and wave mux — restore panel state.
+  if (v == 0 && manualCalibrationFlag) {
+    apply_param_sqr1_level(SQR1LevelVal);
+    apply_param_sqr2_level(SQR2LevelVal);
+    update_waveSelector(4);
   }
 
   manualCalibrationFlag = v;

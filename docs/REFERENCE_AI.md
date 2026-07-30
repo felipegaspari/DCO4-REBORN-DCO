@@ -266,28 +266,27 @@ Related docs:
     - Implement voice allocation based on `voiceMode` and `polyMode`:
       - Mono, polyphonic, and stacked/unison modes, including voice reuse when already playing a note.
     - For every assigned voice:
-      - Update `VOICE_NOTES[]`, `VOICES[]`, trigger `note_on_flag[]`, `noteStart[]` / `noteEnd[]` and notify the external controller via `serial_send_note_on()` / `serial_send_note_off()`.
+      - Update `VOICE_NOTES[]`, `VOICES[]`, trigger `note_on_flag[]`, `noteStart[]` / `noteEnd[]`. Note edges stay on the board: EnvDCO/EnvVCA/EnvVCF read those flags on Core1, so nothing is sent over serial.
 
 - **`Serial.h` / `Serial.ino`**  
   - Configures UARTs:
     - `Serial1`: MIDI DIN input — RX **1** / TX **0** @ 31.25 kbps.
-    - `Serial2`: high‑speed link to the mainboard — RX **21** / TX **20** @ ~2.5 Mbps.
+    - `Serial2`: high‑speed link to the Input board — RX **21** / TX **20** @ ~2.5 Mbps. This is the DCO's only peer link; the Screen is reached by Input relaying gap 154. It pairs with the Input's `Serial1`: RX 21 is driven by the Input's TX (GP0), and TX 20 drives the Input's RX (GP1). The Input talks to the Screen on its `Serial2` TX (GP4); that port's RX (GP5) is unwired.
     - `Serial`: USB CDC debug console.
-  - Implements a **robust non‑blocking frame parser** for Serial2 (`serial_parser.h`):
+  - Implements a **robust non‑blocking frame parser** for Serial2 (`serial_parser.h`), speaking the Input panel protocol (`serial_input_protocol.h`):
     - Commands:  
-      - `'f'` – 16‑bit PW value (LE) → `PW[0]`.  
-      - `'s'` – 4×16‑bit ADSR parameters (BE) → `ADSR1_attack/decay/sustain/release`.  
+      - `'a'` / `'b'` / `'c'` – 4×16‑bit ADSR blocks (BE) → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times.  
+      - `'d'` – filter block → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_update_mod_formulas()`.  
+      - `'e'` – `ADSR1toVCA`.  
+      - `'f'` – 16‑bit PW value (BE) → `PW[0]` at /4 scale.  
       - `'p'` – paramNumber + 16‑bit value (BE) → `update_parameters()`.  
       - `'w'` – paramNumber + signed 8‑bit value → `update_parameters()` (sign‑extended).  
-      - `'x'` – paramNumber + 32‑bit value (LE) → `update_parameters()` (e.g. debug/monitoring params).  
+      - `'q'` – 8‑char preset name → `presetName[]`.  
     - Uses timeouts to discard partial frames and recover gracefully.
-  - Outgoing helpers:
-    - `serial_STM32_task()` – main parser pump (called from `loop()`).
-    - `serial_send_note_on()` / `serial_send_note_off()` – send compact note events to the main controller.
-    - `serialSendParam32()` – send 32‑bit parameter/debug values.
-    - Additional debug/monitoring helpers (some commented).
-  - Shared headers: `serial_protocol.h`, `serial_param_protocol.h`, `serial_parser.h`. How-to: [`README_serial_and_params.md`](README_serial_and_params.md).  
-    **`serial_input_protocol.h` is not in this repo** (Mainboard / Input only).
+  - Outgoing helper:
+    - `serialSendParam32()` – the single `'x'` sender (gap 154, cal offsets 155) out on Serial2 TX 20, received by the Input on its `Serial1`. It waits on `availableForWrite() < 1`, because a hardware UART reports only 0 or 1 free rather than a byte count.
+  - `serial_panel_task()` is the parser pump, called from `loop()`.
+  - Shared headers: `serial_protocol.h`, `serial_param_protocol.h`, `serial_parser.h`, `serial_input_protocol.h`. How-to: [`README_serial_and_params.md`](README_serial_and_params.md).
 
 - **`params_def.h` / `param_router.h` / `params.ino`**  
   - Canonical `ParamId` enum and table‑driven router.
