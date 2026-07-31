@@ -144,10 +144,13 @@ static void apply_param_lfo2_to_detune3(int16_t v) {
 static void apply_param_osc_sync_mode(int16_t v) {
   oscSync = v;
   if (oscSync < 2) {
+    // Clear any phase-align widening by returning Y to the plain reset pulse. The SM
+    // has to be stopped for this: Y travels through the OSR, which also holds clk_div
+    // for the chunk reads, so writing it on a running SM can make a chunk latch the
+    // pulse width as its ramp count.
+    phaseAlignOSC2 = 0;
     for (int i = 0; i < NUM_OSCILLATORS; i++) {
-      pio_sm_put(pio[VOICE_TO_PIO[i]], VOICE_TO_SM[i], pioPulseLength);
-      pio_sm_exec(pio[VOICE_TO_PIO[i]], VOICE_TO_SM[i], pio_encode_pull(false, false));
-      pio_sm_exec(pio[VOICE_TO_PIO[i]], VOICE_TO_SM[i], pio_encode_out(pio_y, 31));
+      osc_set_reset_pulse(i, pioPulseLength);
     }
   } else {
     if (oscSync > 8) {
@@ -293,6 +296,25 @@ static void apply_param_analog_drift_spread(int16_t v) {
 static void apply_param_sync_mode(int16_t v) {
   syncMode = v;
   setSyncMode();
+}
+
+// PARAM_SOFT_SYNC: pick the sync mechanism. Hard sync costs nothing but gives the slave
+// no say; soft sync lets the slave ignore master edges arriving early in its own cycle,
+// at the price of a slightly coarser divider (weight 5 instead of 4).
+static void apply_param_soft_sync(int16_t v) {
+  softSyncChunks = (v > 0) ? 1 : 0;
+  setSyncMode();
+}
+
+// PARAM_SUBOSC_DIVIDE: sub-oscillator divide ratio off / 2 / 4.
+static void apply_param_subosc_divide(int16_t v) {
+  uint8_t divide = 0;
+  if (v >= 4) {
+    divide = 4;
+  } else if (v >= 2) {
+    divide = 2;
+  }
+  set_subosc_divide(divide);
 }
 
 // PARAM_LFO1_TO_DCO: LFO1 → DCO detune depth (float + Q24).
@@ -493,6 +515,8 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_ANALOG_DRIFT_SPEED,        apply_param_analog_drift_speed },
   { PARAM_ANALOG_DRIFT_SPREAD,       apply_param_analog_drift_spread },
   { PARAM_SYNC_MODE,                 apply_param_sync_mode },
+  { PARAM_SOFT_SYNC,                 apply_param_soft_sync },
+  { PARAM_SUBOSC_DIVIDE,             apply_param_subosc_divide },
   { PARAM_LFO1_TO_DCO,               apply_param_lfo1_to_dco },
   { PARAM_LFO1_SPEED,                apply_param_lfo1_speed },
   { PARAM_LFO2_SPEED,                apply_param_lfo2_speed },

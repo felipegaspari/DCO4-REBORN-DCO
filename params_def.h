@@ -71,6 +71,13 @@ enum ParamId : uint16_t {
   PARAM_OSC3_DETUNE_VAL          = 34,
   PARAM_LFO2_TO_DETUNE3          = 35,
 
+  // 36: sync flavour. 0 = hard sync (master sidesets onto the slave's reset pin),
+  // 1 = soft sync (slave polls the master and ignores edges early in its own cycle).
+  PARAM_SOFT_SYNC                = 36,
+
+  // 37: sub-oscillator divide. 0 = off, 2 = one octave down, 4 = two octaves.
+  PARAM_SUBOSC_DIVIDE            = 37,
+
   // --- LFO routing (shared) -------------------------------------------
   PARAM_LFO1_TO_DCO              = 40,
   PARAM_LFO1_SPEED               = 41,

@@ -15,7 +15,6 @@ static double   g_lastGapMeasuredPeriodUs = 0.0;
 // PIO+GPIO sequence. This preserves the analogue behaviour you rely on.
 static void disable_all_oscillators_and_range_pwm() {
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
-    uint8_t pioNumber = VOICE_TO_PIO[i];
     PIO     pioN      = pio[VOICE_TO_PIO[i]];
     uint8_t smN = VOICE_TO_SM[i];
 

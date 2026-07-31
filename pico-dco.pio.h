@@ -175,6 +175,151 @@ void frequency_sync_4_jumps(PIO pio, uint sm, uint offset, uint pin, uint pin2) 
 
 #endif
 
+// -------------------- //
+// frequency_sync_poll  //
+// -------------------- //
+
+// Hand-assembled (Arduino does not run pioasm; keep in step with pico-dco.pio).
+// Encoding: [15:13] opcode, [12] sideset enable, [11] sideset data, [10:8] delay,
+// [7:0] operand. JMP is opcode 000 with the condition in [7:5]: 010 = X--,
+// 110 = PIN. pio_add_program relocates JMP targets by the load offset, so the
+// addresses below are program-relative.
+
+#define frequency_sync_poll_wrap_target 0
+#define frequency_sync_poll_wrap 12
+
+static const uint16_t frequency_sync_poll_program_instructions[] = {
+            //     .wrap_target
+    0x0040, //  0: jmp    x--, 0
+    0xa027, //  1: mov    x, osr
+    0xf000, //  2: set    pins, 0         side 0
+    0x0043, //  3: jmp    x--, 3
+    0xa027, //  4: mov    x, osr
+    0x0045, //  5: jmp    x--, 5
+    0xa027, //  6: mov    x, osr
+    0x0047, //  7: jmp    x--, 7
+    0xa027, //  8: mov    x, osr
+    0x00cb, //  9: jmp    pin, 11
+    0x0049, // 10: jmp    x--, 9
+    0xa022, // 11: mov    x, y
+    0xf801, // 12: set    pins, 1         side 1
+            //     .wrap
+};
+
+#if !PICO_NO_HARDWARE
+static const struct pio_program frequency_sync_poll_program = {
+    .instructions = frequency_sync_poll_program_instructions,
+    .length = 13,
+    .origin = -1,
+};
+
+static inline pio_sm_config frequency_sync_poll_program_get_default_config(uint offset) {
+    pio_sm_config c = pio_get_default_sm_config();
+    sm_config_set_wrap(&c, offset + frequency_sync_poll_wrap_target, offset + frequency_sync_poll_wrap);
+    sm_config_set_sideset(&c, 2, true, false);
+    return c;
+}
+
+// Slave SM for soft sync. Same pin/sideset wiring as frequency_sync_4_jumps plus
+// jmp_pin aimed at the master's reset GPIO. masterPin is deliberately not
+// pio_gpio_init'd here: the master SM already owns it, and PIO input sampling reads
+// the pad regardless of function select.
+void frequency_sync_poll_init(PIO pio, uint sm, uint offset, uint pin, uint pin2, uint masterPin) {
+    pio_sm_config c = frequency_sync_poll_program_get_default_config(offset);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+    sm_config_set_set_pins(&c, pin, 1);
+    sm_config_set_sideset_pins(&c, pin2);
+    sm_config_set_jmp_pin(&c, masterPin);
+    pio_gpio_init(pio, pin);
+    pio_gpio_init(pio, pin2);
+    pio_sm_init(pio, sm, offset, &c);
+}
+
+#endif
+
+// ------------ //
+// subosc_div2  //
+// ------------ //
+
+// WAIT is opcode 001: [7] polarity, [6:5] source (01 = PIN, relative to IN base),
+// [4:0] index. wait 1 pin 0 = 0x20a0, wait 0 pin 0 = 0x2020, plus 0x1000 for
+// side 0 and 0x1800 for side 1.
+
+#define subosc_div2_wrap_target 0
+#define subosc_div2_wrap 3
+
+static const uint16_t subosc_div2_program_instructions[] = {
+            //     .wrap_target
+    0x30a0, //  0: wait   1 pin, 0        side 0
+    0x2020, //  1: wait   0 pin, 0
+    0x38a0, //  2: wait   1 pin, 0        side 1
+    0x2020, //  3: wait   0 pin, 0
+            //     .wrap
+};
+
+#if !PICO_NO_HARDWARE
+static const struct pio_program subosc_div2_program = {
+    .instructions = subosc_div2_program_instructions,
+    .length = 4,
+    .origin = -1,
+};
+
+static inline pio_sm_config subosc_div2_program_get_default_config(uint offset) {
+    pio_sm_config c = pio_get_default_sm_config();
+    sm_config_set_wrap(&c, offset + subosc_div2_wrap_target, offset + subosc_div2_wrap);
+    sm_config_set_sideset(&c, 2, true, false);
+    return c;
+}
+#endif
+
+// ------------ //
+// subosc_div4  //
+// ------------ //
+
+#define subosc_div4_wrap_target 0
+#define subosc_div4_wrap 7
+
+static const uint16_t subosc_div4_program_instructions[] = {
+            //     .wrap_target
+    0x30a0, //  0: wait   1 pin, 0        side 0
+    0x2020, //  1: wait   0 pin, 0
+    0x20a0, //  2: wait   1 pin, 0
+    0x2020, //  3: wait   0 pin, 0
+    0x38a0, //  4: wait   1 pin, 0        side 1
+    0x2020, //  5: wait   0 pin, 0
+    0x20a0, //  6: wait   1 pin, 0
+    0x2020, //  7: wait   0 pin, 0
+            //     .wrap
+};
+
+#if !PICO_NO_HARDWARE
+static const struct pio_program subosc_div4_program = {
+    .instructions = subosc_div4_program_instructions,
+    .length = 8,
+    .origin = -1,
+};
+
+static inline pio_sm_config subosc_div4_program_get_default_config(uint offset) {
+    pio_sm_config c = pio_get_default_sm_config();
+    sm_config_set_wrap(&c, offset + subosc_div4_wrap_target, offset + subosc_div4_wrap);
+    sm_config_set_sideset(&c, 2, true, false);
+    return c;
+}
+
+// Sub-oscillator init. masterPin is an input only - do NOT pio_gpio_init it, that
+// would move its function select to this block and steal the output from pio0.
+void subosc_init(PIO pio, uint sm, uint offset, uint masterPin, uint outPin, bool div4) {
+    pio_sm_config c = div4 ? subosc_div4_program_get_default_config(offset)
+                           : subosc_div2_program_get_default_config(offset);
+    sm_config_set_in_pins(&c, masterPin);
+    sm_config_set_sideset_pins(&c, outPin);
+    pio_sm_set_consecutive_pindirs(pio, sm, outPin, 1, true);
+    pio_gpio_init(pio, outPin);
+    pio_sm_init(pio, sm, offset, &c);
+}
+
+#endif
+
 // ---------------- //
 // frequency_pulse1 //
 // ---------------- //

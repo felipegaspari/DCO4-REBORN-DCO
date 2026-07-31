@@ -138,8 +138,8 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `setVoiceMode()` — Apply `voiceMode` → `NUM_VOICES` / `STACK_VOICES`.
   - **Called from:** `init_voices()`; `apply_param_voice_mode()`.
   - **When:** Boot; Serial2 param.
-- `setSyncMode()` — Reconfigure PIO sync sidesets; retrigger.
-  - **Called from:** `apply_param_sync_mode()`.
+- `setSyncMode()` — Rebuild sync topology via `assign_sm_mapping()` + `start_voice_sms()`; retrigger.
+  - **Called from:** `apply_param_sync_mode()`, `apply_param_soft_sync()`.
   - **When:** Serial2 param.
 - `get_chan_level_lookup_fast()` — Q8 Hz → range PWM (fixed amp-comp).
   - **Called from:** `voice_task()` directly; `get_chan_level_for_engine()` when fixed amp-comp.
@@ -172,30 +172,56 @@ Note → frequency tables. **No function definitions.**
 
 ### `state_machines.h`
 
-Prototypes. **No function definitions.**
+Prototypes plus the inline period model: `pio_period_split()` (exact split, remainder into
+Y), `pio_clk_div_for_y()` (rounded, for a Y that must not move), `osc_ramp_weight()` /
+`osc_period_overhead()` (per-program constants), and the jump-target helpers
+`osc_restart_target()` / `osc_ramp_entry_target()`.
 
 ### `state_machines.ino`
 
-PIO load and SM setup.
+PIO load, SM setup, sync topology and diagnostics. **All three oscillators live on pio0**
+(SM0/1/2) so they can share a reset pin — see `pio_topology_report()`.
+
+**Subsystem reference:** [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md).
 
 **Functions**
-- `init_pio()` — Load PIO program; `start_voice_sms()`.
+- `sync_slave_osc()` / `sync_master_osc()` — Resolve `syncMode` into slave/master indices.
+  - **Called from:** `assign_sm_mapping()`, `start_voice_sms()`, `pio_topology_report()`.
+- `assign_sm_mapping()` — Rewrite `VOICE_TO_SM` so the slave outranks-below its master.
+  - **Called from:** `init_pio()`, `setSyncMode()`.
+  - **When:** Boot; sync topology change.
+- `init_pio()` — Load both oscillator programs into pio0 and the sub-osc programs into pio1.
   - **Called from:** `setup1()`.
   - **When:** Boot Core1.
-- `start_voice_sms()` — Per-osc `init_sm_sync` + preload pulse length (OSC1–3 on pio0/1/2 SM0).
-  - **Called from:** `init_pio()`.
-  - **When:** Boot.
-- `init_sm_sync()` — Production SM init via `frequency_sync_4_jumps`.
-  - **Called from:** `start_voice_sms()`.
-  - **When:** Boot.
+- `start_voice_sms()` — Per-osc program/pin/sideset selection, Y preload, same-cycle start
+  via `pio_enable_sm_mask_in_sync()`.
+  - **Called from:** `init_pio()`, `setSyncMode()`.
+  - **When:** Boot; sync topology change.
+- `osc_load_period_stopped()` — Push Y + clk_div to a **stopped** SM (Y travels through the
+  OSR, which also feeds the chunk reads).
+  - **Called from:** `start_voice_sms()`, `osc_set_reset_pulse()`, both engine note-on paths.
+- `osc_set_reset_pulse()` — Change only Y, reusing `osc_last_clk_div[]`.
+  - **Called from:** `apply_param_osc_sync_mode()`.
+- `pio_topology_report()` — Print sync roles and assert every RESET pin reads back as PIO0.
+  - **Called from:** Bench/diagnostic use.
+- `pio_period_probe()` / `pio_solve_period_model()` — Bench helpers for confirming the
+  period weight and overhead against a frequency counter.
+- `set_subosc_divide()` — (Re)configure the sub-oscillator on pio1.
+  - **Called from:** `init_pio()`, `apply_param_subosc_divide()`.
 
 ### `pico-dco.pio`
 
-PIO assembly source. **Not C functions.**
+PIO assembly source. **Not C functions.** Programs in use: `frequency_sync_4_jumps`
+(free-running, weight 4), `frequency_sync_poll` (soft-sync slave, polls `jmp pin` in the
+final chunk, weight 5), `subosc_div2` / `subosc_div4`.
+
+Annotated listings and the period model for each program: [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md).
 
 ### `pico-dco.pio.h`
 
-Generated PIO C wrappers.
+PIO C wrappers. **Hand-maintained** — Arduino does not run `pioasm`, so new programs must be
+assembled by hand and kept in step with `pico-dco.pio`. The encoding is documented inline
+above `frequency_sync_poll`.
 
 **Functions**
 - `frequency_program_get_default_config()` — Default config for basic frequency program.
@@ -621,6 +647,8 @@ Prototype. **No function definitions.**
 - `apply_param_analog_drift_speed()` — Drift speed (recomputes via `expConverterFloat`).
 - `apply_param_analog_drift_spread()` — Drift spread (recomputes speeds).
 - `apply_param_sync_mode()` — → `setSyncMode()`.
+- `apply_param_soft_sync()` — Hard (sideset) vs soft (polled `jmp pin`) sync → `setSyncMode()`.
+- `apply_param_subosc_divide()` — Sub-osc off / ÷2 / ÷4 → `set_subosc_divide()`.
 - `apply_param_lfo1_to_dco()` — LFO1→DCO depth (`expConverterFloat`).
 - `apply_param_lfo1_speed()` — LFO1 rate.
 - `apply_param_lfo2_speed()` — LFO2 rate.

@@ -21,7 +21,7 @@ For how the refactored files are split today (`autotune_context.h`, `autotune_me
 - **Control signals**:
   - A **range PWM** per oscillator (amplitude / duty compensation).
   - A shared **PW PWM** on voice 0.
-  - Oscillators are driven by **PIO SM0** on pio0 / pio1 / pio2 (OSC1↔OSC2 sync; OSC3 free-running).
+  - Oscillators are driven by **three SMs on pio0** (indices from `VOICE_TO_SM`, permuted by `assign_sm_mapping()`; OSC1↔OSC2 sync, OSC3 free-running).
 - **Measurement input**:
   - A digital pin (`DCO_calibration_pin`) receives the DCO signal.
   - The code times rising and falling edges using `micros()` to infer duty cycle and frequency.

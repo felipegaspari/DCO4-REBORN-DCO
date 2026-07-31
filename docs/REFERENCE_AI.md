@@ -35,9 +35,13 @@ Related docs:
   - System‑wide constants and state:
     - Voice/osc counts: `NUM_VOICES_TOTAL = 1`, `NUM_OSCILLATORS = 3` (monosynth; poly scaffolding kept).
     - Clock and PIO timing constants (`sysClock` = 225000 kHz → `sysClock_Hz`, `pioPulseLength`, OSR chunk sizes, timing overheads).
+    - **Period model** `period = Y + weight*clk_div + overhead`, with `PIO_RAMP_WEIGHT_FREE = 4` / `PIO_PERIOD_OVERHEAD_FREE = 12` and `PIO_RAMP_WEIGHT_SYNC = 5` / `PIO_PERIOD_OVERHEAD_SYNC = 13`. The overhead includes one fall-through cycle per `jmp x--` loop, which the old `T_LOW_OVERHEAD_CYCLES = 5` was missing (5 cycles short, roughly 0.27 cents of sharp error at 7 kHz).
+    - Per-osc PIO state: `osc_uses_sync_program[]`, `osc_last_y[]`, `osc_last_clk_div[]`, `softSyncChunks`, `subOscDivide`.
     - Fixed‑point detune and pitch‑bend multipliers (`DETUNE_INTERNAL_q24`, `DETUNE_INTERNAL2_q24`, `DETUNE_INTERNAL3_q24`, `pitchBendMultiplier_q24`).
     - Global voice arrays (`VOICE_NOTES`, `VOICES`, `note_on_flag`, shared `PW[0]`, etc.).
-    - Hardware pin mappings: RESET/RANGE for OSC1–3, single `PW_PINS[0]`; `VOICE_TO_PIO={0,1,2}` / `VOICE_TO_SM={0,0,0}` (provisional Pico 2 / WEACT-derived pins).
+    - Hardware pin mappings: RESET/RANGE for OSC1–3, single `PW_PINS[0]`, `SUBOSC_PIN = 8`.
+    - `VOICE_TO_PIO = {0,0,0}` — **all three oscillators share pio0.** A GPIO's function select names exactly one PIO block, so oscillators on separate blocks cannot share a reset pin: `pio_gpio_init()` on the second block silently steals the pin from the first, which is what broke hard sync when the layout was `{0,1,2}`. `pio_topology_report()` asserts this.
+    - `VOICE_TO_SM` is **mutable**, rewritten by `assign_sm_mapping()`: the slave takes the lower SM index because when two SMs write a pin on the same cycle the higher-numbered one wins, so the master must outrank its slave or it drops the occasional sync edge.
     - `DCO_calibration_pin = 10`; `ENABLE_FS_CALIBRATION`.
     - Shared PIO array `pio[3]`, timer variables, MIDI pitch bend state and helper prototypes.
 
@@ -73,7 +77,7 @@ Related docs:
           - **0**: compact **Q4 Hz** then 32‑bit divide (~1 µs/voice).
           - Corrected OSR clock dividers for OSC1–3 including OSC2 phase‑alignment; OSC3 free-running.
         - Performs **amplitude compensation** via `get_chan_level_lookup_fast()` (Q8 Hz domain) using precomputed quadratic windows (`amp_comp.h`) → **RANGE PWM** (not PIO amp).
-        - Writes new dividers into PIO SM0 on pio0/1/2 and amp levels into range PWM channels.
+        - Writes new dividers into the three PIO SMs on pio0 and amp levels into range PWM channels.
         - At 99 µs intervals (`timer99microsFlag`), updates shared PW PWM, combining ADSR1 and LFO2 modulation in integer math and using `get_PW_level_interpolated()`.
 
     - **`voice_task_float()`** (float hot path, when `USE_FLOAT_VOICE_TASK` — **current default**):
@@ -88,7 +92,7 @@ Related docs:
     - Voice allocation helpers (scaffolding; with `NUM_VOICES_TOTAL=1` they collapse to mono):
       - `get_free_voice_sequential()` and `get_free_voice()` for poly/stack/unison modes.
       - `setVoiceMode()` configures `NUM_VOICES` / `STACK_VOICES`.
-      - `setSyncMode()` reconfigures PIO sideset pins (OSC1↔OSC2 sync; OSC3 free-running) and forces re‑trigger.
+      - `setSyncMode()` calls `assign_sm_mapping()` + `start_voice_sms()` to rebuild the whole sync topology (OSC1↔OSC2; OSC3 free-running), then forces a re-trigger. It no longer pokes sideset pins in place or calls `pio_sm_restart()` — that cleared the shift counters but left PC/X/Y, which could strand an SM mid-loop with a stale X for one glitched period.
     - Amplitude compensation helpers:
       - `get_chan_level_lookup_fast()` – optimized fixed‑point quadratic interpolation per DCO (when `!USE_FLOAT_AMP_COMP`), using cached window indices and Q28 reciprocals.
       - `get_chan_level_float()` / `get_chan_level_for_engine()` – float Hz path and engine-agnostic facade.
@@ -109,11 +113,16 @@ Related docs:
   - `frequency_sync_4_jumps_program` is the primary program used for production.
 
 - **`state_machines.h` / `state_machines.ino`**  
-  - `init_pio()` loads the PIO program into pio0/1/2 and calls `start_voice_sms()`.
+  - **Full subsystem reference: [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md)** — programs, period model, sync modes, phase align, sub-osc, invariants and bench procedures. Read it before changing anything in this section.
+  - `init_pio()` loads **both** oscillator programs into **pio0** (`frequency_sync_4_jumps` and `frequency_sync_poll`) plus the two sub-osc programs into pio1, then calls `assign_sm_mapping()` and `start_voice_sms()`.
   - `start_voice_sms()`:
-    - For each oscillator, chooses the sideset pin (reset/sync pin) based on `syncMode` (OSC1↔OSC2; OSC3 free-running).
-    - Calls `init_sm_sync()` to configure each state machine using the PIO program and the appropriate reset/sideset pins.
-    - Preloads each SM with `pioPulseLength` and writes it to `pio_y` as the fixed high‑time base.
+    - Picks each oscillator's program: the slave runs `frequency_sync_poll` when `softSyncChunks > 0`, everything else runs `frequency_sync_4_jumps`.
+    - Picks the sideset pin. For **hard sync** the master's sideset points at the *slave's* reset pin, so the master discharges the slave's integrator while the slave keeps its own schedule. For **soft sync** the master leaves its own pin alone and the slave polls it through `jmp pin` instead.
+    - Preloads Y with `pioPulseLength` and re-pushes `osc_last_clk_div[]`, because writing Y consumes the OSR that also feeds the chunk reads.
+    - Starts every SM on the same cycle with `pio_enable_sm_mask_in_sync()`, removing the inter-oscillator skew that capped phase-align accuracy.
+  - **Sync flavours:** hard sync costs nothing (weight 4) but is analog-cap-only — it discharges the slave without restarting its counter. Soft sync (weight 5) restarts the slave's own count, so it is textbook hard/soft sync and sounds different; because only the final chunk polls, master edges in roughly the first 60% of the slave's ramp are ignored, which is the soft-sync threshold.
+  - **Phase offset** (`phaseAlignOSC2`) is split into a coarse quarter-period jump into a later ramp chunk (`osc_ramp_entry_target()`, addresses 4/6/8, preceded by an exec'd `set pins, 0` because those entries skip address 2) plus a sub-quarter residual that widens Y. That caps the held-reset waveform distortion at 25% of a period instead of the old worst case of nearly a whole period at 180°.
+  - **Diagnostics:** `pio_topology_report()` (roles + reset-pin ownership), `pio_period_probe()` / `pio_solve_period_model()` (confirm weight/overhead against a frequency counter).
 
 - **`PWM.h` / `PWM.ino`**  
   - `init_pwm()` configures RP2040 PWM slices for:

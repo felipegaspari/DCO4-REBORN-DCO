@@ -602,9 +602,6 @@ inline void voice_task() {
       if (freqB_Q4 == 0) freqB_Q4 = 1;
       if (freqC_Q4 == 0) freqC_Q4 = 1;
 
-      uint8_t pioNumberA = VOICE_TO_PIO[DCO_A];
-      uint8_t pioNumberB = VOICE_TO_PIO[DCO_B];
-      uint8_t pioNumberC = VOICE_TO_PIO[DCO_C];
       PIO pioN_A = pio[VOICE_TO_PIO[DCO_A]];
       PIO pioN_B = pio[VOICE_TO_PIO[DCO_B]];
       PIO pioN_C = pio[VOICE_TO_PIO[DCO_C]];
@@ -660,31 +657,40 @@ inline void voice_task() {
       total_cycles3 = (sysClock_Hz * 16u + (freqC_Q4 / 2u)) / freqC_Q4;
 #endif
 
-      // Use rounded division when computing clk_div to minimise bias.
-      uint32_t total_osr_val1 = total_cycles1 - T_HIGH_TOTAL_CYCLES - T_LOW_OVERHEAD_CYCLES + arbitrary_measured_correction_value;  
-      clk_div1 = (total_osr_val1 + (NUM_OSR_CHUNKS / 2u)) / NUM_OSR_CHUNKS;
+      // Period model per oscillator: period = Y + weight*clk_div + overhead. The weight
+      // and overhead depend on which program the SM runs (the polled sync program spends
+      // two cycles per iteration in its final chunk).
+      const uint32_t wA = osc_ramp_weight(DCO_A), kA = osc_period_overhead(DCO_A);
+      const uint32_t wB = osc_ramp_weight(DCO_B), kB = osc_period_overhead(DCO_B);
+      const uint32_t wC = osc_ramp_weight(DCO_C), kC = osc_period_overhead(DCO_C);
 
-      // 1. Calculate the dynamic phase and high period on EVERY call.
-      //    Use a single high-precision multiply/divide to avoid compounding
-      //    rounding error from per-degree quantisation.
-      // Phase align applies to OSC2 only (OSC1↔OSC2 sync); OSC3 is free-running.
+      total_cycles1 += arbitrary_measured_correction_value;
+      total_cycles2 += arbitrary_measured_correction_value;
+      total_cycles3 += arbitrary_measured_correction_value;
+
+      // Solve clk_div against the Y each SM is actually holding, so the reset pulse and
+      // the ramp always describe the same period. Y itself can only be rewritten while
+      // the SM is stopped, which happens at note-on below.
+      clk_div1 = pio_clk_div_for_y(total_cycles1, osc_last_y[DCO_A], wA, kA);
+      clk_div3 = pio_clk_div_for_y(total_cycles3, osc_last_y[DCO_C], wC, kC);
+
+      // Phase align applies to OSC2 only (OSC1<->OSC2 sync); OSC3 is free-running.
+      // The coarse part of the offset is a jump into a later ramp chunk at note-on,
+      // which costs no waveform distortion at all. Only the sub-quarter residual widens
+      // the reset pulse, so the held-reset distortion is capped at 25% of a period
+      // instead of the old worst case of nearly a whole period at 180 degrees.
+      uint8_t phaseQuarters = 0;
       if (oscSync > 1 && phaseAlignOSC2 != 0) {
-        // phaseDelay ~= total_cycles2 * phaseAlignOSC2 / 360
-        uint64_t phase_num = (uint64_t)total_cycles2 * (uint64_t)phaseAlignOSC2;
+        uint16_t deg = (uint16_t)(phaseAlignOSC2 % 360u);
+        phaseQuarters = (uint8_t)(deg / 90u);
+        uint16_t residualDeg = (uint16_t)(deg - (uint16_t)phaseQuarters * 90u);
+        uint64_t phase_num = (uint64_t)total_cycles2 * (uint64_t)residualDeg;
         phaseDelay = (uint32_t)((phase_num + 180u) / 360u);
       } else {
         phaseDelay = 0;
       }
-      uint32_t y_val2 = pioPulseLength + phaseDelay;
-      uint32_t high_total_cycles2 = y_val2 + T_HIGH_OVERHEAD_CYCLES;
 
-      // 2. Calculate the low period using the CORRECT, potentially phase-delayed high period.
-      //    This is the critical fix.
-      uint32_t total_osr_val2 = total_cycles2 - high_total_cycles2 - T_LOW_OVERHEAD_CYCLES + arbitrary_measured_correction_value;
-      clk_div2 = (total_osr_val2 + (NUM_OSR_CHUNKS / 2u)) / NUM_OSR_CHUNKS;
-
-      uint32_t total_osr_val3 = total_cycles3 - T_HIGH_TOTAL_CYCLES - T_LOW_OVERHEAD_CYCLES + arbitrary_measured_correction_value;
-      clk_div3 = (total_osr_val3 + (NUM_OSR_CHUNKS / 2u)) / NUM_OSR_CHUNKS;
+      clk_div2 = pio_clk_div_for_y(total_cycles2, osc_last_y[DCO_B], wB, kB);
 
 #ifdef RUNNING_AVERAGE
       ra_clk_div_calc.addValue((float)(micros() - t_clk_div));
@@ -740,11 +746,21 @@ inline void voice_task() {
       pio_sm_exec(pioN_A, smAN, pio_encode_pull(false, false));
       pio_sm_exec(pioN_B, smBN, pio_encode_pull(false, false));
       pio_sm_exec(pioN_C, smCN, pio_encode_pull(false, false));
+      osc_last_clk_div[DCO_A] = clk_div1;
+      osc_last_clk_div[DCO_B] = clk_div2;
+      osc_last_clk_div[DCO_C] = clk_div3;
 
       if (note_on_flag_flag[i]) {
+        // --- Exact period split, only safe here because the SMs get stopped below ---
+        // OSC3 is deliberately absent: it is never retriggered, so its Y stays at
+        // pioPulseLength and its clk_div keeps the rounded path.
+        PioPeriod p1 = pio_period_split(total_cycles1, wA, kA);
+        PioPeriod p2 = pio_period_split(total_cycles2 - phaseDelay, wB, kB);
+        uint32_t y_val2 = p2.y + phaseDelay;
+
         // --- Reverse Calculation to find the expected output frequency ---
-        uint32_t actual_total_osr_val = (clk_div1 * NUM_OSR_CHUNKS);  // This is what the PIO actually gets
-        uint32_t actual_total_period = T_HIGH_TOTAL_CYCLES + actual_total_osr_val + T_LOW_OVERHEAD_CYCLES;
+        uint32_t actual_total_osr_val = clk_div1 * wA;
+        uint32_t actual_total_period = osc_last_y[DCO_A] + actual_total_osr_val + kA;
         float expected_freq = (double)sysClock_Hz / (double)actual_total_period;
 
 #if DCO_DEBUG_REPORT
@@ -752,13 +768,13 @@ inline void voice_task() {
         Serial.println("----------------[ DCO DEBUG REPORT ]----------------");
         Serial.printf("Target Freq In:   %.2f Hz\n", (float)freq_q24_A / (float)(1 << 24));
         Serial.printf("Total Cycles Calc:  %lu (Target for the whole period)\n", total_cycles1);
-        Serial.printf("High Period Fixed:  %lu cycles (From constants)\n", T_HIGH_TOTAL_CYCLES);
-        Serial.printf("Low Overhead Fixed: %lu cycles (From constants)\n", T_LOW_OVERHEAD_CYCLES);
-        Serial.printf("Total OSR Delay:    %lu cycles (Remaining for loops)\n", total_osr_val1);
-        Serial.printf("clk_div (Average):  %lu (Value sent to PIO)\n", clk_div1);
+        Serial.printf("Reset pulse (Y):    %lu cycles (incl. period remainder)\n", p1.y);
+        Serial.printf("Period Overhead:    %lu cycles (program constant)\n", kA);
+        Serial.printf("Total OSR Delay:    %lu cycles (Remaining for loops)\n", p1.clk_div * wA);
+        Serial.printf("clk_div (Exact):    %lu (Value sent to PIO)\n", p1.clk_div);
         Serial.println("---");
-        Serial.printf("Actual Period Gen:  %lu cycles (High + (clk_div*%u) + Low)\n",
-                      actual_total_period, (unsigned)NUM_OSR_CHUNKS);
+        Serial.printf("Actual Period Gen:  %lu cycles (Y + (clk_div*%u) + overhead)\n",
+                      actual_total_period, (unsigned)wA);
         Serial.printf("==> Expected Freq Out: %.2f Hz\n", expected_freq);
         Serial.println("---");
 
@@ -772,10 +788,10 @@ inline void voice_task() {
         Serial.printf("  ADSRModifierOSC1_q24:      %.6f\n", (double)ADSRModifierOSC1_q24 / (double)(1 << 24));
         Serial.printf("  DETUNE_DRIFT_OSC1_q24:     %.6f\n", (double)DETUNE_DRIFT_OSC1_q24 / (double)(1 << 24));
         Serial.printf("  detune_fifo_q24:           %.6f\n", (double)detune_fifo_q24 / (double)(1 << 24));
-        Serial.printf("  unisonMODIFIER_q24:        %.6f\n", (double)unisonMODIFIER_q24 / (double)(1 << 24));
+        Serial.printf("  unisonMODIFIER_q24:        %.6f\n", (double)unisonMODIFIER_OSC1_q24 / (double)(1 << 24));
         Serial.printf("  pitchbend_q24:             %.6f\n", (double)calcPitchbend_q24 / (double)(1 << 24));
         Serial.printf("  Q24_ONE_EPS:               %.6f\n", (double)Q24_ONE_EPS / (double)(1 << 24));
-        Serial.printf("  modifiersAll_q24:          %.6f\n", (double)modifiersAll_q24 / (double)(1 << 24));
+        Serial.printf("  modifiersBase_q24:         %.6f\n", (double)modifiersBase_q24 / (double)(1 << 24));
         Serial.printf("  freqModifiers_q24:         %.6f\n", (double)freqModifiers_q24 / (double)(1 << 24));
         Serial.println("---");
 
@@ -787,33 +803,34 @@ inline void voice_task() {
 
 #endif
 
-        if (oscSync == 1) {
-          pio_sm_exec(pioN_A, smAN, pio_encode_jmp(10 + offset[pioNumberA]));  // OSC Sync MODE
-          pio_sm_exec(pioN_B, smBN, pio_encode_jmp(10 + offset[pioNumberB]));
-        }
+        if (oscSync >= 1) {
+          // All oscillators share pio0, so OSC1 and OSC2 can be stopped, reloaded and
+          // restarted on a single cycle. The old code drove separate blocks with separate
+          // enable calls, which left a few hundred nanoseconds of skew between them.
+          uint32_t maskAB = (1u << smAN) | (1u << smBN);
+          pio_set_sm_mask_enabled(pio[0], maskAB, false);
 
-        if (oscSync > 1) {
-          // OSC1/OSC2 live on different PIO blocks — enable/disable each SM separately.
-          pio_sm_set_enabled(pioN_A, smAN, false);
-          pio_sm_set_enabled(pioN_B, smBN, false);
+          // Note-on is the one point where Y can be rewritten safely: the SMs are
+          // stopped, and the envelope is at the start of its attack, so the phase
+          // discontinuity is inaudible. This is where the exact-period remainder and any
+          // phase-align residual actually reach the hardware.
+          osc_load_period_stopped(DCO_A, p1.y, p1.clk_div);
+          osc_load_period_stopped(DCO_B, y_val2, p2.clk_div);
 
-          pio_sm_clear_fifos(pioN_B, smBN);
-          pio_sm_clear_fifos(pioN_A, smAN);
+          pio_sm_exec(pioN_A, smAN, pio_encode_jmp(osc_restart_target(DCO_A)));
 
-          pio_sm_put(pioN_B, smBN, y_val2);
-          pio_sm_exec(pioN_B, smBN, pio_encode_pull(false, false));
-          pio_sm_exec(pioN_B, smBN, pio_encode_out(pio_y, 31));
+          if (phaseQuarters != 0) {
+            // Coarse phase advance: enter a later ramp chunk so OSC2's first cycle starts
+            // partway up the ramp. That entry point skips `set pins, 0`, so the reset pin
+            // has to be driven low explicitly first.
+            pio_sm_exec(pioN_B, smBN, pio_encode_set(pio_pins, 0));
+            pio_sm_exec(pioN_B, smBN,
+                        pio_encode_jmp(osc_ramp_entry_target(DCO_B, phaseQuarters)));
+          } else {
+            pio_sm_exec(pioN_B, smBN, pio_encode_jmp(osc_restart_target(DCO_B)));
+          }
 
-          pio_sm_put(pioN_A, smAN, clk_div1);
-          pio_sm_put(pioN_B, smBN, clk_div2);
-          pio_sm_exec(pioN_A, smAN, pio_encode_pull(false, true));
-          pio_sm_exec(pioN_B, smBN, pio_encode_pull(false, true));
-
-          pio_sm_exec(pioN_A, smAN, pio_encode_jmp(10 + offset[pioNumberA]));  // OSC Sync MODE
-          pio_sm_exec(pioN_B, smBN, pio_encode_jmp(10 + offset[pioNumberB]));
-
-          pio_sm_set_enabled(pioN_A, smAN, true);
-          pio_sm_set_enabled(pioN_B, smBN, true);
+          pio_enable_sm_mask_in_sync(pio[0], maskAB);
         }
 
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], pwm_gpio_to_channel(RANGE_PINS[DCO_A]), chanLevel);
@@ -1379,28 +1396,39 @@ inline void voice_task_float() {
       unsigned long t_clk_div = micros();
   #endif
 
-      float totalCycles1_f = (float)sysClock_Hz / freqA_Hz;
-      float totalCycles2_f = (float)sysClock_Hz / freqB_Hz;
-      float totalCycles3_f = (float)sysClock_Hz / freqC_Hz;
-
       float correction = 0.0f;   // keep your measured correction if needed
-      float total_osr_val1_f = totalCycles1_f - (float)T_HIGH_TOTAL_CYCLES
-                             - (float)T_LOW_OVERHEAD_CYCLES + correction;
-      uint32_t clk_div1 = (uint32_t)((total_osr_val1_f / (float)NUM_OSR_CHUNKS) + 0.5f);
+      float totalCycles1_f = (float)sysClock_Hz / freqA_Hz + correction;
+      float totalCycles2_f = (float)sysClock_Hz / freqB_Hz + correction;
+      float totalCycles3_f = (float)sysClock_Hz / freqC_Hz + correction;
 
-      float phaseDelay_f = 0.0f;
+      // Round to whole cycles here, then share the integer period model with the
+      // fixed-point engine so both tune identically. fminf guards the cast: a zero
+      // frequency yields +inf, which would otherwise overflow the uint32.
+      uint32_t total_cycles1 = (uint32_t)fminf(totalCycles1_f + 0.5f, 4.0e9f);
+      uint32_t total_cycles2 = (uint32_t)fminf(totalCycles2_f + 0.5f, 4.0e9f);
+      uint32_t total_cycles3 = (uint32_t)fminf(totalCycles3_f + 0.5f, 4.0e9f);
+
+      const uint32_t wA = osc_ramp_weight(DCO_A), kA = osc_period_overhead(DCO_A);
+      const uint32_t wB = osc_ramp_weight(DCO_B), kB = osc_period_overhead(DCO_B);
+      const uint32_t wC = osc_ramp_weight(DCO_C), kC = osc_period_overhead(DCO_C);
+
+      // Solve clk_div against the Y each SM currently holds; Y itself is only rewritten
+      // at note-on, where the SM can be stopped safely.
+      uint32_t clk_div1 = pio_clk_div_for_y(total_cycles1, osc_last_y[DCO_A], wA, kA);
+      uint32_t clk_div3 = pio_clk_div_for_y(total_cycles3, osc_last_y[DCO_C], wC, kC);
+
+      // Phase align (OSC2 only). Coarse offset becomes a ramp-chunk entry jump at
+      // note-on; only the sub-quarter residual widens the reset pulse.
+      uint8_t phaseQuarters = 0;
+      uint32_t phaseDelay = 0;
       if (oscSync > 1 && phaseAlignOSC2 != 0) {
-        phaseDelay_f = totalCycles2_f * ((float)phaseAlignOSC2 / 360.0f);
+        uint16_t deg = (uint16_t)(phaseAlignOSC2 % 360u);
+        phaseQuarters = (uint8_t)(deg / 90u);
+        uint16_t residualDeg = (uint16_t)(deg - (uint16_t)phaseQuarters * 90u);
+        phaseDelay = (uint32_t)(((float)total_cycles2 * (float)residualDeg / 360.0f) + 0.5f);
       }
-      float y_val2_f = (float)pioPulseLength + phaseDelay_f;
-      float high_total_cycles2_f = y_val2_f + (float)T_HIGH_OVERHEAD_CYCLES;
-      float total_osr_val2_f = totalCycles2_f - high_total_cycles2_f
-                             - (float)T_LOW_OVERHEAD_CYCLES + correction;
-      uint32_t clk_div2 = (uint32_t)((total_osr_val2_f / (float)NUM_OSR_CHUNKS) + 0.5f);
 
-      float total_osr_val3_f = totalCycles3_f - (float)T_HIGH_TOTAL_CYCLES
-                             - (float)T_LOW_OVERHEAD_CYCLES + correction;
-      uint32_t clk_div3 = (uint32_t)((total_osr_val3_f / (float)NUM_OSR_CHUNKS) + 0.5f);
+      uint32_t clk_div2 = pio_clk_div_for_y(total_cycles2, osc_last_y[DCO_B], wB, kB);
 
   #ifdef RUNNING_AVERAGE
       ra_clk_div_calc.addValue((float)(micros() - t_clk_div));
@@ -1443,9 +1471,6 @@ inline void voice_task_float() {
   #endif
   
       // --- 2.10 PIO + PWM + PW math (very close to original, but float inside PW calc) ---
-      uint8_t pioNumberA = VOICE_TO_PIO[DCO_A];
-      uint8_t pioNumberB = VOICE_TO_PIO[DCO_B];
-      uint8_t pioNumberC = VOICE_TO_PIO[DCO_C];
       PIO pioN_A = pio[VOICE_TO_PIO[DCO_A]];
       PIO pioN_B = pio[VOICE_TO_PIO[DCO_B]];
       PIO pioN_C = pio[VOICE_TO_PIO[DCO_C]];
@@ -1459,37 +1484,39 @@ inline void voice_task_float() {
       pio_sm_exec(pioN_A, sm1N, pio_encode_pull(false, false));
       pio_sm_exec(pioN_B, sm2N, pio_encode_pull(false, false));
       pio_sm_exec(pioN_C, smCN, pio_encode_pull(false, false));
+      osc_last_clk_div[DCO_A] = clk_div1;
+      osc_last_clk_div[DCO_B] = clk_div2;
+      osc_last_clk_div[DCO_C] = clk_div3;
   
       if (note_on_flag_flag[i]) {
-        // Sync logic mirrored from fixed-point voice_task, using float-derived clk_div and phase.
-        if (oscSync == 1) {
-          pio_sm_exec(pioN_A, sm1N, pio_encode_jmp(10 + offset[pioNumberA]));  // OSC Sync MODE
-          pio_sm_exec(pioN_B, sm2N, pio_encode_jmp(10 + offset[pioNumberB]));
-        }
+        // Sync logic mirrored from fixed-point voice_task, using float-derived periods.
+        if (oscSync >= 1) {
+          // OSC3 is deliberately absent: it is never retriggered, so its Y stays at
+          // pioPulseLength and its clk_div keeps the rounded path.
+          PioPeriod p1 = pio_period_split(total_cycles1, wA, kA);
+          PioPeriod p2 = pio_period_split(total_cycles2 - phaseDelay, wB, kB);
+          uint32_t y_val2 = p2.y + phaseDelay;
 
-        if (oscSync > 1) {
-          // OSC1/OSC2 live on different PIO blocks — enable/disable each SM separately.
-          pio_sm_set_enabled(pioN_A, sm1N, false);
-          pio_sm_set_enabled(pioN_B, sm2N, false);
+          // Everything is on pio0, so OSC1 and OSC2 stop, reload and restart on one cycle.
+          uint32_t maskAB = (1u << sm1N) | (1u << sm2N);
+          pio_set_sm_mask_enabled(pio[0], maskAB, false);
 
-          pio_sm_clear_fifos(pioN_B, sm2N);
-          pio_sm_clear_fifos(pioN_A, sm1N);
+          osc_load_period_stopped(DCO_A, p1.y, p1.clk_div);
+          osc_load_period_stopped(DCO_B, y_val2, p2.clk_div);
 
-          uint32_t y_val2_u = (uint32_t)(y_val2_f + 0.5f);
-          pio_sm_put(pioN_B, sm2N, y_val2_u);
-          pio_sm_exec(pioN_B, sm2N, pio_encode_pull(false, false));
-          pio_sm_exec(pioN_B, sm2N, pio_encode_out(pio_y, 31));
+          pio_sm_exec(pioN_A, sm1N, pio_encode_jmp(osc_restart_target(DCO_A)));
 
-          pio_sm_put(pioN_A, sm1N, clk_div1);
-          pio_sm_put(pioN_B, sm2N, clk_div2);
-          pio_sm_exec(pioN_A, sm1N, pio_encode_pull(false, true));
-          pio_sm_exec(pioN_B, sm2N, pio_encode_pull(false, true));
+          if (phaseQuarters != 0) {
+            // Enter a later ramp chunk for the coarse phase advance; that path skips
+            // `set pins, 0`, so drive the reset pin low explicitly first.
+            pio_sm_exec(pioN_B, sm2N, pio_encode_set(pio_pins, 0));
+            pio_sm_exec(pioN_B, sm2N,
+                        pio_encode_jmp(osc_ramp_entry_target(DCO_B, phaseQuarters)));
+          } else {
+            pio_sm_exec(pioN_B, sm2N, pio_encode_jmp(osc_restart_target(DCO_B)));
+          }
 
-          pio_sm_exec(pioN_A, sm1N, pio_encode_jmp(10 + offset[pioNumberA]));  // OSC Sync MODE
-          pio_sm_exec(pioN_B, sm2N, pio_encode_jmp(10 + offset[pioNumberB]));
-
-          pio_sm_set_enabled(pioN_A, sm1N, true);
-          pio_sm_set_enabled(pioN_B, sm2N, true);
+          pio_enable_sm_mask_in_sync(pio[0], maskAB);
         }
 
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], pwm_gpio_to_channel(RANGE_PINS[DCO_A]), chanLevel);
@@ -1629,40 +1656,19 @@ inline void setVoiceMode() {
   }
 }
 
-// Reconfigure PIO sideset pins for oscillator sync topology and retrigger voices.
+// Rebuild the PIO sync topology and retrigger voices.
 // Called from apply_param_sync_mode (Serial2).
 void setSyncMode() {
-  for (int i = 0; i < NUM_OSCILLATORS; i++) {
-    uint8_t sidesetPin;
-    switch (syncMode) {
-      case 0:
-        sidesetPin = RESET_PINS[i];
-        break;
-      case 1:
-        // OSC2 syncs from OSC1; OSC3 free-running
-        if (i == 1) {
-          sidesetPin = RESET_PINS[0];
-        } else {
-          sidesetPin = RESET_PINS[i];
-        }
-        break;
-      case 2:
-        // OSC1 syncs from OSC2; OSC3 free-running
-        if (i == 0) {
-          sidesetPin = RESET_PINS[1];
-        } else {
-          sidesetPin = RESET_PINS[i];
-        }
-        break;
-      default:
-        sidesetPin = RESET_PINS[i];
-        break;
-    }
-
-    pio_sm_set_sideset_pins(pio[VOICE_TO_PIO[i]], VOICE_TO_SM[i], sidesetPin);
-    pio_gpio_init(pio[VOICE_TO_PIO[i]], sidesetPin);
-    pio_sm_restart(pio[VOICE_TO_PIO[i]], VOICE_TO_SM[i]);  // IS THIS NEEDED ?
-  }
+  // assign_sm_mapping() keeps the slave below its master in SM index; start_voice_sms()
+  // re-derives every SM's program, set pin and sideset pin from syncMode and
+  // softSyncChunks, then starts them all on the same cycle.
+  //
+  // The old implementation poked sideset pins in place and called pio_sm_restart(),
+  // which cleared the shift counters but left PC, X and Y — it could strand an SM
+  // mid-loop with a stale X for one glitched period. The note_on_flag retrigger below
+  // already re-pushes everything, so the restart was never needed.
+  assign_sm_mapping();
+  start_voice_sms();
 
   for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
     note_on_flag[i] = 1;
@@ -1861,10 +1867,10 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
     freq = (float)sNotePitches[note1];
   }
 
-  uint32_t clk_div1 = (uint32_t)(((float)sysClock_Hz / freq) - pioPulseLength) / NUM_OSR_CHUNKS;
-
-  if (freq == 0)
-  clk_div1 = 0;
+  // Target period in cycles for the calibration tone. Guarded because freq can be 0,
+  // which would make the float division infinite and the cast undefined.
+  uint32_t autotune_total_cycles =
+      (freq > 0.0f) ? (uint32_t)fminf(((float)sysClock_Hz / freq) + 0.5f, 4.0e9f) : 0u;
 
   if (manualCalibrationFlag == true) {  // One Ocillator at a time to get correct gap
 
@@ -1875,7 +1881,6 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
 
     // ALL AT ONCE
     for (int i = 0; i < NUM_OSCILLATORS; i++) {
-      uint8_t pioNumber = VOICE_TO_PIO[i];
       PIO pioN = pio[VOICE_TO_PIO[i]];
       uint8_t sm1N = VOICE_TO_SM[i];
 
@@ -1886,6 +1891,11 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
         pio_sm_exec(pioN, sm1N, pio_encode_pull(false, false));
         pwm_set_chan_level(RANGE_PWM_SLICES[i], pwm_gpio_to_channel(RANGE_PINS[i]), 0);
       } else {
+
+        uint32_t clk_div1 = autotune_total_cycles
+                              ? pio_clk_div_for_y(autotune_total_cycles, osc_last_y[i],
+                                                  osc_ramp_weight(i), osc_period_overhead(i))
+                              : 0u;
 
         pio_sm_put(pioN, sm1N, clk_div1);
 
@@ -1900,9 +1910,14 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
     }
   } else {
 
-    uint8_t pioNumber = VOICE_TO_PIO[currentDCO];
     PIO pioN = pio[VOICE_TO_PIO[currentDCO]];
     uint8_t sm1N = VOICE_TO_SM[currentDCO];
+
+    uint32_t clk_div1 = autotune_total_cycles
+                          ? pio_clk_div_for_y(autotune_total_cycles, osc_last_y[currentDCO],
+                                              osc_ramp_weight(currentDCO),
+                                              osc_period_overhead(currentDCO))
+                          : 0u;
 
     pio_sm_put(pioN, sm1N, clk_div1);
     pio_sm_exec(pioN, sm1N, pio_encode_pull(false, false));
@@ -1913,7 +1928,7 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
         break;
       case 1:
         pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], pwm_gpio_to_channel(RANGE_PINS[currentDCO]), calibrationValue);
-        pio_sm_exec(pioN, sm1N, pio_encode_jmp(10 + offset[pioNumber]));
+        pio_sm_exec(pioN, sm1N, pio_encode_jmp(osc_restart_target(currentDCO)));
         break;
       case 2:
         pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], pwm_gpio_to_channel(RANGE_PINS[currentDCO]), chanLevel);
