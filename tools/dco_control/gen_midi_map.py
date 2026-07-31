@@ -26,6 +26,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 
 import params
@@ -40,6 +41,34 @@ RESERVED_CC = {0, 1, 6, 7, 10, 11, 32, 38, 42, 64, 98, 99, 100, 101,
 
 MIDI_CHANNEL = 1
 MIDI_TARGET = "midi:dco3"
+
+# A session without a version is treated as pre-0.49.12 and run through every legacy
+# converter, which quietly rewrites properties on the way in: decimals is replaced by the
+# long-gone precision, colorWidget by color, and every container with widgets has its
+# padding forced to 0. The newest converter is 1.24.2, so anything above that is left
+# alone. Open Stage Control stamps its own version here when it saves.
+SESSION_VERSION = "1.30.0"
+
+# Panel geometry. The grid reflows to the window, so the width is a minimum per column.
+# Heights have to come from the grid itself: the app's stylesheet forces height to auto
+# on every direct child of a grid container, so a cell cannot size itself. Rows are one
+# ROW_UNIT tall and a cell spans CELL_ROWS of them; a section header takes a single row.
+CELL_WIDTH = 132
+ROW_UNIT = 30
+CELL_ROWS = 5
+VALUE_HEIGHT = 20
+
+# One muted accent per tab, so a knob's colour says which section it belongs to.
+GROUP_ACCENT = {
+    params.GROUP_OSC: "#dda44a",
+    params.GROUP_SYNC: "#7f9ec4",
+    params.GROUP_ENV: "#6fbf8b",
+    params.GROUP_FILTER: "#d1685f",
+    params.GROUP_PWM: "#b98bd1",
+    params.GROUP_LFO: "#4fb3c4",
+    params.GROUP_VOICE: "#c0a06a",
+    params.GROUP_CAL: "#8d97a3",
+}
 
 CURVE_LINEAR = "MIDI_CC_LINEAR"
 CURVE_EXP_TIME = "MIDI_CC_EXP_TIME"
@@ -63,13 +92,16 @@ class Entry:
     lo: int
     hi: int
     curve: str
-    label: str
+    label: str  # full name, with the block prefix, for the chart
     group: str
-    kind: str  # fader, menu or switch
+    kind: str  # knob, menu or switch
     note: str = ""
     choices: tuple = ()  # (label, native value) pairs, menus only
     unreachable: tuple = ()  # choices 7-bit CC cannot express
     is_local: bool = False
+    section: str = ""  # block label, or "" for a plain parameter
+    short_label: str = ""  # name without the block prefix, for the panel cell
+    default: int = 0  # native default, pre-exp for the envelope times
 
 
 def cc_to_native(cc: int, lo: int, hi: int, curve: str) -> int:
@@ -99,7 +131,7 @@ def param_range(p: params.Param) -> tuple[int, int, str]:
         return 0, 127, "menu"
     if p.kind == "check":
         return 0, 1, "switch"
-    return p.lo, p.hi, "fader"
+    return p.lo, p.hi, "knob"
 
 
 def build_entries(enum_by_id: dict[int, str]) -> list[Entry]:
@@ -111,7 +143,7 @@ def build_entries(enum_by_id: dict[int, str]) -> list[Entry]:
             lo, hi, kind = param_range(p)
             entry = Entry(cc=p.cc, target=param_target(p.pid, enum_by_id), lo=lo, hi=hi,
                           curve=CURVE_LINEAR, label=p.label, group=group, kind=kind,
-                          note=p.note)
+                          note=p.note, short_label=p.label, default=p.default)
             if p.kind == "combo":
                 reachable = []
                 unreachable = []
@@ -138,9 +170,12 @@ def build_entries(enum_by_id: dict[int, str]) -> list[Entry]:
                     curve=CURVE_EXP_TIME if field_.exp else CURVE_LINEAR,
                     label=f"{block.label}: {field_.label}",
                     group=group,
-                    kind="fader",
+                    kind="knob",
                     note=block.note if field_ is block.fields[0] else "",
                     is_local=True,
+                    section=block.label,
+                    short_label=field_.label,
+                    default=field_.default,
                 ))
     return entries
 
@@ -323,57 +358,163 @@ def emit_chart(entries: list[Entry]) -> str:
 def emit_panel(entries: list[Entry]) -> str:
     tabs = []
     for group in params.GROUP_ORDER:
-        widgets = [panel_widget(e) for e in entries if e.group == group]
-        if not widgets:
+        in_group = [e for e in entries if e.group == group]
+        if not in_group:
             continue
+        widgets = []
+        section = ""
+        for e in in_group:
+            if e.section != section:
+                section = e.section
+                widgets.append(section_header(e))
+            widgets.append(panel_cell(e))
         tabs.append({
             "type": "tab",
             "id": "tab_" + slug(group),
             "label": group,
             "layout": "grid",
-            "gridTemplate": 4,
+            # A number would become "none / repeat(n, 1fr)"; a string goes straight into
+            # the css grid-template shorthand, which is rows first, hence the "none /".
+            "gridTemplate": f"none / repeat(auto-fill, minmax({CELL_WIDTH}px, 1fr))",
+            # Row height lives here because the cells are not allowed to set their own.
+            # The child selector matters: the same rule on every nested container would
+            # reach the cells, whose inner is a flex box that reads these properties too.
+            "css": f"> inner {{ grid-auto-rows: {ROW_UNIT}rem; }}",
+            "scroll": True,
+            "padding": 10,
+            "colorWidget": GROUP_ACCENT[group],
             "widgets": widgets,
         })
 
-    root = {
-        "type": "root",
-        "id": "root",
-        "label": "DCO3 monosynth",
-        "width": 1280,
-        "height": 800,
-        "tabs": tabs,
+    session = {
+        "version": SESSION_VERSION,
+        "type": "session",
+        "content": {
+            "type": "root",
+            "id": "root",
+            "width": 1280,
+            "height": 860,
+            "colorBg": "#16181d",
+            "colorText": "#dbe0e6",
+            "tabs": tabs,
+        },
     }
-    return json.dumps(root, indent=2) + "\n"
+    return json.dumps(session, indent=2) + "\n"
 
 
 def slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
-def panel_widget(e: Entry) -> dict:
-    common = {
-        "id": f"cc{e.cc}_{slug(e.label)}",
+def js_number(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else repr(value)
+
+
+def widget_id(e: Entry) -> str:
+    """Short and stable: the CC number alone already makes it unique."""
+    return f"cc{e.cc}_{slug(e.short_label)}"
+
+
+def cc_for_native(e: Entry, native: int) -> int:
+    """Inverse of the CC scaling, for the widget's default and gauge origin.
+
+    Envelope times invert in the linear domain, because lo..hi is what the exp curve
+    is fed, not what it returns.
+    """
+    cc = round((native - e.lo) * 127 / (e.hi - e.lo))
+    return max(0, min(127, cc))
+
+
+def readout_js(e: Entry) -> str:
+    """A `#{}` expression giving the native value the DCO will hold for this CC.
+
+    Mirrors cc_to_native(), so the number under the knob is the number in the chart.
+    `#{}` prepends a return, so this has to stay one expression. Math.round comes
+    first because `decimals: 0` is what the knob actually sends.
+    """
+    linear = f"Math.floor(({e.hi - e.lo} * Math.round(@{{{widget_id(e)}}}) + 63) / 127)"
+    if e.lo:
+        linear = f"{e.lo} + {linear}"
+    if e.curve == CURVE_EXP_TIME:
+        # linearToExponential(v, 50, 25000). Grouping the constant division the same way
+        # protocol.lin_to_exp() does keeps both sides on the same double.
+        base = js_number(protocol.ADSR_EXP_BASE)
+        return (f"#{{ Math.floor((Math.pow({base}, ({linear}) / {protocol.ADSR_LIN_MAX}) - 1)"
+                f" * ({protocol.ADSR_EXP_MAX} / {js_number(protocol.ADSR_EXP_BASE - 1)})) }}")
+    return f"#{{ {linear} }}"
+
+
+def section_header(e: Entry) -> dict:
+    """A row that spans the whole grid, naming the block the next cells belong to."""
+    return {
+        "type": "text",
+        "id": "head_" + slug(e.section or e.group),
+        "value": (e.section or e.group).upper(),
+        "align": "left bottom",
+        "css": "grid-column: 1 / -1; font-weight: bold; font-size: 90%; opacity: 0.55;",
+    }
+
+
+def panel_cell(e: Entry) -> dict:
+    """One grid cell: the name, the control, and the native value it is sending.
+
+    The value needs a widget of its own: a slider cannot show its own value, because
+    `label` is not one of the dynamic properties and a widget may not feed its own value
+    into a property that is not.
+    """
+    rows = []
+    control = {
+        "id": widget_id(e),
         "address": "/control",
         "preArgs": [MIDI_CHANNEL, e.cc],
         "target": MIDI_TARGET,
-        "label": f"{e.label}  (CC {e.cc})",
+        "default": cc_for_native(e, e.default),
+        "expand": True,
+        # The name goes in `html`, not `label`: only button, dropdown, menu, modal, tab
+        # and xy still have a label, and on a menu it is the value readout. The default
+        # line-height for that element is a full row, so names have to be told to wrap.
+        "html": escape(e.short_label),
+        "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
     }
     if e.kind == "menu":
-        return {
+        rows.append({
             "type": "menu",
-            **common,
+            **control,
             "values": {f"{label} ": value for label, value in e.choices},
+        })
+    elif e.kind == "switch":
+        rows.append({"type": "switch", **control, "values": {"Off ": 0, "On ": 127}})
+    else:
+        # The knob carries controller numbers because that is what /control sends; the
+        # text below it translates them back into what the parameter is worth.
+        knob = {
+            "type": "knob",
+            **control,
+            "range": {"min": 0, "max": 127},
+            "decimals": 0,
+            "doubleTap": True,
+            "pips": False,
         }
-    if e.kind == "switch":
-        return {"type": "switch", **common, "values": {"Off ": 0, "On ": 127}}
-    # decimals 0 keeps the widget on whole controller numbers; the range stays the MIDI
-    # 0..127 because that is what /control carries, with the native range in the chart.
+        if e.lo < 0:
+            knob["origin"] = cc_for_native(e, 0)
+        rows.append(knob)
+        rows.append({
+            "type": "text",
+            "id": "val_" + widget_id(e),
+            "value": readout_js(e),
+            "height": VALUE_HEIGHT,
+            "css": "font-size: 95%; opacity: 0.65;",
+        })
+
     return {
-        "type": "fader",
-        **common,
-        "design": "compact",
-        "range": {"min": 0, "max": 127},
-        "decimals": 0,
+        "type": "panel",
+        "id": "cell_" + widget_id(e),
+        "layout": "vertical",
+        "scroll": False,
+        "innerPadding": False,
+        "padding": 4,
+        "css": f"grid-row: span {CELL_ROWS};",
+        "widgets": rows,
     }
 
 

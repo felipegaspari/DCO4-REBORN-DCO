@@ -163,13 +163,22 @@ To use the panel, install `open-stage-control` (AUR, a `.deb`, or the release zi
 point it at the board's MIDI port:
 
 ```bash
-open-stage-control --midi "dco3:DCO3-MONO,DCO3-MONO" \
+open-stage-control --theme nord \
+                   --midi "dco3:DCO3-MONO,DCO3-MONO" \
                    --load ../panels/dco3_panel.json
 ```
 
-The `dco3` name in that string is what the session's widgets target, so keep it. As with
-this tool, the board boots with its own defaults and never reports back, so push the panel's
-state once after connecting (**Send all** in the Open Stage Control sidepanel).
+The `dco3` name in that string is what the session's widgets target, so keep it. `--theme`
+is optional; `nord` and `orange` are the two built in.
+
+One tab per group, one knob per controller, grouped under the block they belong to. The
+number under each knob is the value the DCO will actually hold — `0..4095` for cutoff, the
+exp-mapped `0..25000` for envelope times — not the controller number, computed by the same
+formula as the chart. Double-tapping a knob returns it to its `params.py` default, which is
+also where every knob starts.
+
+As with this tool, the board boots with its own defaults and never reports back, so push
+the panel's state once after connecting: **State -> Send All** in the client menu.
 
 Autotune and "store manual cal offsets" are deliberately left off the CC map, since one is
 a minute-long takeover of the board and the other writes the filesystem. Those stay here.

@@ -207,7 +207,11 @@ volatile uint8_t NEXT_VOICE = 0;
 
 uint32_t LED_BLINK_START = 0;
 
-PIO pio[3] = { pio0, pio1, pio2 };
+// PIO state machines for RP2350 Pico
+// PIO pio[3] = { pio0, pio1, pio2 };
+
+//PIO state machines for RP2040 (legacy)
+PIO pio[2] = { pio0, pio1};
 
 uint8_t midi_serial_status = 0;
 int midi_pitch_bend = 8192, last_midi_pitch_bend = 8192;
