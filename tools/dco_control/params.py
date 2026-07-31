@@ -84,22 +84,32 @@ class Block:
     note: str = ""
 
 
-# --- Phase align (PARAM_OSC_SYNC_MODE = 17) ---------------------------------
-# One param carries two encodings, per apply_param_osc_sync_mode() in DCO/params.ino:
-# below 2 disables phase align, 2..8 select fixed angles, and above 8 means value * 2
-# degrees. Values 0 and 1 also gate phase align off entirely (voices.ino tests
-# oscSync > 1). Presented as one combo so the encoding never has to be done by hand.
+# --- Osc sync and phase align (PARAM_OSC_SYNC_MODE = 17) --------------------
+# One param, three regimes, per apply_param_osc_sync_mode() in DCO/params.ino and the
+# `oscSync >= 1` gate in DCO/voices.ino:
+#
+#   0      the note-on block is skipped entirely, so the oscillators run straight through
+#          note-on and their phase relationship is whatever it happens to be
+#   1      OSC1 and OSC2 are stopped, reloaded and restarted together at note-on, with no
+#          phase offset
+#   2..8   the same restart, plus a fixed OSC2 offset of 45 to 315 degrees
+#   >8     the same restart, with the offset in degrees being value * 2
+#
+# Presented as one combo so the encoding never has to be worked out by hand.
 _PHASE_PRESETS = {45: 2, 90: 3, 135: 4, 180: 5, 225: 6, 270: 7, 315: 8}
 _PHASE_FINE = [30, 60, 120, 150, 210, 240, 300, 330]
 
 
 def _phase_choices() -> tuple:
-    entries = [("Off (sync only)", 0)]
+    entries = [
+        ("Off - free running (no note-on sync)", 0),
+        ("Sync at note-on (0 deg)", 1),
+    ]
     by_deg = dict(_PHASE_PRESETS)
     for deg in _PHASE_FINE:
         by_deg[deg] = deg // 2
     for deg in sorted(by_deg):
-        entries.append((f"{deg} deg", by_deg[deg]))
+        entries.append((f"Sync + {deg} deg", by_deg[deg]))
     return tuple(entries)
 
 
@@ -122,15 +132,20 @@ PARAMS: list[Param] = [
     Param(4, "Sine enable", GROUP_OSC, "check", default=0, note="wave mux"),
 
     # --- Sync and PIO ---
-    Param(31, "Sync mode", GROUP_SYNC, "combo", default=0,
-          choices=(("0 - all free running", 0), ("1 - OSC2 masters OSC1", 1), ("2 - OSC1 masters OSC2", 2))),
+    Param(31, "Hard sync topology", GROUP_SYNC, "combo", default=0,
+          choices=(("0 - all free running", 0), ("1 - OSC2 masters OSC1", 1), ("2 - OSC1 masters OSC2", 2)),
+          note="which oscillator's sideset drives which reset pin; not the note-on phase "
+               "reset, which is 'Osc sync / phase align OSC2' below"),
     Param(36, "Soft sync", GROUP_SYNC, "check", default=0,
           note="off = hard sync (cap discharge only), on = slave polls master"),
     Param(37, "Sub-oscillator divide", GROUP_SYNC, "combo", default=0,
           choices=(("Off", 0), ("Divide by 2", 2), ("Divide by 4", 4)),
           note="output on GP8, needs a mixer input on the carrier to be audible"),
-    Param(17, "Phase align OSC2", GROUP_SYNC, "combo", default=0, choices=_phase_choices(),
-          note="also gates phase align and retriggers all notes"),
+    Param(17, "Osc sync / phase align OSC2", GROUP_SYNC, "combo", default=0,
+          choices=_phase_choices(),
+          note="Off leaves the oscillators running through note-on; every other setting "
+               "restarts OSC1 and OSC2 together there, the degree entries adding an OSC2 "
+               "offset on top. Changing this retriggers all notes."),
 
     # --- Envelopes (curves and routing; times live in the a/b/c blocks) ---
     Param(126, "EnvDCO (ADSR3) enabled", GROUP_ENV, "check", default=1),

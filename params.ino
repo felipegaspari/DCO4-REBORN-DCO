@@ -141,6 +141,9 @@ static void apply_param_lfo2_to_detune3(int16_t v) {
 }
 
 // PARAM_OSC_SYNC_MODE: osc sync / phase-align (updates phaseAlignOSC2, retriggers notes).
+// oscSync also gates the note-on restart in voices.ino: 0 leaves the oscillators running
+// through note-on (free running), 1 stops and restarts OSC1 and OSC2 together with no
+// offset, and above 1 adds an OSC2 phase offset on top (2..8 = 45..315 degrees, >8 = v * 2).
 static void apply_param_osc_sync_mode(int16_t v) {
   oscSync = v;
   if (oscSync < 2) {

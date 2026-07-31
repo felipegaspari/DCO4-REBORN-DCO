@@ -437,6 +437,21 @@ program. `softSyncChunks` is consequently a 0/1 choice, not a 0-3 range.
 `phaseAlignOSC2` (degrees, via `PARAM_OSC_SYNC_MODE`) offsets OSC2's phase relative to OSC1 at
 note-on. It applies only when `oscSync > 1`.
 
+That one parameter carries three regimes, because `oscSync` also gates the note-on restart
+itself in [`voices.ino`](../voices.ino):
+
+| `oscSync` | At note-on |
+|-----------|------------|
+| 0 | Nothing. The oscillators run straight through, so their phase relationship at note-on is whatever it happens to be — free running |
+| 1 | OSC1 and OSC2 are stopped, reloaded and restarted together, with no offset |
+| 2..8 | The same restart, plus a fixed OSC2 offset of 45 to 315 degrees in 45 degree steps |
+| >8 | The same restart, with the offset in degrees being `oscSync * 2` |
+
+Worth knowing when comparing 0 against the rest: `osc_load_period_stopped()` is only reached
+inside that gated block, so free running never receives the exact-period Y rewrite from 5.2 and
+keeps the rounded `clk_div` path for its whole life. Expect a small tuning difference between
+free running and any of the sync settings, independent of the phase behaviour.
+
 ### 8.1 The problem with the old approach
 
 Previously the whole offset went into a widened reset pulse: `y_val2 = pioPulseLength +

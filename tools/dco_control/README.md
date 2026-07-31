@@ -70,7 +70,7 @@ Eight tabs, all generated from the tables in [`params.py`](params.py):
 | Tab | Contents |
 |-----|----------|
 | Oscillators | Intervals, detune, SQR and sub levels, wave enables |
-| Sync and PIO | Sync mode, soft sync, sub-osc divide, phase align, diagnostics |
+| Sync and PIO | Hard sync topology, soft sync, sub-osc divide, note-on sync and phase align, diagnostics |
 | Envelopes | The three envelope time blocks, curves, ADSR3 routing |
 | Filter | Cutoff, resonance, envelope and LFO amounts, keytrack |
 | PWM | Pulse width, LFO2 and envelope to PW |
@@ -122,10 +122,26 @@ file, which nothing else in the firmware invokes:
   **Only works with no note playing** — `voice_task()` pushes a fresh divider every frame
   for a held note, which immediately overwrites what the probe set.
 
-For the hard-sync listening check: set **Sync mode** to 1 or 2, leave **Soft sync** off,
-hold a note, and sweep the slave's detune. A timbral formant sweep means sync is working.
+Two controls on that tab are easy to mistake for each other, because they are different
+parameters doing different jobs:
+
+- **Hard sync topology** (31) routes one oscillator's sideset onto another's reset pin, so
+  the slave is forced to the master's period for the whole note.
+- **Osc sync / phase align OSC2** (17) decides what happens at *note-on*. **Off** leaves the
+  oscillators running through the note, so their phase relationship is whatever it happens to
+  be. **Sync at note-on** stops OSC1 and OSC2 and restarts them together on one cycle. The
+  degree entries do the same restart and add an OSC2 offset on top. Note that free running
+  also skips the exact-period rewrite, so it tunes very slightly differently — see section 8
+  of [`PIO_OSCILLATORS.md`](../../docs/PIO_OSCILLATORS.md).
+
+For the hard-sync listening check: set **Hard sync topology** to 1 or 2, leave **Soft sync**
+off, hold a note, and sweep the slave's detune. A timbral formant sweep means sync is working.
 If the pitch simply tracks with no change in character, the slave is being cloned rather
 than synced.
+
+To hear the note-on sync on its own, leave the topology at 0, set **Osc sync / phase align
+OSC2** to **Sync at note-on**, and retrigger the same note repeatedly: the attack transient
+becomes identical every time, where at **Off** it varies from note to note.
 
 ## 6. Files
 
