@@ -45,6 +45,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```bash
 python3 app.py                      # auto-detects the DCO3-MONO port
 python3 app.py --port /dev/ttyACM0  # or name it explicitly
+python3 app.py --theme light        # dark is the default
 ```
 
 Pick the port, press **Connect**, then press **Send all**. That last step matters: the
@@ -78,7 +79,28 @@ Eight tabs, all generated from the tables in [`params.py`](params.py):
 | Calibration | Autotune trigger, manual calibration stage and offsets |
 
 Anything the board prints — the topology report, `DCO_DEBUG_REPORT` output, autotune
-progress — lands in the **Board output** pane at the bottom.
+progress — lands in the **Board output** pane at the bottom. Lines this tool writes itself
+are prefixed `[link]`, `[send]` or `[ui]` and tinted, so they are easy to tell from the
+board's own output.
+
+### Appearance
+
+Dark by default. The **Light** / **Dark** button in the toolbar switches in place, and
+`--theme light` starts that way; the choice is not remembered between runs, so use a shell
+alias if you always want light.
+
+The colours are painted onto ttk's built-in `clam` theme, which means **no extra package is
+needed**. If [`sv-ttk`](https://pypi.org/project/sv-ttk/) happens to be installed it is used
+instead for a more modern look and real toggle switches on the boolean parameters:
+
+```bash
+pip install sv-ttk        # entirely optional, detected automatically
+```
+
+Everything lives in [`theme.py`](theme.py). Note that ttk styling only reaches ttk widgets,
+so that module also recolours the plain-Tk parts by hand — each tab's scroll canvas, the log
+pane, the tooltips and the combobox dropdown — reading the colours back out of the live
+style so the same code works under either backend.
 
 ## 5. Testing the PIO sync work
 
@@ -112,6 +134,7 @@ than synced.
 | [`protocol.py`](protocol.py) | Frame builders, the envelope lin-to-exp curve, port detection |
 | [`params.py`](params.py) | The whole control surface as data; edit this to add a control |
 | [`app.py`](app.py) | tkinter UI generated from `params.py` |
+| [`theme.py`](theme.py) | Dark and light palettes, ttk styling, plain-Tk recolouring |
 
 ### Adding a parameter
 

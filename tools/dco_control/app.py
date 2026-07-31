@@ -7,7 +7,7 @@ already enumerates as a USB MIDI device, so play it from a MIDI keyboard or VMPK
 
 Requires the firmware to be built with ENABLE_USB_CONTROL (see DCO/DCO.ino).
 
-    python3 app.py [--port /dev/ttyACM0]
+    python3 app.py [--port /dev/ttyACM0] [--theme dark|light]
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from tkinter import ttk
 
 import params
 import protocol
+import theme
 
 try:
     import serial
@@ -100,20 +101,29 @@ class Link:
 
 
 class App:
-    def __init__(self, root: tk.Tk, preferred_port: str | None) -> None:
+    def __init__(self, root: tk.Tk, preferred_port: str | None, mode: str = "dark") -> None:
         self.root = root
         self.link = Link()
         self.pending: dict[str, bytes] = {}  # dedup key -> most recent frame
         self.param_vars: dict[int, tk.Variable] = {}
         self.block_vars: dict[str, dict[str, tk.Variable]] = {}
         self.blocks_by_key = {b.key: b for b in params.BLOCKS}
+        self.mode = mode if mode in theme.MODES else "dark"
+        self.dot_on = False
 
         root.title("DCO bench controller")
-        root.geometry("1000x820")
+        # Wide enough that the toolbar's right-hand side is never squeezed out by pack().
+        root.geometry("1140x840")
+        root.minsize(900, 600)
+        # Before building, so every widget is created already styled.
+        theme.apply(root, self.mode)
 
         self._build_toolbar(preferred_port)
         self._build_tabs()
         self._build_log()
+        # The canvases and log pane are plain Tk and were created after apply()'s own pass.
+        theme.retint(root)
+        self._style_log_tags()
 
         self.root.after(SEND_INTERVAL_MS, self._flush)
         self.root.after(50, self._drain_log)
@@ -127,7 +137,7 @@ class App:
 
         ttk.Label(bar, text="Port").pack(side="left")
         self.port_var = tk.StringVar()
-        self.port_combo = ttk.Combobox(bar, textvariable=self.port_var, width=34, state="readonly")
+        self.port_combo = ttk.Combobox(bar, textvariable=self.port_var, width=28, state="readonly")
         self.port_combo.pack(side="left", padx=6)
         self._refresh_ports(preferred_port)
 
@@ -136,11 +146,33 @@ class App:
         self.connect_btn.pack(side="left", padx=6)
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=10)
-        ttk.Button(bar, text="Send all", command=self.send_all).pack(side="left")
+        ttk.Button(bar, text="Send all", command=self.send_all,
+                   style="Accent.TButton").pack(side="left")
         ttk.Button(bar, text="Reset to defaults", command=self.reset_defaults).pack(side="left", padx=6)
 
         self.status_var = tk.StringVar(value="not connected")
-        ttk.Label(bar, textvariable=self.status_var).pack(side="right")
+        ttk.Label(bar, textvariable=self.status_var, style="Status.TLabel").pack(side="right")
+        self.status_dot = ttk.Label(bar, text="\u25cf", style="Dot.TLabel")
+        self.status_dot.pack(side="right", padx=(10, 5))
+
+        self.theme_btn = ttk.Button(bar, command=self._toggle_theme, width=7)
+        self.theme_btn.pack(side="right", padx=(0, 12))
+        self._sync_theme_button()
+
+    def _toggle_theme(self) -> None:
+        self.mode = "light" if self.mode == "dark" else "dark"
+        # ttk resolves styles at draw time, so this restyles the live widget tree in place.
+        theme.apply(self.root, self.mode)
+        self._style_log_tags()
+        self._sync_theme_button()
+        self._set_status_dot(self.link.is_open)
+
+    def _sync_theme_button(self) -> None:
+        self.theme_btn.config(text="Light" if self.mode == "dark" else "Dark")
+
+    def _set_status_dot(self, connected: bool) -> None:
+        self.status_dot.config(style="DotOn.TLabel" if connected else "Dot.TLabel")
+        self.dot_on = connected
 
     def _refresh_ports(self, preferred: str | None) -> None:
         values = [f"{p.device}  ({p.description})" for p in protocol.find_dco_ports()]
@@ -161,6 +193,7 @@ class App:
             self.link.close()
             self.connect_btn.config(text="Connect")
             self.status_var.set("not connected")
+            self._set_status_dot(False)
             self.log("[link] disconnected\n")
             return
         device = self._selected_device()
@@ -174,6 +207,7 @@ class App:
             return
         self.connect_btn.config(text="Disconnect")
         self.status_var.set(f"connected to {device}")
+        self._set_status_dot(True)
         self.log(f"[link] connected to {device} -- press 'Send all' to push this window's state\n")
 
     # --- tabs ------------------------------------------------------------
@@ -230,14 +264,15 @@ class App:
 
     def _add_param(self, parent: ttk.Frame, p: params.Param, row: int) -> int:
         label = ttk.Label(parent, text=f"{p.label}  [{p.pid}]")
-        label.grid(row=row, column=0, sticky="w", pady=3, padx=(0, 10))
+        label.grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
         if p.note:
             self._tooltip(label, p.note)
 
         if p.kind == "slider":
             var = tk.DoubleVar(value=p.default)
             self.param_vars[p.pid] = var
-            readout = ttk.Label(parent, width=6, text=str(p.default), anchor="e")
+            readout = ttk.Label(parent, width=6, text=str(p.default), anchor="e",
+                                style="Readout.TLabel")
 
             if p.hi - p.lo <= SPINBOX_MAX_RANGE:
                 def on_spin(pid=p.pid, var=var, rd=readout):
@@ -245,7 +280,7 @@ class App:
                     self.queue_param(pid, ivar(var))
 
                 ttk.Spinbox(parent, from_=p.lo, to=p.hi, textvariable=var, width=8,
-                            command=on_spin).grid(row=row, column=1, sticky="w", pady=3)
+                            command=on_spin).grid(row=row, column=1, sticky="w", pady=4)
                 readout.grid_forget()
             else:
                 def on_slide(_v, pid=p.pid, var=var, rd=readout):
@@ -253,7 +288,7 @@ class App:
                     self.queue_param(pid, ivar(var))
 
                 ttk.Scale(parent, from_=p.lo, to=p.hi, variable=var, orient="horizontal",
-                          command=on_slide).grid(row=row, column=1, sticky="ew", pady=3)
+                          command=on_slide).grid(row=row, column=1, sticky="ew", pady=4)
                 readout.grid(row=row, column=2, sticky="e", padx=(8, 0))
 
         elif p.kind == "combo":
@@ -262,7 +297,7 @@ class App:
             var = tk.StringVar(value=next((c[0] for c in p.choices if c[1] == p.default), labels[0]))
             self.param_vars[p.pid] = var
             combo = ttk.Combobox(parent, textvariable=var, values=labels, state="readonly")
-            combo.grid(row=row, column=1, sticky="ew", pady=3)
+            combo.grid(row=row, column=1, sticky="ew", pady=4)
 
             def on_pick(_e=None, pid=p.pid, var=var, lookup=lookup):
                 self.queue_param(pid, lookup[var.get()])
@@ -276,8 +311,9 @@ class App:
             def on_check(pid=p.pid, var=var):
                 self.queue_param(pid, ivar(var))
 
-            ttk.Checkbutton(parent, variable=var, command=on_check).grid(
-                row=row, column=1, sticky="w", pady=3)
+            ttk.Checkbutton(parent, variable=var, command=on_check,
+                            style=theme.check_style()).grid(
+                row=row, column=1, sticky="w", pady=4)
 
         elif p.kind == "pulse":
             def on_pulse(pid=p.pid, value=p.pulse_value, label=p.label):
@@ -285,7 +321,7 @@ class App:
                 self.log(f"[send] {label} (param {pid} = {value})\n")
 
             ttk.Button(parent, text="Send", command=on_pulse).grid(
-                row=row, column=1, sticky="w", pady=3)
+                row=row, column=1, sticky="w", pady=4)
 
         return row + 1
 
@@ -299,7 +335,8 @@ class App:
             ttk.Label(frame, text=f.label).grid(row=i, column=0, sticky="w", padx=(0, 10), pady=2)
             var = tk.DoubleVar(value=f.default)
             self.block_vars[block.key][f.key] = var
-            readout = ttk.Label(frame, width=6, text=str(f.default), anchor="e")
+            readout = ttk.Label(frame, width=6, text=str(f.default), anchor="e",
+                                style="Readout.TLabel")
 
             def on_slide(_v, key=block.key, var=var, rd=readout):
                 rd.config(text=str(ivar(var)))
@@ -310,7 +347,7 @@ class App:
             readout.grid(row=i, column=2, sticky="e", padx=(8, 0))
 
         if block.note:
-            ttk.Label(frame, text=block.note, wraplength=700, foreground="grey40").grid(
+            ttk.Label(frame, text=block.note, wraplength=700, style="Muted.TLabel").grid(
                 row=len(block.fields), column=0, columnspan=3, sticky="w", pady=(6, 0))
         return row + 1
 
@@ -329,7 +366,7 @@ class App:
                  "note is playing, because voice_task() pushes a fresh divider every frame "
                  "for a held note.",
             wraplength=760,
-            foreground="grey40",
+            style="Muted.TLabel",
         ).grid(row=1, column=0, columnspan=len(params.DEBUG_COMMANDS), sticky="w", pady=(6, 0))
         return row + 1
 
@@ -339,11 +376,15 @@ class App:
         def show(_e):
             if state["win"] is not None:
                 return
+            # Created on hover, so the startup retint() cannot reach it: colour it here.
+            p = theme.palette()
             win = tk.Toplevel(widget)
             win.wm_overrideredirect(True)
             win.wm_geometry(f"+{widget.winfo_rootx() + 20}+{widget.winfo_rooty() + widget.winfo_height() + 4}")
-            tk.Label(win, text=text, relief="solid", borderwidth=1, justify="left",
-                     wraplength=420, padx=6, pady=3).pack()
+            win.configure(background=p["border"])
+            tk.Label(win, text=text, justify="left", wraplength=420, padx=8, pady=5,
+                     background=p["surface"], foreground=p["fg"],
+                     relief="flat", borderwidth=0).pack(padx=1, pady=1)
             state["win"] = win
 
         def hide(_e):
@@ -369,8 +410,20 @@ class App:
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
 
+    def _style_log_tags(self) -> None:
+        p = theme.palette()
+        self.log_text.tag_configure("link", foreground=p["accent"])
+        self.log_text.tag_configure("send", foreground=p["muted"])
+        self.log_text.tag_configure("ui", foreground=p["muted"])
+
     def log(self, text: str) -> None:
-        self.log_text.insert("end", text)
+        # Tag our own lines so they read as commentary, leaving board output plain.
+        tag = ""
+        for name in ("link", "send", "ui"):
+            if text.startswith(f"[{name}]"):
+                tag = name
+                break
+        self.log_text.insert("end", text, tag or ())
         # Keep the buffer bounded; DCO_DEBUG_REPORT is chatty.
         if int(self.log_text.index("end-1c").split(".")[0]) > 2000:
             self.log_text.delete("1.0", "500.0")
@@ -382,6 +435,11 @@ class App:
                 self.log(self.link.rx.get_nowait())
         except queue.Empty:
             pass
+        if self.dot_on and not self.link.is_open:
+            # A failed write closes the link from the reader thread's side.
+            self._set_status_dot(False)
+            self.status_var.set("not connected")
+            self.connect_btn.config(text="Connect")
         self.root.after(50, self._drain_log)
 
     # --- sending ---------------------------------------------------------
@@ -454,10 +512,12 @@ class App:
 def main() -> None:
     ap = argparse.ArgumentParser(description="DCO bench controller")
     ap.add_argument("--port", help="serial device, e.g. /dev/ttyACM0 (default: auto-detect)")
+    ap.add_argument("--theme", choices=theme.MODES, default="dark",
+                    help="colour scheme; also switchable from the toolbar (default: dark)")
     args = ap.parse_args()
 
     root = tk.Tk()
-    App(root, args.port)
+    App(root, args.port, args.theme)
     root.mainloop()
 
 
