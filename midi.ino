@@ -27,14 +27,70 @@ void handleNoteOff(byte channel, byte pitch, byte velocity) {
   note_off(pitch);
 }
 
-// MIDI CC handler (CC 42 sets pitch-bend range in semitones and updates Q24 multiplier).
+// MIDI CC handler: CC 42 sets pitch-bend range in semitones and updates the Q24
+// multiplier, everything else goes through the generated map in midi_cc_map.h.
 void handleControlChange(byte channel, byte number, byte value) {
   // CC #42 is used to set the pitch bend range in semitones.
-  if (number == 42) {
+  if (number == MIDI_CC_PITCH_BEND_RANGE) {
     pitchBendRange = value;
     // Optimized: Use fast fixed-point multiplication instead of float division.
     pitchBendMultiplier_q24 = (int32_t)(((int64_t)pitchBendRange * RECIP_TWELVE_Q24));
     pitchBendMultiplier = (float)pitchBendMultiplier_q24 / (float)(1 << 24);
+    return;
+  }
+  midi_cc_handle(number, value);
+}
+
+// Scale a controller into its parameter's native range and apply it. Unmapped CCs are
+// ignored. Linear search over ~70 entries, which at MIDI's 3125 bytes/s is free.
+void midi_cc_handle(uint8_t number, uint8_t value) {
+  for (size_t i = 0; i < midiCcMapSize; ++i) {
+    const MidiCcEntry& entry = midiCcMap[i];
+    if (entry.cc != number) continue;
+
+    int16_t scaled = entry.lo + (int16_t)(((int32_t)(entry.hi - entry.lo) * value + 63) / 127);
+    if (entry.curve == MIDI_CC_EXP_TIME) {
+      scaled = (int16_t)linearToExponential((uint16_t)scaled, MIDI_CC_EXP_BASE, MIDI_CC_EXP_MAX);
+    }
+    midi_cc_apply(entry.target, scaled);
+    return;
+  }
+}
+
+// Route a scaled value to its target. Table parameters take the normal router; the block
+// values have no ParamId, because the 'a'-'f' frames exist to pack four of them into one
+// frame for the Input link, so they are written here exactly as input_handle_*() in
+// Serial.ino writes them.
+void midi_cc_apply(uint8_t target, int16_t value) {
+  switch (target) {
+    case CC_LOCAL_ADSR_VCA_ATTACK:      ADSR_VCA_attack  = (uint16_t)value; break;
+    case CC_LOCAL_ADSR_VCA_DECAY:       ADSR_VCA_decay   = (uint16_t)value; break;
+    case CC_LOCAL_ADSR_VCA_SUSTAIN:     ADSR_VCA_sustain = (uint16_t)value; break;
+    case CC_LOCAL_ADSR_VCA_RELEASE:     ADSR_VCA_release = (uint16_t)value; break;
+
+    case CC_LOCAL_ADSR_VCF_ATTACK:      ADSR_VCF_attack  = (uint16_t)value; break;
+    case CC_LOCAL_ADSR_VCF_DECAY:       ADSR_VCF_decay   = (uint16_t)value; break;
+    case CC_LOCAL_ADSR_VCF_SUSTAIN:     ADSR_VCF_sustain = (uint16_t)value; break;
+    case CC_LOCAL_ADSR_VCF_RELEASE:     ADSR_VCF_release = (uint16_t)value; break;
+
+    case CC_LOCAL_ADSR_DCO_ATTACK:      ADSR1_attack  = (uint16_t)value; break;
+    case CC_LOCAL_ADSR_DCO_DECAY:       ADSR1_decay   = (uint16_t)value; break;
+    case CC_LOCAL_ADSR_DCO_SUSTAIN:     ADSR1_sustain = (uint16_t)value; break;
+    case CC_LOCAL_ADSR_DCO_RELEASE:     ADSR1_release = (uint16_t)value; break;
+
+    case CC_LOCAL_ADSR1_TO_VCA_AMOUNT:  ADSR1toVCA = value; break;
+
+    // One CC carries one value, so the formulas are recomputed per write where the
+    // filter block frame recomputed once for four. Three float multiplies.
+    case CC_LOCAL_FILTER_CUTOFF:        CUTOFF     = (uint16_t)value; cv_update_mod_formulas(); break;
+    case CC_LOCAL_FILTER_RESONANCE:     RESONANCE  = (uint16_t)value; cv_update_mod_formulas(); break;
+    case CC_LOCAL_FILTER_ADSR2_TO_VCF:  ADSR2toVCF = value;           cv_update_mod_formulas(); break;
+    case CC_LOCAL_FILTER_LFO2_TO_VCF:   LFO2toVCF  = (uint16_t)value; cv_update_mod_formulas(); break;
+
+    // The voice engine uses PW[0] at quarter scale, as the 'f' frame does.
+    case CC_LOCAL_PW_PW:                PW[0] = (uint16_t)value / 4; break;
+
+    default:                            update_parameters((byte)target, value); break;
   }
 }
 

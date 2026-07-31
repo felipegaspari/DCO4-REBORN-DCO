@@ -115,6 +115,8 @@
 
 #include "LFO.h"
 #include "adsr.h"
+#include "midi_cc.h"
+#include "midi_cc_map.h"  // generated; defines midiCcMap[], so include it once, here
 #include "wave_mux.h"
 #include "mcp4728_dco.h"
 

@@ -23,6 +23,8 @@ You can treat these as the “library core.”
 
 **USB bench link:** when built with `ENABLE_USB_CONTROL`, the DCO also accepts the *same* Input panel frames on its USB CDC port (`Serial`), via `serial_usb_task()` in `Serial.ino`. It is a second `SerialParserContext` pointed at the same `inputSerialCommands` table, so the handlers cannot tell the two links apart. This is how the host tool in [`tools/dco_control`](../tools/dco_control/README.md) drives the board with no Input or Screen attached. Only host → DCO is framed; DCO → host stays plain debug text.
 
+**MIDI CC link:** a third path, and the only one that is not frame-based. `handleControlChange()` in `midi.ino` looks the controller up in the generated `midiCcMap[]` (see [`MIDI_CC_MAP.md`](MIDI_CC_MAP.md)), scales it into the parameter's native range, and hands it to `midi_cc_apply()`. Table parameters go on to `update_parameters()` like any frame; the values that normally arrive as `'a'`-`'f'` block frames are written to their globals right there in the switch, since those blocks exist to pack four values into one frame for the Input link and so have no `ParamId` of their own. Adding a `ParamId` for them would be the wrong fix: it would put a second, slower route to the same globals in the table.
+
 ---
 
 ## 2. Using the parameter protocol in a new MCU

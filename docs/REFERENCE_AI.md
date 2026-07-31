@@ -269,8 +269,12 @@ Related docs:
   - `init_midi()` registers handlers for note on/off, CC, program change and pitch bend for both ports.
   - Handlers:
     - `handleNoteOn()` / `handleNoteOff()` forward events to the internal `note_on()` / `note_off()` functions (voice allocator).
-    - `handleControlChange()` uses CC 42 to adjust pitch‑bend range and recompute `pitchBendMultiplier_q24`.
+    - `handleControlChange()` uses CC 42 to adjust pitch‑bend range and recompute `pitchBendMultiplier_q24`, then passes every other controller to `midi_cc_handle()`.
     - `handlePitchBend()` updates `midi_pitch_bend` in globals.
+  - **MIDI CC control surface** (`midi_cc.h` + the generated `midi_cc_map.h`, chart in `docs/MIDI_CC_MAP.md`):
+    - `midi_cc_handle()` finds the controller in `midiCcMap[]`, scales it as `lo + ((hi - lo) * cc + 63) / 127`, and runs envelope attack/decay/release through `linearToExponential(v, 50, 25000)` so a CC lands in the same exp domain the `'a'`-`'c'` block frames carry.
+    - `midi_cc_apply()` dispatches: targets at or above `CC_LOCAL_FIRST` (224) are the values that only arrive as `'a'`-`'f'` block frames and therefore have no `ParamId`, so they are written to their globals here exactly as `input_handle_*()` writes them; everything else goes to `update_parameters()`.
+    - The map, the chart and the Open Stage Control session in `tools/panels/` are all generated from `tools/dco_control/params.py` by `gen_midi_map.py`, which also verifies that each mapped `ParamId` is routed by `paramTable[]` and each `CC_LOCAL_*` has a case in `midi_cc_apply()`.
   - `note_on()` / `note_off()`:
     - Implement voice allocation based on `voiceMode` and `polyMode`:
       - Mono, polyphonic, and stacked/unison modes, including voice reuse when already playing a note.
@@ -327,7 +331,7 @@ Related docs:
 - **`utils.h` / `utils.ino`**  
   - Small helper utilities:
     - `uintToStr()` – integer to C‑string conversion.
-    - Mapping helpers from linear to logarithmic/exponential parameter curves (`linearToLogarithmic`, `linearToExponential`, `expConverter*`).
+    - Mapping helpers from linear to logarithmic/exponential parameter curves (`linearToLogarithmic`, `linearToExponential` — the Input board's fader curve, used by the MIDI CC layer — and `expConverter*`).
     - `controls_formula_update()` – converts raw control values into float parameters (e.g. LFO speeds, LFO1→DCO depth).
     - `led_blinking_task()` – simple LED heartbeat and activity feedback using `LED_BLINK_START`.
 

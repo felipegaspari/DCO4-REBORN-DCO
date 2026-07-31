@@ -503,6 +503,14 @@ Experimental; bodies commented. **No active function definitions.**
 
 Prototypes / instances. **No function definitions.**
 
+### `midi_cc.h`
+
+MIDI CC control surface: the `MIDI_CC_LINEAR` / `MIDI_CC_EXP_TIME` curves, the `CC_LOCAL_*` codes (224 up) for the values that arrive as `'a'`-`'f'` block frames and so have no `ParamId`, the `MidiCcEntry` layout, and the prototypes for the two functions in `midi.ino`. Includes `midi_cc_map.h`. **No function definitions.**
+
+### `midi_cc_map.h`
+
+**Generated** — `midiCcMap[]`, one row per controller. Emitted by `tools/dco_control/gen_midi_map.py` from `tools/dco_control/params.py`, together with `docs/MIDI_CC_MAP.md` and the Open Stage Control session in `tools/panels/`. Do not edit; change `params.py` and re-run.
+
 ### `midi.ino`
 
 **Functions**
@@ -515,8 +523,14 @@ Prototypes / instances. **No function definitions.**
 - `handleNoteOff()` — → `note_off()`.
   - **Called from:** MIDI library.
   - **When:** MIDI callback.
-- `handleControlChange()` — e.g. CC 42 → pitch-bend range / Q24 multiplier.
+- `handleControlChange()` — CC 42 → pitch-bend range / Q24 multiplier; every other controller → `midi_cc_handle()`.
   - **Called from:** MIDI library.
+  - **When:** MIDI callback.
+- `midi_cc_handle()` — Find the controller in `midiCcMap[]`, scale it into `lo..hi`, apply the exp curve for envelope times, then `midi_cc_apply()`. Unmapped CCs ignored.
+  - **Called from:** `handleControlChange()`.
+  - **When:** MIDI callback.
+- `midi_cc_apply()` — Dispatch: a `CC_LOCAL_*` target writes its block global here (`cv_update_mod_formulas()` for the filter four, `PW[0] = v / 4`), anything else goes to `update_parameters()`.
+  - **Called from:** `midi_cc_handle()`.
   - **When:** MIDI callback.
 - `handleProgramChange()` — Stub / empty as implemented.
   - **Called from:** MIDI library.
@@ -696,8 +710,9 @@ Prototypes. **No function definitions.**
 - `linearToLogarithmic()` — Linear → log map.
   - **Called from:** `init_ADSR()`.
   - **When:** Boot.
-- `linearToExponential()` — Linear → exp map.
-  - **Called from:** **none (dead)**.
+- `linearToExponential()` — Linear 0..4095 → exp 0..maxValue, the Input board's fader curve.
+  - **Called from:** `midi_cc_handle()` for `MIDI_CC_EXP_TIME` entries (base 50, max 25000).
+  - **When:** MIDI CC on an envelope attack / decay / release.
 - `faderExpConverter()` — Fader exp curve.
   - **Called from:** **none (dead)**.
 - `expConverterFloat()` — Exp curve → float.
@@ -733,7 +748,8 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | `docs/ENGINE_OPTIONS.md` | Float/fixed engine flags. |
 | `docs/REFERENCE_AI.md` | Deep semantic map. |
 | `docs/FILE_INDEX.md` | This file — files, functions, call sites. |
-| `docs/README_serial_and_params.md` | Shared serial / ParamId how-to. |
+| `docs/README_serial_and_params.md` | Shared serial / ParamId how-to, including the MIDI CC path. |
+| `docs/MIDI_CC_MAP.md` | **Generated** — MIDI CC implementation chart. |
 | `docs/Serial_comms_and_params_reference.txt` | Earlier design notes (partially historical). |
 | `docs/AUTOTUNE.md` | Autotune algorithms. |
 | `docs/AUTOTUNE_REFACTORED.md` | Autotune refactor structure. |
@@ -775,4 +791,5 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | Start auto-cal | Param → `apply_param_calibration_flag` → `loop1` → `DCO_calibration` |
 | Manual cal UI | `apply_param_manual_calibration_*` → `loop1` manual branch |
 | MIDI notes | `loop` → MIDI `.read` → `note_on`/`note_off` → local `noteStart[]`/`noteEnd[]` (no serial note frames) |
+| MIDI CC assignments | `tools/dco_control/params.py` `cc=` field → `gen_midi_map.py` → `midi_cc_map.h` + [`MIDI_CC_MAP.md`](MIDI_CC_MAP.md) |
 | Play audio path | `loop1` → `ADSR_update` + `voice_task_main` |

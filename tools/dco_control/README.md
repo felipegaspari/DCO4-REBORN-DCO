@@ -143,7 +143,38 @@ To hear the note-on sync on its own, leave the topology at 0, set **Osc sync / p
 OSC2** to **Sync at note-on**, and retrigger the same note repeatedly: the attack transient
 becomes identical every time, where at **Off** it varies from note to note.
 
-## 6. Files
+## 6. The same controls over MIDI CC
+
+This tool talks to the board over USB serial, which needs `ENABLE_USB_CONTROL` and a cable
+to this machine. For everything else — a DAW, a tablet, a hardware controller — the same
+control surface is also mapped onto 7-bit MIDI CC, listed in
+[`DCO/docs/MIDI_CC_MAP.md`](../../docs/MIDI_CC_MAP.md).
+
+`gen_midi_map.py` generates that chart, the firmware's `midi_cc_map.h` and a ready-made
+[Open Stage Control](https://openstagecontrol.ammd.net/) session from the same `params.py`
+tables the GUI is built from, so the four cannot drift apart:
+
+```bash
+python3 gen_midi_map.py            # rewrite the three generated files
+python3 gen_midi_map.py --check    # fail if they are out of date
+```
+
+To use the panel, install `open-stage-control` (AUR, a `.deb`, or the release zip) and
+point it at the board's MIDI port:
+
+```bash
+open-stage-control --midi "dco3:DCO3-MONO,DCO3-MONO" \
+                   --load ../panels/dco3_panel.json
+```
+
+The `dco3` name in that string is what the session's widgets target, so keep it. As with
+this tool, the board boots with its own defaults and never reports back, so push the panel's
+state once after connecting (**Send all** in the Open Stage Control sidepanel).
+
+Autotune and "store manual cal offsets" are deliberately left off the CC map, since one is
+a minute-long takeover of the board and the other writes the filesystem. Those stay here.
+
+## 7. Files
 
 | File | Role |
 |------|------|
@@ -151,14 +182,17 @@ becomes identical every time, where at **Off** it varies from note to note.
 | [`params.py`](params.py) | The whole control surface as data; edit this to add a control |
 | [`app.py`](app.py) | tkinter UI generated from `params.py` |
 | [`theme.py`](theme.py) | Dark and light palettes, ttk styling, plain-Tk recolouring |
+| [`gen_midi_map.py`](gen_midi_map.py) | Emits the CC map, its chart and the panel session from `params.py` |
 
 ### Adding a parameter
 
 Add the ID to [`DCO/params_def.h`](../../params_def.h) and an `apply_param_*` entry to
 `paramTable[]` in [`DCO/params.ino`](../../params.ino) as usual, then add one `Param`
-row to `params.py`. The UI picks it up with no changes to `app.py`.
+row to `params.py`. The UI picks it up with no changes to `app.py`. To give it a CC as
+well, put a free controller number in the row's `cc=` field and re-run `gen_midi_map.py`;
+it refuses to run on a collision or a reserved controller.
 
-## 7. Protocol notes
+## 8. Protocol notes
 
 Frames are exactly what the Input board sends, per
 [`DCO/serial_input_protocol.h`](../../serial_input_protocol.h): one command byte, then
@@ -174,4 +208,4 @@ Two details that are easy to get wrong:
 - **Envelope attack, decay and release are exp-mapped on the wire** (0..25000), while
   sustain is linear (0..4095). `protocol.lin_to_exp()` replicates
   `linearToExponential(v, 50, 25000)` from the Input board so a slider here feels like the
-  physical fader.
+  physical fader. The CC layer in the firmware applies the same curve, for the same reason.
