@@ -588,6 +588,19 @@ Everything here is a trap that has already bitten, or would bite the next change
 
 ## 12. Bench and verification
 
+### 12.0 How to invoke these
+
+Nothing in the firmware calls the three helpers below, so on a running board they are
+reached through `PARAM_DEBUG_COMMAND` (id 160): `1` runs the topology report, `2` and `3`
+run period probes at a low and a high divider. See `apply_param_debug_command()` in
+[`params.ino`](../params.ino).
+
+The easiest way to send that is the bench controller in
+[`tools/dco_control`](../tools/dco_control/README.md), which has a button for each on its
+Sync and PIO tab and shows the board's replies in a log pane. It also drives
+`PARAM_SOFT_SYNC` and `PARAM_SUBOSC_DIVIDE`, which have no Input-board UI, so it is the only
+way to exercise soft sync and the sub-oscillator.
+
 ### 12.1 Confirm the sync fix
 
 ```c
@@ -612,7 +625,12 @@ Scoping the shared reset pin should show reset edges at both oscillators' rates.
 ### 12.2 Confirm the period model
 
 `overhead = 12` is derived by instruction counting (section 5.1). To confirm it on hardware,
-probe at two widely separated dividers with the same Y and back-solve:
+probe at two widely separated dividers with the same Y and back-solve.
+
+> **Run this with no note playing.** `pio_period_probe()` parks the oscillator at a fixed
+> `clk_div`, but `voice_task()` pushes a fresh divider every frame for a held note, so the
+> probe's value survives only until the next control frame. With all voices released the
+> voice task skips the oscillator entirely and the probe holds.
 
 ```c
 pio_period_probe(0, 2000);    // read the frequency counter on the RESET pin

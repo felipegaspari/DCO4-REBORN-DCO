@@ -477,6 +477,27 @@ static void apply_param_manual_calibration_store(int16_t /*v*/) {
   }
 }
 
+// PARAM_DEBUG_COMMAND: bench diagnostics, printed to USB serial. No panel UI; this is
+// how the host tool in tools/dco_control reaches the checks in docs/PIO_OSCILLATORS.md.
+//
+// The period probe parks an oscillator at a fixed clk_div, so it only holds while no
+// note is playing — voice_task() pushes a fresh divider every frame for a held note.
+static void apply_param_debug_command(int16_t v) {
+  switch (v) {
+    case 1:
+      pio_topology_report();
+      break;
+    case 2:
+      pio_period_probe(0, 2000);
+      break;
+    case 3:
+      pio_period_probe(0, 20000);
+      break;
+    default:
+      break;
+  }
+}
+
 // ---- Parameter table ------------------------------------------------
 
 static const ParamDescriptorT<int16_t> paramTable[] = {
@@ -537,7 +558,8 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_MANUAL_CALIBRATION_STAGE,  apply_param_manual_calibration_stage },
   { PARAM_MANUAL_CALIBRATION_OFFSET, apply_param_manual_calibration_offset },
   { PARAM_GAP_FROM_DCO,              apply_param_gap_from_dco },
-  { PARAM_MANUAL_CALIBRATION_STORE,  apply_param_manual_calibration_store }
+  { PARAM_MANUAL_CALIBRATION_STORE,  apply_param_manual_calibration_store },
+  { PARAM_DEBUG_COMMAND,             apply_param_debug_command }
 };
 
 static const size_t paramTableSize =

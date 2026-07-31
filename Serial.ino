@@ -126,6 +126,40 @@ void serial_panel_task() {
   }
 }
 
+// -------------------------------
+// USB CDC: bench control link
+// -------------------------------
+// Speaks the same Input panel frames as Serial2, so a host app can drive the board
+// with no Input or Screen attached. The parser takes its context and command table as
+// arguments, so this is the panel link's table with a second, independent context.
+//
+// Only host -> DCO is framed. DCO -> host stays plain debug text, so the two never
+// interleave badly: text going out cannot be mistaken for a frame coming in.
+#ifdef ENABLE_USB_CONTROL
+
+static SerialParserContext usbSerialParser = {
+  SERIAL_WAIT_FOR_CMD, 0, nullptr, {0}, 0, 0, 0
+};
+
+// Drain the USB CDC RX buffer into the panel-protocol parser. Called from loop().
+void serial_usb_task() {
+  if (usbSerialParser.state == SERIAL_READ_PAYLOAD) {
+    serial_parser_check_timeout(usbSerialParser, micros());
+  }
+  while (Serial.available() > 0) {
+    uint8_t b = Serial.read();
+    serial_parser_process_byte(
+      usbSerialParser,
+      inputSerialCommands,
+      sizeof(inputSerialCommands) / sizeof(inputSerialCommands[0]),
+      b,
+      micros()
+    );
+  }
+}
+
+#endif  // ENABLE_USB_CONTROL
+
 // TX 'x' to Input: gap (154) and cal offsets (155). Input relays 154 on to the Screen.
 // availableForWrite() on a hardware UART reports 0/1, not free bytes — waiting for more hangs.
 void serialSendParam32(byte paramNumber, uint32_t paramValue) {

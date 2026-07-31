@@ -565,6 +565,9 @@ Prototype. **No function definitions.**
 - `serial_panel_task()` — Non-blocking parser pump (`serial_parser_*`).
   - **Called from:** `loop()` every iteration.
   - **When:** Realtime Core0.
+- `serial_usb_task()` — Same pump for the USB CDC port: a second `SerialParserContext` over the *same* `inputSerialCommands` table, so a host tool can send panel frames with no Input board. Guarded by `ENABLE_USB_CONTROL` in `DCO.ino`. See [`tools/dco_control`](../tools/dco_control/README.md).
+  - **Called from:** `loop()` every iteration.
+  - **When:** Realtime Core0, only when `ENABLE_USB_CONTROL` is defined.
 - `serialSendParam32()` — TX `'x'` param32 out Serial2 TX 20 into the Input's `Serial1` RX GP1 (gap 154, cal offset 155; Input relays 154 to Screen). Waits on `availableForWrite() < 1` — a HW UART reports 0/1, not free bytes.
   - **Called from:** `apply_param_manual_calibration_flag()`; `DCO_calibration_debug()`.
   - **When:** Manual-cal param / live gap report.
@@ -664,6 +667,7 @@ Prototype. **No function definitions.**
 - `apply_param_manual_calibration_stage()` — Manual cal stage index.
 - `apply_param_manual_calibration_offset()` — Per-osc manual offset.
 - `apply_param_manual_calibration_store()` — → `update_FS_ManualCalibrationOffset`.
+- `apply_param_debug_command()` — Bench diagnostics (id 160): 1 → `pio_topology_report()`, 2/3 → `pio_period_probe()` at a low/high divider. The only caller of those helpers; output goes to USB serial. Probes only hold with no note playing.
 
 ---
 
@@ -766,7 +770,8 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 |------|------------|
 | Engine float/fixed | `DCO.ino` flags → `voice_task_main` |
 | New ParamId | `params_def.h` → `params.ino` table (only call path) |
-| Serial command | `serial_input_protocol.h` + `Serial.ino` handlers ← `serial_panel_task` in `loop` |
+| Serial command | `serial_input_protocol.h` + `Serial.ino` handlers ← `serial_panel_task` (Serial2) and `serial_usb_task` (USB CDC) in `loop` |
+| Control the board with no panel | [`tools/dco_control`](../tools/dco_control/README.md) over USB; needs `ENABLE_USB_CONTROL` |
 | Start auto-cal | Param → `apply_param_calibration_flag` → `loop1` → `DCO_calibration` |
 | Manual cal UI | `apply_param_manual_calibration_*` → `loop1` manual branch |
 | MIDI notes | `loop` → MIDI `.read` → `note_on`/`note_off` → local `noteStart[]`/`noteEnd[]` (no serial note frames) |

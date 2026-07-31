@@ -39,6 +39,7 @@ See `docs/` — especially:
 
 - [`docs/PINOUT.md`](docs/PINOUT.md) — provisional hub + CV pin / UART map (Phase 0)
 - [`docs/PIO_OSCILLATORS.md`](docs/PIO_OSCILLATORS.md) — PIO programs, state machine topology, period model, sync modes, phase align, sub-osc, and the invariants behind them
+- [`tools/dco_control/`](tools/dco_control/README.md) — Linux bench controller: drive every parameter over USB with no Input board or Screen attached
 - [`docs/MAINBOARD_ABSORPTION.md`](docs/MAINBOARD_ABSORPTION.md) — plan to absorb Mainboard into DCO
 - `AUTOTUNE.md`, `SYSTEM_OVERVIEW.md`, `FILE_INDEX.md` (some docs may still mention DCO4; prefer this README for monosynth facts)
 

@@ -19,7 +19,9 @@ These files are intended to be MCU‑agnostic and copy‑pasteable between proje
 
 You can treat these as the “library core.”
 
-**DCO repo note:** this board now ships `serial_input_protocol.h` and speaks the Input panel protocol on its `Serial2` — that is its only peer link since the Mainboard was archived. Both directions land on the Input's `Serial1`: the DCO's `Serial2` RX (GP21) is fed by the Input's TX (GP0), and the DCO's `Serial2` TX (GP20) drives the Input's RX (GP1).
+**DCO repo note:** this board now ships `serial_input_protocol.h` and speaks the Input panel protocol on its `Serial2` — that is its only peer *board* link since the Mainboard was archived. Both directions land on the Input's `Serial1`: the DCO's `Serial2` RX (GP21) is fed by the Input's TX (GP0), and the DCO's `Serial2` TX (GP20) drives the Input's RX (GP1).
+
+**USB bench link:** when built with `ENABLE_USB_CONTROL`, the DCO also accepts the *same* Input panel frames on its USB CDC port (`Serial`), via `serial_usb_task()` in `Serial.ino`. It is a second `SerialParserContext` pointed at the same `inputSerialCommands` table, so the handlers cannot tell the two links apart. This is how the host tool in [`tools/dco_control`](../tools/dco_control/README.md) drives the board with no Input or Screen attached. Only host → DCO is framed; DCO → host stays plain debug text.
 
 ---
 

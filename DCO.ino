@@ -28,6 +28,12 @@
 // 'x' gap/cal TX). Screen is reached by Input relaying gap 154 on its own Screen port.
 // ---------------------------------------------------------------------------
 
+// Accept the Input panel protocol on the USB CDC port as well, so a host app can
+// drive the board with no Input or Screen attached (see tools/dco_control).
+// Comment out for production: while enabled, stray bytes typed into a serial
+// terminal are read as frame headers.
+#define ENABLE_USB_CONTROL
+
 // Phase 3 CV hardware (provisional pins in globals.h / docs/PINOUT.md).
 // Leave commented on benches without filter/VCA/mux/DAC attached.
 // #define ENABLE_CV_OUTS
@@ -198,6 +204,9 @@ void loop() {
   MIDI_USB.read();
   MIDI_SERIAL.read();
   serial_panel_task();
+#ifdef ENABLE_USB_CONTROL
+  serial_usb_task();
+#endif
 
   LFO1();
 

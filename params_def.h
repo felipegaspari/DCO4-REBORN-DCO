@@ -141,7 +141,12 @@ enum ParamId : uint16_t {
   PARAM_MANUAL_CALIBRATION_OFFSET_FROM_DCO = 155,
 
   // 156: explicit "store manual calibration offsets" command.
-  PARAM_MANUAL_CALIBRATION_STORE = 156
+  PARAM_MANUAL_CALIBRATION_STORE = 156,
+
+  // 160: bench diagnostic trigger (DCO-local, no panel UI). Prints to USB serial.
+  // 1 = PIO topology report, 2 = period probe at a low divider,
+  // 3 = period probe at a high divider. See DCO/docs/PIO_OSCILLATORS.md section 12.
+  PARAM_DEBUG_COMMAND            = 160
 };
 
 #endif  // PARAMS_DEF_H
