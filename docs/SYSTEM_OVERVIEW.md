@@ -4,7 +4,7 @@ DCO3-MONOSYNTH is a **fully digitally controlled analog monosynth**, forked from
 
 The shipping instrument is **three firmwares** (Mainboard absorbed into DCO). Board-specific details live in each board folder / docs.
 
-**DCO board:** RP2350 (**A** with helper, or **B** solo), **1 voice × 3 oscillators**, freq on PIO, amp via RANGE PWM, EnvDCO/VCA/VCF, LFOs, opt-in CV PWM / mux / MCP4728. Autotune stack retained (PW center/limits + amp-comp).
+**DCO board:** RP2350 (**A** with helper, or **B** solo), **1 voice × 3 oscillators**, freq on PIO, amp via RANGE PWM, EnvDCO/VCA/VCF, LFOs, opt-in CV PWM / mux / OSC1..3+Sub level PWM. Autotune stack retained (PW center/limits + amp-comp).
 
 **Dual MCU (concept):** RP2350A + helper RP2040 sharing Input TX — see [`DUAL_MCU.md`](DUAL_MCU.md). `DCO/` keeps full IO code for a later RP2350B-only build.
 
@@ -63,8 +63,8 @@ Note edges never leave the DCO. `noteStart[]` / `noteEnd[]` drive EnvDCO/EnvVCA/
 
 | Flag | Default | Role |
 |------|---------|------|
-| `ENABLE_CV_OUTS` / `WAVE_MUX` / `MCP4728` | off | Hardware CV writers |
+| `ENABLE_CV_OUTS` / `WAVE_MUX` | off | Hardware CV / mux / level PWM writers |
 
 The serial topology is no longer switchable: Serial1 is DIN MIDI, Serial2 is the Input link. The old `ENABLE_INPUT_UART`, `ENABLE_SCREEN_UART` and `ENABLE_LEGACY_MAINBOARD_LINK` flags were removed with the Mainboard and SerialPIO paths.
 
-Pin map: [`PINOUT.md`](PINOUT.md).
+Pin map: [`PINOUT.md`](PINOUT.md). Mod matrix: [`MOD_MATRIX.md`](MOD_MATRIX.md). Wave mux: [`WAVE_MUX.md`](WAVE_MUX.md).

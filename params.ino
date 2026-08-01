@@ -39,35 +39,26 @@
 
 // ---- Apply functions for each parameter (invoked only via paramTable / update_parameters) ----
 
-// PARAM_SAW_STATUS: wave mux (74HC595 when ENABLE_WAVE_MUX).
-static void apply_param_saw_status(int16_t v) {
-  sawStatus = (v != 0);
-  update_waveSelector(0);
+// Per-osc Saw/Pulse/Tri enables → 74HC595 / DG411 (see docs/WAVE_MUX.md).
+static void apply_wave_enable(uint8_t osc, uint8_t wave, int16_t v) {
+  if (osc > 2 || wave > 2) return;
+  waveEnable[osc][wave] = (v != 0);
+  update_waveSelector();
 }
 
-static void apply_param_saw2_status(int16_t v) {
-  saw2Status = (v != 0);
-  update_waveSelector(1);
-}
+static void apply_param_osc1_saw_enable(int16_t v) { apply_wave_enable(0, 0, v); }
+static void apply_param_osc1_pulse_enable(int16_t v) { apply_wave_enable(0, 1, v); }
+static void apply_param_osc1_tri_enable(int16_t v) { apply_wave_enable(0, 2, v); }
+static void apply_param_osc2_saw_enable(int16_t v) { apply_wave_enable(1, 0, v); }
+static void apply_param_osc2_pulse_enable(int16_t v) { apply_wave_enable(1, 1, v); }
+static void apply_param_osc2_tri_enable(int16_t v) { apply_wave_enable(1, 2, v); }
+static void apply_param_osc3_saw_enable(int16_t v) { apply_wave_enable(2, 0, v); }
+static void apply_param_osc3_pulse_enable(int16_t v) { apply_wave_enable(2, 1, v); }
+static void apply_param_osc3_tri_enable(int16_t v) { apply_wave_enable(2, 2, v); }
 
-static void apply_param_tri_status(int16_t v) {
-  triStatus = (v != 0);
-  update_waveSelector(2);
-}
-
+// PARAM_SINE_STATUS: deprecated — no mux role.
 static void apply_param_sine_status(int16_t v) {
-  sineStatus = (v != 0);
-  update_waveSelector(3);
-}
-
-// PARAM_SQR1_STATUS: OSC1 square/wave enable status.
-static void apply_param_sqr1_status(int16_t v) {
-  sqr1Status = v;
-}
-
-static void apply_param_sqr2_status(int16_t v) {
-  sqr2Status = (v != 0);
-  update_waveSelector(3);
+  (void)v;
 }
 
 static void apply_param_resonance_comp(int16_t v) {
@@ -222,27 +213,48 @@ static void apply_param_velocity_to_vca(int16_t v) {
   velocityToVCA = velocityToVCAVal * 0.0003935f;
 }
 
-static void apply_param_sqr1_level(int16_t v) {
-  SQR1LevelVal = v;
-  if (SQR1LevelVal < 0) SQR1LevelVal = 0;
-  if (SQR1LevelVal > 128) SQR1LevelVal = 128;
-  SQR1Level = lin_to_log_128[SQR1LevelVal];
-  mcpUpdate();
+// Panel bases only — PWM written from mod_matrix_apply_cv() in update_CV_outs.
+static void apply_param_osc1_level(int16_t v) {
+  OSC1LevelVal = v;
+  if (OSC1LevelVal < 0) OSC1LevelVal = 0;
+  if (OSC1LevelVal > 128) OSC1LevelVal = 128;
+  OSC1Level = lin_to_log_128[OSC1LevelVal];
 }
 
-static void apply_param_sqr2_level(int16_t v) {
-  SQR2LevelVal = v;
-  if (SQR2LevelVal < 0) SQR2LevelVal = 0;
-  if (SQR2LevelVal > 128) SQR2LevelVal = 128;
-  SQR2Level = lin_to_log_128[SQR2LevelVal];
-  mcpUpdate();
+static void apply_param_osc2_level(int16_t v) {
+  OSC2LevelVal = v;
+  if (OSC2LevelVal < 0) OSC2LevelVal = 0;
+  if (OSC2LevelVal > 128) OSC2LevelVal = 128;
+  OSC2Level = lin_to_log_128[OSC2LevelVal];
+}
+
+static void apply_param_osc3_level(int16_t v) {
+  OSC3LevelVal = v;
+  if (OSC3LevelVal < 0) OSC3LevelVal = 0;
+  if (OSC3LevelVal > 128) OSC3LevelVal = 128;
+  OSC3Level = lin_to_log_128[OSC3LevelVal];
 }
 
 static void apply_param_sub_level(int16_t v) {
   SubLevelVal = v;
   SubLevel = (uint16_t)constrain((int)SubLevelVal * 32, 0, 4095);
-  mcpUpdate();
 }
+
+#define DECL_MOD_SLOT_APPLIERS(N) \
+  static void apply_param_mod_slot##N##_source(int16_t v) { mod_matrix_set_source(N, v); } \
+  static void apply_param_mod_slot##N##_dest(int16_t v) { mod_matrix_set_dest(N, v); } \
+  static void apply_param_mod_slot##N##_depth(int16_t v) { mod_matrix_set_depth(N, v); }
+
+DECL_MOD_SLOT_APPLIERS(0)
+DECL_MOD_SLOT_APPLIERS(1)
+DECL_MOD_SLOT_APPLIERS(2)
+DECL_MOD_SLOT_APPLIERS(3)
+DECL_MOD_SLOT_APPLIERS(4)
+DECL_MOD_SLOT_APPLIERS(5)
+DECL_MOD_SLOT_APPLIERS(6)
+DECL_MOD_SLOT_APPLIERS(7)
+
+#undef DECL_MOD_SLOT_APPLIERS
 
 // PARAM_PORTAMENTO_MODE: 0 = fixed-time glide, else slew-rate.
 static void apply_param_portamento_mode(int16_t v) {
@@ -461,9 +473,11 @@ static void apply_param_manual_calibration_flag(int16_t v) {
 
   // Falling edge: manual cal forced the SQR levels and wave mux — restore panel state.
   if (v == 0 && manualCalibrationFlag) {
-    apply_param_sqr1_level(SQR1LevelVal);
-    apply_param_sqr2_level(SQR2LevelVal);
-    update_waveSelector(4);
+    apply_param_osc1_level(OSC1LevelVal);
+    apply_param_osc2_level(OSC2LevelVal);
+    apply_param_osc3_level(OSC3LevelVal);
+    apply_param_sub_level(SubLevelVal);
+    update_waveSelector();
   }
 
   manualCalibrationFlag = v;
@@ -535,12 +549,16 @@ static void apply_param_debug_command(int16_t v) {
 // ---- Parameter table ------------------------------------------------
 
 static const ParamDescriptorT<int16_t> paramTable[] = {
-  { PARAM_SAW_STATUS,                apply_param_saw_status },
-  { PARAM_SAW2_STATUS,               apply_param_saw2_status },
-  { PARAM_TRI_STATUS,                apply_param_tri_status },
+  { PARAM_OSC1_SAW_ENABLE,           apply_param_osc1_saw_enable },
+  { PARAM_OSC1_PULSE_ENABLE,         apply_param_osc1_pulse_enable },
+  { PARAM_OSC1_TRI_ENABLE,           apply_param_osc1_tri_enable },
+  { PARAM_OSC2_SAW_ENABLE,           apply_param_osc2_saw_enable },
+  { PARAM_OSC2_PULSE_ENABLE,         apply_param_osc2_pulse_enable },
+  { PARAM_OSC2_TRI_ENABLE,           apply_param_osc2_tri_enable },
+  { PARAM_OSC3_SAW_ENABLE,           apply_param_osc3_saw_enable },
+  { PARAM_OSC3_PULSE_ENABLE,         apply_param_osc3_pulse_enable },
+  { PARAM_OSC3_TRI_ENABLE,           apply_param_osc3_tri_enable },
   { PARAM_SINE_STATUS,               apply_param_sine_status },
-  { PARAM_SQR1_STATUS,               apply_param_sqr1_status },
-  { PARAM_SQR2_STATUS,               apply_param_sqr2_status },
   { PARAM_RESONANCE_COMPENSATION,    apply_param_resonance_comp },
   { PARAM_VCA_ADSR_RESTART,          apply_param_vca_adsr_restart },
   { PARAM_VCF_ADSR_RESTART,          apply_param_vcf_adsr_restart },
@@ -560,8 +578,9 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_VCF_KEYTRACK,              apply_param_vcf_keytrack },
   { PARAM_VELOCITY_TO_VCF,           apply_param_velocity_to_vcf },
   { PARAM_VELOCITY_TO_VCA,           apply_param_velocity_to_vca },
-  { PARAM_SQR1_LEVEL,                apply_param_sqr1_level },
-  { PARAM_SQR2_LEVEL,                apply_param_sqr2_level },
+  { PARAM_OSC1_LEVEL,                apply_param_osc1_level },
+  { PARAM_OSC2_LEVEL,                apply_param_osc2_level },
+  { PARAM_OSC3_LEVEL,                apply_param_osc3_level },
   { PARAM_SUB_LEVEL,                 apply_param_sub_level },
   { PARAM_CALIBRATION_VALUE,         apply_param_calibration_value },
   { PARAM_VOICE_MODE,                apply_param_voice_mode },
@@ -587,6 +606,30 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_DIST_DRIVE,                apply_param_dist_drive },
   { PARAM_DIST_MIX,                  apply_param_dist_mix },
   { PARAM_FILTER_MODE,               apply_param_filter_mode },
+  { PARAM_MOD_SLOT0_SOURCE,          apply_param_mod_slot0_source },
+  { PARAM_MOD_SLOT0_DEST,            apply_param_mod_slot0_dest },
+  { PARAM_MOD_SLOT0_DEPTH,           apply_param_mod_slot0_depth },
+  { PARAM_MOD_SLOT1_SOURCE,          apply_param_mod_slot1_source },
+  { PARAM_MOD_SLOT1_DEST,            apply_param_mod_slot1_dest },
+  { PARAM_MOD_SLOT1_DEPTH,           apply_param_mod_slot1_depth },
+  { PARAM_MOD_SLOT2_SOURCE,          apply_param_mod_slot2_source },
+  { PARAM_MOD_SLOT2_DEST,            apply_param_mod_slot2_dest },
+  { PARAM_MOD_SLOT2_DEPTH,           apply_param_mod_slot2_depth },
+  { PARAM_MOD_SLOT3_SOURCE,          apply_param_mod_slot3_source },
+  { PARAM_MOD_SLOT3_DEST,            apply_param_mod_slot3_dest },
+  { PARAM_MOD_SLOT3_DEPTH,           apply_param_mod_slot3_depth },
+  { PARAM_MOD_SLOT4_SOURCE,          apply_param_mod_slot4_source },
+  { PARAM_MOD_SLOT4_DEST,            apply_param_mod_slot4_dest },
+  { PARAM_MOD_SLOT4_DEPTH,           apply_param_mod_slot4_depth },
+  { PARAM_MOD_SLOT5_SOURCE,          apply_param_mod_slot5_source },
+  { PARAM_MOD_SLOT5_DEST,            apply_param_mod_slot5_dest },
+  { PARAM_MOD_SLOT5_DEPTH,           apply_param_mod_slot5_depth },
+  { PARAM_MOD_SLOT6_SOURCE,          apply_param_mod_slot6_source },
+  { PARAM_MOD_SLOT6_DEST,            apply_param_mod_slot6_dest },
+  { PARAM_MOD_SLOT6_DEPTH,           apply_param_mod_slot6_depth },
+  { PARAM_MOD_SLOT7_SOURCE,          apply_param_mod_slot7_source },
+  { PARAM_MOD_SLOT7_DEST,            apply_param_mod_slot7_dest },
+  { PARAM_MOD_SLOT7_DEPTH,           apply_param_mod_slot7_depth },
   { PARAM_PWM_POTS_CONTROL_MANUAL,   apply_param_pwm_pots_manual },
   { PARAM_ADSR3_ENABLED,             apply_param_adsr3_enabled },
   { PARAM_FUNCTION_KEY,              apply_param_function_key },

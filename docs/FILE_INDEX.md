@@ -63,7 +63,7 @@ Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine build f
 - `setup()` — Core 0 init: serial, MIDI, LFOs, pins, USB strings, cal pin.
   - **Called from:** Arduino framework (Core 0).
   - **When:** Boot once.
-- `setup1()` — Core 1 init: PID, FS, ADSR, amp-comp precompute, PWM, PIO, voices; clears cal flags.
+- `setup1()` — Core 1 init: PID, FS, ADSR, `mod_matrix_init`, amp-comp precompute, PWM, PIO, voices; clears cal flags.
   - **Called from:** Arduino framework (Core 1).
   - **When:** Boot once. (`init_DCO_calibration` block below is unreachable — see that function.)
 - `loop()` — Core 0: MIDI read, Serial2 pump, LFO1; ~100 µs LFO2 + drift + FIFO push.
@@ -283,9 +283,40 @@ Prototype. **No function definitions.**
 ### `PWM.ino`
 
 **Functions**
-- `init_pwm()` — Configure range + PW PWM slices.
+- `init_pwm()` — Configure range + PW PWM slices; under `ENABLE_CV_OUTS` calls `init_cv_pwm()`.
   - **Called from:** `setup1()`.
   - **When:** Boot Core1.
+- `init_cv_pwm()` — Cutoff / reso / VCA / dist PWM; calls `init_level_pwm()`.
+  - **Called from:** `init_pwm()` when `ENABLE_CV_OUTS`.
+- `init_level_pwm()` / `write_level_pwm()` / `write_level_pwm_raw()` — OSC1/2/3 + Sub level PWM → mix VCAs.
+  - **Called from:** `init_cv_pwm()`; `mod_matrix_apply_cv()`; manual cal.
+- `write_cv_pwm()` / `write_cv_pwm_raw()` — Push soft VCF/VCA/per-filter reso/dist compares.
+
+### `wave_mux.h` / `wave_mux.ino`
+
+Per-osc Saw/Pulse/Tri via dual 74HC595 → DG411. Docs: [`WAVE_MUX.md`](WAVE_MUX.md).
+
+**Functions**
+- `init_waveSelector()` — GPIO + all bits off.
+  - **Called from:** `setup1()`.
+- `update_waveSelector()` — Rebuild 9 bits from `waveEnable[3][3]`.
+  - **Called from:** wave-enable apply handlers; cal restore.
+- `waveSelector_manual_calibration(stage)` — Solo OSC{stage} Saw.
+  - **Called from:** `update_CV_outs_manual_calibration()`.
+
+### `mod_matrix.h` / `mod_matrix.ino`
+
+Sparse mod matrix (8 slots). Docs: [`MOD_MATRIX.md`](MOD_MATRIX.md).
+
+**Functions**
+- `mod_matrix_init()` — Clear slots / AT / random.
+  - **Called from:** `setup1()`.
+- `mod_matrix_set_source/dest/depth()` — Slot table from ParamIds 60–83.
+  - **Called from:** `params.ino` apply handlers.
+- `mod_matrix_on_note_on()` / `mod_matrix_set_aftertouch()` — Random S&H + AT source.
+  - **Called from:** `note_on()` / MIDI AT callback.
+- `mod_matrix_accumulate()` / `mod_matrix_apply_cv()` — Sum → level PWM + `RESONANCE_PWM[]` + Dist Drive out.
+  - **Called from:** `update_CV_outs()`.
 
 ### `amp_comp.h`
 
@@ -675,7 +706,9 @@ Prototype. **No function definitions.**
   - **When:** Serial2 `'p'/'w'/'x'`.
 - All `apply_param_*()` below — **Called from:** **param table only** (never direct). **When:** matching Serial2 ParamId.
 
-- `apply_param_sqr1_status()` — OSC1 square/wave status.
+- `apply_param_osc*_saw/pulse/tri_enable()` — Per-osc wave enables → `update_waveSelector()`.
+- `apply_param_osc1_level()` / `apply_param_osc2_level()` / `apply_param_osc3_level()` / `apply_param_sub_level()` — Mix level **bases** (PWM via matrix in `update_CV_outs`).
+- `apply_param_mod_slot*_source/dest/depth()` — Mod matrix slots 0–7 (ParamIds 60–83).
 - `apply_param_adsr3_to_osc_select()` — ADSR3 routing select.
 - `apply_param_lfo1_waveform()` — LFO1 waveform.
 - `apply_param_lfo2_waveform()` — LFO2 waveform.

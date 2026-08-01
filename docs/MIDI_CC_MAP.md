@@ -23,15 +23,19 @@ Menu-style parameters use a 0..127 range so the scaling is an identity and a men
 | 4 | OSC3 interval (semitones) | Oscillators | `PARAM_OSC3_INTERVAL` | 0 | 60 | linear |
 | 5 | OSC2 detune | Oscillators | `PARAM_OSC2_DETUNE_VAL` | 0 | 512 | linear |
 | 8 | OSC3 detune | Oscillators | `PARAM_OSC3_DETUNE_VAL` | 0 | 512 | linear |
-| 9 | SQR1 level | Oscillators | `PARAM_SQR1_LEVEL` | 0 | 127 | linear |
-| 12 | SQR2 level | Oscillators | `PARAM_SQR2_LEVEL` | 0 | 127 | linear |
+| 9 | OSC1 level | Oscillators | `PARAM_OSC1_LEVEL` | 0 | 127 | linear |
+| 12 | OSC2 level | Oscillators | `PARAM_OSC2_LEVEL` | 0 | 127 | linear |
+| 83 | OSC3 level | Oscillators | `PARAM_OSC3_LEVEL` | 0 | 127 | linear |
 | 13 | Sub level | Oscillators | `PARAM_SUB_LEVEL` | 0 | 127 | linear |
-| 14 | SQR1 enable | Oscillators | `PARAM_SQR1_STATUS` | 0 | 1 | linear |
-| 15 | SQR2 enable | Oscillators | `PARAM_SQR2_STATUS` | 0 | 1 | linear |
-| 16 | Saw enable | Oscillators | `PARAM_SAW_STATUS` | 0 | 1 | linear |
-| 17 | Saw2 enable | Oscillators | `PARAM_SAW2_STATUS` | 0 | 1 | linear |
-| 18 | Tri enable | Oscillators | `PARAM_TRI_STATUS` | 0 | 1 | linear |
-| 19 | Sine enable | Oscillators | `PARAM_SINE_STATUS` | 0 | 1 | linear |
+| 16 | OSC1 Saw enable | Oscillators | `PARAM_OSC1_SAW_ENABLE` | 0 | 1 | linear |
+| 17 | OSC1 Pulse enable | Oscillators | `PARAM_OSC1_PULSE_ENABLE` | 0 | 1 | linear |
+| 18 | OSC1 Tri enable | Oscillators | `PARAM_OSC1_TRI_ENABLE` | 0 | 1 | linear |
+| 112 | OSC2 Saw enable | Oscillators | `PARAM_OSC2_SAW_ENABLE` | 0 | 1 | linear |
+| 113 | OSC2 Pulse enable | Oscillators | `PARAM_OSC2_PULSE_ENABLE` | 0 | 1 | linear |
+| 114 | OSC2 Tri enable | Oscillators | `PARAM_OSC2_TRI_ENABLE` | 0 | 1 | linear |
+| 115 | OSC3 Saw enable | Oscillators | `PARAM_OSC3_SAW_ENABLE` | 0 | 1 | linear |
+| 116 | OSC3 Pulse enable | Oscillators | `PARAM_OSC3_PULSE_ENABLE` | 0 | 1 | linear |
+| 117 | OSC3 Tri enable | Oscillators | `PARAM_OSC3_TRI_ENABLE` | 0 | 1 | linear |
 | 20 | Hard sync topology | Sync and PIO | `PARAM_SYNC_MODE` | 0 | 127 | linear |
 | 21 | Soft sync | Sync and PIO | `PARAM_SOFT_SYNC` | 0 | 1 | linear |
 | 22 | Sub-oscillator divide | Sync and PIO | `PARAM_SUBOSC_DIVIDE` | 0 | 127 | linear |
@@ -88,6 +92,30 @@ Menu-style parameters use a 0..127 range so the scaling is an identity and a men
 | 75 | Analog drift spread | Voice and Drift | `PARAM_ANALOG_DRIFT_SPREAD` | 1 | 127 | linear |
 | 76 | VCA level | Voice and Drift | `PARAM_VCA_LEVEL` | 0 | 128 | linear |
 | 77 | Velocity to VCA | Voice and Drift | `PARAM_VELOCITY_TO_VCA` | 0 | 20 | linear |
+| 84 | Mod slot 0 source | Mod matrix | `PARAM_MOD_SLOT0_SOURCE` | 0 | 127 | linear |
+| 85 | Mod slot 0 dest | Mod matrix | `PARAM_MOD_SLOT0_DEST` | 0 | 127 | linear |
+| 86 | Mod slot 0 depth | Mod matrix | `PARAM_MOD_SLOT0_DEPTH` | -4095 | 4095 | linear |
+| 87 | Mod slot 1 source | Mod matrix | `PARAM_MOD_SLOT1_SOURCE` | 0 | 127 | linear |
+| 88 | Mod slot 1 dest | Mod matrix | `PARAM_MOD_SLOT1_DEST` | 0 | 127 | linear |
+| 89 | Mod slot 1 depth | Mod matrix | `PARAM_MOD_SLOT1_DEPTH` | -4095 | 4095 | linear |
+| 90 | Mod slot 2 source | Mod matrix | `PARAM_MOD_SLOT2_SOURCE` | 0 | 127 | linear |
+| 91 | Mod slot 2 dest | Mod matrix | `PARAM_MOD_SLOT2_DEST` | 0 | 127 | linear |
+| 92 | Mod slot 2 depth | Mod matrix | `PARAM_MOD_SLOT2_DEPTH` | -4095 | 4095 | linear |
+| 93 | Mod slot 3 source | Mod matrix | `PARAM_MOD_SLOT3_SOURCE` | 0 | 127 | linear |
+| 94 | Mod slot 3 dest | Mod matrix | `PARAM_MOD_SLOT3_DEST` | 0 | 127 | linear |
+| 95 | Mod slot 3 depth | Mod matrix | `PARAM_MOD_SLOT3_DEPTH` | -4095 | 4095 | linear |
+| 96 | Mod slot 4 source | Mod matrix | `PARAM_MOD_SLOT4_SOURCE` | 0 | 127 | linear |
+| 97 | Mod slot 4 dest | Mod matrix | `PARAM_MOD_SLOT4_DEST` | 0 | 127 | linear |
+| 102 | Mod slot 4 depth | Mod matrix | `PARAM_MOD_SLOT4_DEPTH` | -4095 | 4095 | linear |
+| 103 | Mod slot 5 source | Mod matrix | `PARAM_MOD_SLOT5_SOURCE` | 0 | 127 | linear |
+| 104 | Mod slot 5 dest | Mod matrix | `PARAM_MOD_SLOT5_DEST` | 0 | 127 | linear |
+| 105 | Mod slot 5 depth | Mod matrix | `PARAM_MOD_SLOT5_DEPTH` | -4095 | 4095 | linear |
+| 106 | Mod slot 6 source | Mod matrix | `PARAM_MOD_SLOT6_SOURCE` | 0 | 127 | linear |
+| 107 | Mod slot 6 dest | Mod matrix | `PARAM_MOD_SLOT6_DEST` | 0 | 127 | linear |
+| 108 | Mod slot 6 depth | Mod matrix | `PARAM_MOD_SLOT6_DEPTH` | -4095 | 4095 | linear |
+| 109 | Mod slot 7 source | Mod matrix | `PARAM_MOD_SLOT7_SOURCE` | 0 | 127 | linear |
+| 110 | Mod slot 7 dest | Mod matrix | `PARAM_MOD_SLOT7_DEST` | 0 | 127 | linear |
+| 111 | Mod slot 7 depth | Mod matrix | `PARAM_MOD_SLOT7_DEPTH` | -4095 | 4095 | linear |
 | 78 | Manual calibration mode | Calibration | `PARAM_MANUAL_CALIBRATION_FLAG` | 0 | 1 | linear |
 | 79 | Manual cal stage (osc) | Calibration | `PARAM_MANUAL_CALIBRATION_STAGE` | 0 | 2 | linear |
 | 80 | Manual cal offset | Calibration | `PARAM_MANUAL_CALIBRATION_OFFSET` | -20 | 20 | linear |
@@ -106,6 +134,38 @@ These parameters take discrete values; the CC number to send is the value itself
 - **CC 61, LFO2 waveform**: 0 - off = 0, 1 - saw = 1, 2 - triangle = 2, 3 - sine = 3, 4 - square = 4
 - **CC 69, Voice mode**: 0 - mono = 0, 1 - poly = 1, 2 - stack = 2
 - **CC 72, Portamento mode**: 0 - fixed time = 0, 1 - slew rate = 1
+- **CC 84, Mod slot 0 source**: 0 ADSR3 (EnvDCO) = 0, 1 ADSR4 (stub) = 1, 2 LFO3 (stub) = 2, 3 LFO4 (stub) = 3, 4 Velocity = 4, 5 Keytrack = 5, 6 Random = 6, 7 Aftertouch = 7
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 85, Mod slot 0 dest**: 0 OSC1 level = 0, 1 OSC2 level = 1, 2 OSC3 level = 2, 3 Sub level = 3, 4 VCF1 reso = 4, 5 VCF2 reso = 5, 6 Dist Drive = 6
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 87, Mod slot 1 source**: 0 ADSR3 (EnvDCO) = 0, 1 ADSR4 (stub) = 1, 2 LFO3 (stub) = 2, 3 LFO4 (stub) = 3, 4 Velocity = 4, 5 Keytrack = 5, 6 Random = 6, 7 Aftertouch = 7
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 88, Mod slot 1 dest**: 0 OSC1 level = 0, 1 OSC2 level = 1, 2 OSC3 level = 2, 3 Sub level = 3, 4 VCF1 reso = 4, 5 VCF2 reso = 5, 6 Dist Drive = 6
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 90, Mod slot 2 source**: 0 ADSR3 (EnvDCO) = 0, 1 ADSR4 (stub) = 1, 2 LFO3 (stub) = 2, 3 LFO4 (stub) = 3, 4 Velocity = 4, 5 Keytrack = 5, 6 Random = 6, 7 Aftertouch = 7
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 91, Mod slot 2 dest**: 0 OSC1 level = 0, 1 OSC2 level = 1, 2 OSC3 level = 2, 3 Sub level = 3, 4 VCF1 reso = 4, 5 VCF2 reso = 5, 6 Dist Drive = 6
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 93, Mod slot 3 source**: 0 ADSR3 (EnvDCO) = 0, 1 ADSR4 (stub) = 1, 2 LFO3 (stub) = 2, 3 LFO4 (stub) = 3, 4 Velocity = 4, 5 Keytrack = 5, 6 Random = 6, 7 Aftertouch = 7
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 94, Mod slot 3 dest**: 0 OSC1 level = 0, 1 OSC2 level = 1, 2 OSC3 level = 2, 3 Sub level = 3, 4 VCF1 reso = 4, 5 VCF2 reso = 5, 6 Dist Drive = 6
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 96, Mod slot 4 source**: 0 ADSR3 (EnvDCO) = 0, 1 ADSR4 (stub) = 1, 2 LFO3 (stub) = 2, 3 LFO4 (stub) = 3, 4 Velocity = 4, 5 Keytrack = 5, 6 Random = 6, 7 Aftertouch = 7
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 97, Mod slot 4 dest**: 0 OSC1 level = 0, 1 OSC2 level = 1, 2 OSC3 level = 2, 3 Sub level = 3, 4 VCF1 reso = 4, 5 VCF2 reso = 5, 6 Dist Drive = 6
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 103, Mod slot 5 source**: 0 ADSR3 (EnvDCO) = 0, 1 ADSR4 (stub) = 1, 2 LFO3 (stub) = 2, 3 LFO4 (stub) = 3, 4 Velocity = 4, 5 Keytrack = 5, 6 Random = 6, 7 Aftertouch = 7
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 104, Mod slot 5 dest**: 0 OSC1 level = 0, 1 OSC2 level = 1, 2 OSC3 level = 2, 3 Sub level = 3, 4 VCF1 reso = 4, 5 VCF2 reso = 5, 6 Dist Drive = 6
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 106, Mod slot 6 source**: 0 ADSR3 (EnvDCO) = 0, 1 ADSR4 (stub) = 1, 2 LFO3 (stub) = 2, 3 LFO4 (stub) = 3, 4 Velocity = 4, 5 Keytrack = 5, 6 Random = 6, 7 Aftertouch = 7
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 107, Mod slot 6 dest**: 0 OSC1 level = 0, 1 OSC2 level = 1, 2 OSC3 level = 2, 3 Sub level = 3, 4 VCF1 reso = 4, 5 VCF2 reso = 5, 6 Dist Drive = 6
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 109, Mod slot 7 source**: 0 ADSR3 (EnvDCO) = 0, 1 ADSR4 (stub) = 1, 2 LFO3 (stub) = 2, 3 LFO4 (stub) = 3, 4 Velocity = 4, 5 Keytrack = 5, 6 Random = 6, 7 Aftertouch = 7
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
+- **CC 110, Mod slot 7 dest**: 0 OSC1 level = 0, 1 OSC2 level = 1, 2 OSC3 level = 2, 3 Sub level = 3, 4 VCF1 reso = 4, 5 VCF2 reso = 5, 6 Dist Drive = 6
+  - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
 
 ## Deliberately not mapped
 

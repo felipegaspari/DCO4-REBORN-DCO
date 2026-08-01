@@ -51,8 +51,8 @@ Boot gap: prefer Input **periodic full snapshot** (or resend on demand) so a lat
 | Domain | Examples |
 |--------|----------|
 | Oscillators | PIO DCO, sync, cal, RESET/RANGE/PW |
-| Osc switching | 74HC595 wave mux |
-| Osc levels | MCP4728 (and related) |
+| Osc switching | Dual 74HC595 → 3× DG411 (OSC1–3 Saw/Pulse/Tri) — [`WAVE_MUX.md`](WAVE_MUX.md) |
+| Osc levels | OSC1/2/3 + Sub PWM → level VCAs |
 | Critical CVs | Filter **cutoff** ×2, **resonance** ×2, main **VCA** |
 | Hub | Input UART RX + TX upstream; MIDI as today |
 | Envelopes / LFOs | EnvDCO/VCA/VCF state that drives those CVs |
@@ -74,6 +74,8 @@ Everything from the **filter through the end of the chain** that is **not** cuto
 |------------------------|---------|--------|
 | Notes, osc, wave, level, ADSR, LFO→voice | Apply | Discard |
 | Cutoff, resonance, VCA | Apply | Discard |
+| Mod matrix 60–83 (dests 0–5) | Apply | Discard (dest≠6) |
+| Mod matrix 60–83 (dest 6 Dist Drive) | Apply (solo) / soft base | Apply |
 | Dist Drive/Mix, AS3320 mode, FX, other post-filter | Discard* | Apply |
 
 \*On the dual-MCU hardware build, the RP2350A must **not** also drive those pins (avoid fighting the RP2040). Flag: **`ENABLE_VOICE_AUX`** in [`../DCO.ino`](../DCO.ino) — skip Dist PWM init/writes; keep `apply_param_dist_*` / `PARAM_FILTER_MODE` state updates.
@@ -82,11 +84,12 @@ Everything from the **filter through the end of the chain** that is **not** cuto
 
 | Domain | Mechanism / IDs | Dual-MCU owner |
 |--------|-----------------|----------------|
-| Osc / wave / level / notes / ADSR / LFO→voice | `'a'..'f'`, `'p'`/`'w'`, mux, MCP4728 | **RP2350** |
+| Osc / wave / level / notes / ADSR / LFO→voice | `'a'..'f'`, `'p'`/`'w'`, mux, level PWM | **RP2350** |
 | Cut / Res (+ `'d'` mods), VCA | `'d'`, envs, `PARAM_VCA_LEVEL` 43, … | **RP2350** |
 | Dist Drive / Mix | `PARAM_DIST_DRIVE` **52**, `PARAM_DIST_MIX` **53** | **RP2040** ([`VOICE-AUX/`](../../VOICE-AUX/)) |
 | AS3320 mode | `PARAM_FILTER_MODE` **54** | **RP2040** |
-| FX (reserved) | **55+** commented in `params_def.h` | **RP2040** later |
+| Mod matrix slots | ParamIds **60–83** — DCO applies dests 0–5; aux applies dest 6 (Dist Drive) | **both** (see [`MOD_MATRIX.md`](MOD_MATRIX.md)) |
+| FX (reserved) | **55–56** commented in `params_def.h` | **RP2040** later |
 | Upstream `'x'` 154/155 | DCO TX only | **RP2350** |
 
 Aux parses `'p'`/`'w'` only for apply; `'a'..'f'` / `'q'` are discarded after framing.

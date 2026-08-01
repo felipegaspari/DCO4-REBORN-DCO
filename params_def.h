@@ -13,15 +13,12 @@
 //   - The meaning of each ID (name + number) should be stable across MCUs.
 
 enum ParamId : uint16_t {
-  // --- Oscillator wave enable (mainboard-local, not used on DCO) ------
-  PARAM_SAW_STATUS               = 1,
-  PARAM_SAW2_STATUS              = 2,
-  PARAM_TRI_STATUS               = 3,
-  PARAM_SINE_STATUS              = 4,
-
-  // Shared with DCO: 5, 10.. etc
-  PARAM_SQR1_STATUS              = 5,
-  PARAM_SQR2_STATUS              = 6,   // mainboard-local
+  // --- Per-osc analog wave enables (74HC595 → DG411). See docs/WAVE_MUX.md ---
+  PARAM_OSC1_SAW_ENABLE          = 1,   // was PARAM_SAW_STATUS
+  PARAM_OSC1_PULSE_ENABLE        = 2,   // was PARAM_SAW2_STATUS
+  PARAM_OSC1_TRI_ENABLE          = 3,   // was PARAM_TRI_STATUS
+  PARAM_SINE_STATUS              = 4,   // deprecated (no mux role); keep ID
+  // 5, 6: unused (were PARAM_SQR1/SQR2_STATUS) — reserved, do not reuse casually
 
   PARAM_RESONANCE_COMPENSATION   = 7,   // mainboard-local
   PARAM_VCA_ADSR_RESTART         = 8,   // mainboard-local
@@ -47,9 +44,11 @@ enum ParamId : uint16_t {
   PARAM_VCF_KEYTRACK             = 19,
   PARAM_VELOCITY_TO_VCF          = 20,
   PARAM_VELOCITY_TO_VCA          = 21,
-  PARAM_SQR1_LEVEL               = 22,
-  PARAM_SQR2_LEVEL               = 23,
+  // Oscillator / sub mix levels (PWM → level VCAs; not per-waveform).
+  PARAM_OSC1_LEVEL               = 22,
+  PARAM_OSC2_LEVEL               = 23,
   PARAM_SUB_LEVEL                = 24,
+  PARAM_OSC3_LEVEL               = 38,
 
   // --- Shared calibration / voice mode --------------------------------
   PARAM_CALIBRATION_VALUE        = 25,
@@ -108,6 +107,41 @@ enum ParamId : uint16_t {
   // FX placeholders (RP2040 aux in dual-MCU builds). IDs reserved; not wired yet.
   // PARAM_FX_PROGRAM             = 55,
   // PARAM_FX_MIX                 = 56,
+
+  // Mod matrix: 8 slots × (source, dest, depth). See docs/MOD_MATRIX.md.
+  // Source 0..7 (0xFF/out-of-range = empty); dest 0..6; depth bipolar int16.
+  PARAM_MOD_SLOT0_SOURCE         = 60,
+  PARAM_MOD_SLOT0_DEST           = 61,
+  PARAM_MOD_SLOT0_DEPTH          = 62,
+  PARAM_MOD_SLOT1_SOURCE         = 63,
+  PARAM_MOD_SLOT1_DEST           = 64,
+  PARAM_MOD_SLOT1_DEPTH          = 65,
+  PARAM_MOD_SLOT2_SOURCE         = 66,
+  PARAM_MOD_SLOT2_DEST           = 67,
+  PARAM_MOD_SLOT2_DEPTH          = 68,
+  PARAM_MOD_SLOT3_SOURCE         = 69,
+  PARAM_MOD_SLOT3_DEST           = 70,
+  PARAM_MOD_SLOT3_DEPTH          = 71,
+  PARAM_MOD_SLOT4_SOURCE         = 72,
+  PARAM_MOD_SLOT4_DEST           = 73,
+  PARAM_MOD_SLOT4_DEPTH          = 74,
+  PARAM_MOD_SLOT5_SOURCE         = 75,
+  PARAM_MOD_SLOT5_DEST           = 76,
+  PARAM_MOD_SLOT5_DEPTH          = 77,
+  PARAM_MOD_SLOT6_SOURCE         = 78,
+  PARAM_MOD_SLOT6_DEST           = 79,
+  PARAM_MOD_SLOT6_DEPTH          = 80,
+  PARAM_MOD_SLOT7_SOURCE         = 81,
+  PARAM_MOD_SLOT7_DEST           = 82,
+  PARAM_MOD_SLOT7_DEPTH          = 83,
+
+  // OSC2/OSC3 wave enables (OSC1 uses IDs 1–3)
+  PARAM_OSC2_SAW_ENABLE          = 84,
+  PARAM_OSC2_PULSE_ENABLE        = 85,
+  PARAM_OSC2_TRI_ENABLE          = 86,
+  PARAM_OSC3_SAW_ENABLE          = 87,
+  PARAM_OSC3_PULSE_ENABLE        = 88,
+  PARAM_OSC3_TRI_ENABLE          = 89,
 
   // --- Misc / control / UI flags ------------------------------------
   // Calibration mode selector (screen/UI only for now)

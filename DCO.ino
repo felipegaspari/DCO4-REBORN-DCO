@@ -42,7 +42,6 @@
 // Leave commented on benches without filter/VCA/mux/DAC attached.
 // #define ENABLE_CV_OUTS
 // #define ENABLE_WAVE_MUX
-// #define ENABLE_MCP4728
 
 // Dual-MCU: RP2040 voice-aux owns Dist Drive/Mix PWM + filter mode GPIO (and later FX).
 // Keep dist/mode apply handlers and state; skip local pin writers so they do not fight the aux.
@@ -128,7 +127,6 @@
 #include "midi_cc.h"
 #include "midi_cc_map.h"  // generated; defines midiCcMap[], so include it once, here
 #include "wave_mux.h"
-#include "mcp4728_dco.h"
 
 #include "PID.h"
 #include "autotune.h"
@@ -181,8 +179,8 @@ void setup1() {
 
   init_ADSR();
   init_cv_out();
+  mod_matrix_init();
   init_waveSelector();
-  init_MCP4728();
 
   // Select amplitude-compensation precompute based on engine type.
   precompute_amp_comp_for_engine();

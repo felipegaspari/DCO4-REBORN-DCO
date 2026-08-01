@@ -20,7 +20,7 @@ Poly/`setVoiceMode` scaffolding kept for a later paraphonic mode.
 
 ## Hub mode
 
-Serial1 is DIN MIDI, Serial2 is the Input board — the DCO's only peer link. It pairs with the Input's Serial1: the DCO's Serial2 RX (GP21) is fed by the Input's TX (GP0), while the DCO's Serial2 TX (GP20) drives the Input's RX (GP1). Gap 154 and cal offsets 155 go out as `'x'` frames on that TX, and Input forwards 154 to the Screen; the DCO has no Screen port of its own. Soft EnvVCA/EnvVCF always run; uncomment `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` / `ENABLE_MCP4728` for hardware writers. Docs: [`docs/MAINBOARD_ABSORPTION.md`](docs/MAINBOARD_ABSORPTION.md), [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md).
+Serial1 is DIN MIDI, Serial2 is the Input board — the DCO's only peer link. It pairs with the Input's Serial1: the DCO's Serial2 RX (GP21) is fed by the Input's TX (GP0), while the DCO's Serial2 TX (GP20) drives the Input's RX (GP1). Gap 154 and cal offsets 155 go out as `'x'` frames on that TX, and Input forwards 154 to the Screen; the DCO has no Screen port of its own. Soft EnvVCA/EnvVCF always run; uncomment `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` for hardware CV / mux / OSC level PWM writers. Docs: [`docs/MAINBOARD_ABSORPTION.md`](docs/MAINBOARD_ABSORPTION.md), [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md).
 
 ## Build
 
@@ -38,6 +38,8 @@ Main sketch: `DCO.ino`.
 See `docs/` — especially:
 
 - [`docs/PINOUT.md`](docs/PINOUT.md) — provisional hub + CV pin / UART map (Phase 0)
+- [`docs/MOD_MATRIX.md`](docs/MOD_MATRIX.md) — sparse mod matrix (levels / dual reso / Dist Drive)
+- [`docs/WAVE_MUX.md`](docs/WAVE_MUX.md) — per-osc Saw/Pulse/Tri via dual 595 + DG411
 - [`docs/DUAL_MCU.md`](docs/DUAL_MCU.md) — RP2350A + RP2040 aux; `ENABLE_VOICE_AUX`; ParamId ownership
 - [`../VOICE-AUX/`](../VOICE-AUX/) — RP2040 helper firmware (Dist / filter mode)
 - [`docs/DISTORTION.md`](docs/DISTORTION.md) — post-LP Drive/Mix distortion stage (hardware idea + CV prototype)

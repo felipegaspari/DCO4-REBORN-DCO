@@ -24,7 +24,7 @@ Each project has a params_def.h that defines:
 enum ParamId : uint16_t { ... };
 IDs are grouped roughly as:
 Mainboard‑local only (e.g. wave enables 1..4, ADSR curves 48..51).
-Shared with DCO (e.g. 5 = SQR1 on/off, 10 = ADSR3→osc select, 26 = voice mode, 40 = LFO1→DCO, etc.).
+Shared with DCO (e.g. 10 = ADSR3→osc select, 26 = voice mode, 40 = LFO1→DCO, etc.; IDs 5–6 unused/reserved).
 Calibration / diagnostic IDs (e.g. 150..154).
 Rules
 Never reuse or renumber existing IDs: treat them as protocol constants.

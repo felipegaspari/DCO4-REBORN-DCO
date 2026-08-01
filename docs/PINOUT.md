@@ -68,7 +68,7 @@ Full detail on the programs, the period model, sync modes and phase align:
 
 ---
 
-## New CV / mux / DAC (provisional)
+## New CV / mux (provisional)
 
 | Function | GPIO | PWM slice | Ch | Notes |
 |----------|------|-----------|----|-------|
@@ -79,15 +79,23 @@ Full detail on the programs, the period model, sync modes and phase align:
 | VCA | **11** | 5 | B | |
 | Dist Drive | **9** | 4 | B | Solo-B / `ENABLE_CV_OUTS` without aux. Dual-MCU: enable `ENABLE_VOICE_AUX` (no local drive); aux pins in [`VOICE-AUX/docs/README.md`](../../VOICE-AUX/docs/README.md) |
 | Dist Mix | **26** | 5 | A | Same as Dist Drive; shares slice 5 with VCA on solo-B map |
+| OSC1 level | **16** | 0 | A | Shares slice 0 with RANGE OSC3 — firmware scales into `DIV_COUNTER` |
+| OSC2 level | **18** | 1 | A | Shares slice 1 with PW — firmware scales into `DIV_COUNTER_PW` |
+| OSC3 level | **9** / **32** | — | — | Dual-MCU (`ENABLE_VOICE_AUX`): reuse Dist Drive **GP9**. Solo-B: **GP32** |
+| Sub level | **26** / **33** | — | — | Dual-MCU: reuse Dist Mix **GP26** (slice 5 w/ VCA). Solo-B: **GP33** |
 
 | Function | GPIO | Notes |
 |----------|------|-------|
-| 74HC595 DATA | **12** | Port Mainboard `waveSelector` |
+| 74HC595 DATA | **12** | Dual daisy-chain → 3× DG411 wave select ([`WAVE_MUX.md`](WAVE_MUX.md)) |
 | 74HC595 LATCH | **13** | |
 | 74HC595 CLK | **14** | |
-| I2C0 SDA | **16** | MCP4728 ×3 @ 0x63/0x64/0x65 |
-| I2C0 SCL | **18** | |
 | AS3320 mode | *TBD* | Dual-MCU → **RP2040**; solo-B → DCO spares — [`FILTER_ROUTING.md`](FILTER_ROUTING.md) |
+
+**Wave mux:** 2× 74HC595 drive 3× DG411 (OSC1–3 × Saw/Pulse/Tri). Provisional bits 0–8; 9–15 unused. Active-low.
+
+**I2C level DAC dropped** — osc/sub levels are PWM → analog level VCAs (same 12-bit CV domain as other outs). Soft bases still update with `ENABLE_CV_OUTS` off.
+
+**Do not use for level PWM:** GP2 (aliases GP18), GP6 (aliases RANGE OSC2 GP22).
 
 **Spare / TBD (DCO):** GP2, GP6, GP25 (ADC-capable). Prefer leaving remaining ADC pins free unless needed. Solo-B candidates for AS3320 mode.
 
@@ -103,20 +111,22 @@ Full detail on the programs, the period model, sync modes and phase align:
 | 5 | Resonance 0 PWM |
 | 7 | Resonance 1 PWM |
 | 8 | Sub-osc square out (PIO1) — needs a mixer input on the carrier |
-| 9 | Dist Drive PWM (provisional) |
+| 9 | Dist Drive PWM **or** OSC3 level (when `ENABLE_VOICE_AUX`) |
 | 10 | Cal sense |
 | 11 | VCA PWM |
-| 12–14 | 74HC595 |
+| 12–14 | Dual 74HC595 → DG411 wave mux |
 | 15 | Cutoff 0 PWM |
-| 16,18 | I2C MCP4728 |
+| 16 | OSC1 level PWM (slice 0 A w/ RANGE OSC3) |
 | 17,22,28 | RANGE ×3 |
+| 18 | OSC2 level PWM (slice 1 A w/ PW) |
 | 19,27,29 | RESET ×3 (all PIO0) |
 | 20,21 | HW UART Input |
 | 23,24 | Board fix |
-| 26 | Dist Mix PWM (provisional; slice 5 with VCA) |
-| 2,6,25 | Spare / TBD |
+| 26 | Dist Mix PWM **or** Sub level (when `ENABLE_VOICE_AUX`) |
+| 32,33 | OSC3 / Sub level (solo RP2350B provisional) |
+| 2,6,25 | Spare / TBD (not level PWM — aliases) |
 
-Approx **26** GPIOs used with dist CVs → stock Pico 2 is tight; **RP2350B recommended** for production.
+Approx **26** GPIOs used with dist CVs → stock Pico 2 is tight; **RP2350B recommended** for production (solo level pins GP32/33).
 
 ---
 
@@ -131,9 +141,9 @@ Approx **26** GPIOs used with dist CVs → stock Pico 2 is tight; **RP2350B reco
 ## Feature flags (code)
 
 ```text
-ENABLE_CV_OUTS      // PWM VCF/VCA/reso writers — landed (PWM.ino / cv_out.ino)
-ENABLE_WAVE_MUX     // 74HC595 — landed (wave_mux.ino)
-ENABLE_MCP4728      // Wire DAC levels — landed (mcp4728_dco.ino)
+ENABLE_CV_OUTS      // PWM VCF/VCA/reso + OSC1..3/Sub level writers — landed (PWM.ino / cv_out.ino)
+ENABLE_WAVE_MUX     // dual 595 → DG411 per-osc Saw/Pulse/Tri — landed (wave_mux.ino)
+ENABLE_VOICE_AUX    // Dist/mode on RP2040; DCO reuses GP9/26 for OSC3/Sub levels
 ENABLE_PIO_MIDI     // DIN on PIO UART — Phase 5 / next PCB bring-up
 ```
 

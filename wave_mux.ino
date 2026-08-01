@@ -1,15 +1,17 @@
-// Dual 74HC595 wave enables (Mainboard RoxMux port — bit-bang, no RoxMux dep).
-// Active-low enables; pin indices match Mainboard "crossed cables" map (4 voice slots).
+// Dual 74HC595 → 3× DG411 per-osc Saw/Pulse/Tri enables.
+// Active-low: bit 0 = wave on (DG411 IN low closes switch). See docs/WAVE_MUX.md.
 
 #ifdef ENABLE_WAVE_MUX
 
 static uint16_t waveMuxBits = 0xFFFF;  // all off (1 = disabled)
 
-// Crossed-cable map from Mainboard/waveSelector.h (voice slots 0..3).
-static const uint8_t triPins[4]  = { 14, 10, 6, 2 };
-static const uint8_t sinePins[4] = { 13, 9, 5, 1 };
-static const uint8_t saw2Pins[4] = { 12, 8, 4, 0 };
-static const uint8_t sawPins[4]  = { 15, 11, 7, 3 };
+// Provisional bit map: OSC1 Saw/Pulse/Tri = 0..2, OSC2 = 3..5, OSC3 = 6..8.
+// Bits 9–15 unused (left high). Remap when PCB is frozen.
+static const uint8_t WAVE_MUX_BIT[3][3] = {
+  { 0, 1, 2 },  // OSC1 Saw, Pulse, Tri
+  { 3, 4, 5 },  // OSC2
+  { 6, 7, 8 },  // OSC3
+};
 
 static inline void waveMuxWritePin(uint8_t pin, bool high) {
   if (pin > 15) return;
@@ -21,7 +23,7 @@ static inline void waveMuxWritePin(uint8_t pin, bool high) {
 }
 
 static void waveMuxShiftOut() {
-  // Shift MSB first into daisy-chain (chip2 then chip1 convention used by Rox74HC595).
+  // Shift MSB first into daisy-chain (chip2 then chip1).
   for (int i = 15; i >= 0; --i) {
     gpio_put(HC595_DATA_PIN, (waveMuxBits >> i) & 1u);
     gpio_put(HC595_CLK_PIN, 1);
@@ -44,66 +46,29 @@ void init_waveSelector() {
   waveMuxShiftOut();
 }
 
-// Update one wave family (0–3) or all (4) from status flags. Monosynth: only slot 0 live.
-void update_waveSelector(byte wave) {
-  switch (wave) {
-    case 0:
-      for (int i = 0; i < 4; i++) {
-        waveMuxWritePin(sawPins[i], (i < NUM_VOICES) ? !sawStatus : 1);
-      }
-      break;
-    case 1:
-      for (int i = 0; i < 4; i++) {
-        waveMuxWritePin(saw2Pins[i], (i < NUM_VOICES) ? !saw2Status : 1);
-      }
-      break;
-    case 2:
-      for (int i = 0; i < 4; i++) {
-        waveMuxWritePin(triPins[i], (i < NUM_VOICES) ? !triStatus : 1);
-      }
-      break;
-    case 3:
-      for (int i = 0; i < 4; i++) {
-        waveMuxWritePin(sinePins[i], (i < NUM_VOICES) ? !sqr2Status : 1);
-      }
-      break;
-    case 4:
-      for (int i = 0; i < 4; i++) {
-        waveMuxWritePin(sawPins[i], (i < NUM_VOICES) ? !sawStatus : 1);
-        waveMuxWritePin(saw2Pins[i], (i < NUM_VOICES) ? !saw2Status : 1);
-        waveMuxWritePin(triPins[i], (i < NUM_VOICES) ? !triStatus : 1);
-        waveMuxWritePin(sinePins[i], (i < NUM_VOICES) ? !sqr2Status : 1);
-      }
-      break;
-    default:
-      break;
+void update_waveSelector() {
+  waveMuxBits = 0xFFFF;  // unused bits stay high (off)
+  for (uint8_t osc = 0; osc < 3; osc++) {
+    for (uint8_t wave = 0; wave < 3; wave++) {
+      // Active-low: enabled → write 0
+      waveMuxWritePin(WAVE_MUX_BIT[osc][wave], waveEnable[osc][wave] ? 0 : 1);
+    }
   }
   waveMuxShiftOut();
 }
 
-// Manual calibration: isolate one oscillator's wave path (all others off).
-// Stage is the oscillator index 0..2; OSC3 has no mux hardware, so it stays silent.
 void waveSelector_manual_calibration(byte stage) {
-  for (int i = 0; i < 4; i++) {
-    waveMuxWritePin(sawPins[i], 1);
-    waveMuxWritePin(saw2Pins[i], 1);
-    waveMuxWritePin(triPins[i], 1);
-    waveMuxWritePin(sinePins[i], 1);
-  }
-
-  if (stage == 0) {
-    waveMuxWritePin(sawPins[0], 0);
-  } else if (stage == 1) {
-    waveMuxWritePin(saw2Pins[0], 0);
-  }
-
+  waveMuxBits = 0xFFFF;
+  if (stage > 2) stage = 2;
+  // Solo OSC{stage} Saw
+  waveMuxWritePin(WAVE_MUX_BIT[stage][0], 0);
   waveMuxShiftOut();
 }
 
 #else  // !ENABLE_WAVE_MUX
 
 void init_waveSelector() {}
-void update_waveSelector(byte) {}
+void update_waveSelector() {}
 void waveSelector_manual_calibration(byte) {}
 
 #endif

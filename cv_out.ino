@@ -96,9 +96,18 @@ void update_CV_outs() {
     VCF_PWM[i] = (uint16_t)(4095 - (int)constrain(finalValue, 0, 4095));
   }
 
-  RESONANCE_PWM = RESONANCE;
+  // Matrix sum → levels + dual reso (+ Dist Drive when DCO owns dist pins).
+  // Skipped under manual cal (that path calls update_CV_outs_manual_calibration instead).
+  uint16_t dist_out = DIST_DRIVE;
+  if (!manualCalibrationFlag) {
+    dist_out = mod_matrix_apply_cv();
+  } else {
+    RESONANCE_PWM[0] = RESONANCE;
+    RESONANCE_PWM[1] = RESONANCE;
+  }
+
 #ifdef ENABLE_CV_OUTS
-  write_cv_pwm();
+  write_cv_pwm_raw(VCF_PWM[0], RESONANCE_PWM, VCA_PWM[0], dist_out, DIST_MIX);
 #endif
 }
 
@@ -116,13 +125,18 @@ void update_CV_outs_manual_calibration() {
 
   waveSelector_manual_calibration(stage);
 
-  // OSC3 has no SQR DAC channel — keep both muted on that stage.
-  SQR1Level = (stage == 0) ? CAL_SQR_ON : CAL_SQR_MUTED;
-  SQR2Level = (stage == 1) ? CAL_SQR_ON : CAL_SQR_MUTED;
-  mcpUpdate();
+  // Solo the oscillator under cal via level PWMs (others muted / high = attenuator closed).
+  OSC1Level = (stage == 0) ? CAL_SQR_ON : CAL_SQR_MUTED;
+  OSC2Level = (stage == 1) ? CAL_SQR_ON : CAL_SQR_MUTED;
+  OSC3Level = (stage == 2) ? CAL_SQR_ON : CAL_SQR_MUTED;
+  SubLevel = CAL_SQR_MUTED;
+#ifdef ENABLE_CV_OUTS
+  write_level_pwm();
+#endif
 
 #ifdef ENABLE_CV_OUTS
   // Park distortion fully dry so cal edges are not hashed by the clipper.
-  write_cv_pwm_raw(CAL_CUTOFF_COMPARE, CAL_RESONANCE_COMPARE, CAL_VCA_COMPARE, 0, 0);
+  const uint16_t cal_reso[NUM_FILTERS] = { CAL_RESONANCE_COMPARE, CAL_RESONANCE_COMPARE };
+  write_cv_pwm_raw(CAL_CUTOFF_COMPARE, cal_reso, CAL_VCA_COMPARE, 0, 0);
 #endif
 }

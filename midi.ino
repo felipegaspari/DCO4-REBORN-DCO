@@ -7,7 +7,7 @@ void init_midi() {
   MIDI_USB.setHandleControlChange(handleControlChange);
   MIDI_USB.setHandleProgramChange(handleProgramChange);
   MIDI_USB.setHandlePitchBend(handlePitchBend);
-
+  MIDI_USB.setHandleAfterTouchChannel(handleAfterTouchChannel);
 
   MIDI_SERIAL.begin(MIDI_CHANNEL_OMNI);
   MIDI_SERIAL.setHandleNoteOn(handleNoteOn);
@@ -15,6 +15,7 @@ void init_midi() {
   MIDI_SERIAL.setHandleControlChange(handleControlChange);
   MIDI_SERIAL.setHandleProgramChange(handleProgramChange);
   MIDI_SERIAL.setHandlePitchBend(handlePitchBend);
+  MIDI_SERIAL.setHandleAfterTouchChannel(handleAfterTouchChannel);
 }
 
 
@@ -103,8 +104,15 @@ void handlePitchBend(byte channel, int pitchBend) {
   midi_pitch_bend = pitchBend + 8192;
 }
 
+// Channel aftertouch → mod matrix source.
+void handleAfterTouchChannel(byte channel, byte pressure) {
+  (void)channel;
+  mod_matrix_set_aftertouch(pressure);
+}
+
 // Allocate voice(s) from MIDI note-on per voiceMode/polyMode; set ADSR flags (EnvDCO/VCA/VCF are local).
 void note_on(uint8_t note, uint8_t velocity) {
+  mod_matrix_on_note_on();
 
   switch (voiceMode) {
     case 0:

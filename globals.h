@@ -139,11 +139,15 @@ float BASE_NOTE = 440.0f;
 //   DIN MIDI    GP0/GP1 via PIO UART (interim: keep HW UART on 0/1)
 //   Cutoff      GP15, GP4   Reso GP5, GP7   VCA GP11
 //   Dist Drive  GP9         Dist Mix GP26 (slice 5 A with VCA on 5 B)
-//   74HC595     GP12/13/14   I2C MCP4728 GP16 SDA / GP18 SCL
+//   74HC595     GP12/13/14
+//   OSC1..3+Sub level PWM → analog level VCAs (I2C level DAC removed):
+//     GP16 / GP18 (ex-I2C); OSC3/Sub on freed Dist pins when ENABLE_VOICE_AUX,
+//     else RP2350B GP32/33. GP2 aliases GP18; GP6 aliases RANGE OSC2 — do not use.
 //
 // CV PWM wrap is 4095 except Reso1 (GP7): shares slice 3 with RANGE OSC2 (GP22),
-// so that channel scales duty into DIV_COUNTER (see write_cv_pwm).
-#if defined(ENABLE_CV_OUTS) || defined(ENABLE_WAVE_MUX) || defined(ENABLE_MCP4728)
+// so that channel scales duty into DIV_COUNTER (see write_cv_pwm). OSC1 level
+// shares slice 0 with RANGE OSC3; OSC2 level shares slice 1 with PW — same idea.
+#if defined(ENABLE_CV_OUTS) || defined(ENABLE_WAVE_MUX)
 static constexpr uint8_t CUTOFF_PINS[NUM_FILTERS] = { 15, 4 };
 static constexpr uint8_t RESO_PINS[NUM_FILTERS]   = { 5, 7 };
 static constexpr uint8_t VCA_PIN                  = 11;
@@ -152,8 +156,15 @@ static constexpr uint8_t DIST_MIX_PIN             = 26;
 static constexpr uint8_t HC595_DATA_PIN           = 12;
 static constexpr uint8_t HC595_LATCH_PIN          = 13;
 static constexpr uint8_t HC595_CLK_PIN            = 14;
-static constexpr uint8_t MCP4728_SDA_PIN          = 16;
-static constexpr uint8_t MCP4728_SCL_PIN          = 18;
+static constexpr uint8_t OSC1_LEVEL_PIN           = 16;
+static constexpr uint8_t OSC2_LEVEL_PIN           = 18;
+#ifdef ENABLE_VOICE_AUX
+static constexpr uint8_t OSC3_LEVEL_PIN           = 9;   // Dist Drive pin freed on DCO
+static constexpr uint8_t SUB_LEVEL_PIN            = 26;  // Dist Mix pin; slice 5 w/ VCA
+#else
+static constexpr uint8_t OSC3_LEVEL_PIN           = 32;  // RP2350B provisional
+static constexpr uint8_t SUB_LEVEL_PIN            = 33;  // RP2350B provisional
+#endif
 static constexpr uint16_t DIV_COUNTER_CV          = 4095;
 #endif
 
@@ -200,6 +211,14 @@ uint8_t DIST_DRIVE_PWM_CHAN;
 uint8_t DIST_MIX_PWM_SLICE;
 uint8_t DIST_MIX_PWM_CHAN;
 #endif
+uint8_t OSC1_LEVEL_PWM_SLICE;
+uint8_t OSC1_LEVEL_PWM_CHAN;
+uint8_t OSC2_LEVEL_PWM_SLICE;
+uint8_t OSC2_LEVEL_PWM_CHAN;
+uint8_t OSC3_LEVEL_PWM_SLICE;
+uint8_t OSC3_LEVEL_PWM_CHAN;
+uint8_t SUB_LEVEL_PWM_SLICE;
+uint8_t SUB_LEVEL_PWM_CHAN;
 #endif
 
 uint16_t PW_CENTER[NUM_VOICES_TOTAL] = { 570 };

@@ -24,6 +24,7 @@ GROUP_FILTER = "Filter"
 GROUP_PWM = "PWM"
 GROUP_LFO = "LFOs"
 GROUP_VOICE = "Voice and Drift"
+GROUP_MOD = "Mod matrix"
 GROUP_CAL = "Calibration"
 # App-only tab (PIO reports + profiler). Not in GROUP_ORDER — no MIDI CC / OSC panel.
 GROUP_DIAG = "Diagnostics"
@@ -36,8 +37,32 @@ GROUP_ORDER = [
     GROUP_PWM,
     GROUP_LFO,
     GROUP_VOICE,
+    GROUP_MOD,
     GROUP_CAL,
 ]
+
+_MOD_SOURCES = (
+    ("Off / empty", 255),
+    ("0 ADSR3 (EnvDCO)", 0),
+    ("1 ADSR4 (stub)", 1),
+    ("2 LFO3 (stub)", 2),
+    ("3 LFO4 (stub)", 3),
+    ("4 Velocity", 4),
+    ("5 Keytrack", 5),
+    ("6 Random", 6),
+    ("7 Aftertouch", 7),
+)
+
+_MOD_DESTS = (
+    ("Off / empty", 255),
+    ("0 OSC1 level", 0),
+    ("1 OSC2 level", 1),
+    ("2 OSC3 level", 2),
+    ("3 Sub level", 3),
+    ("4 VCF1 reso", 4),
+    ("5 VCF2 reso", 5),
+    ("6 Dist Drive", 6),
+)
 
 
 @dataclass(frozen=True)
@@ -130,15 +155,20 @@ PARAMS: list[Param] = [
     Param(33, "OSC3 interval (semitones)", GROUP_OSC, "slider", 0, 60, 0, cc=4),
     Param(15, "OSC2 detune", GROUP_OSC, "slider", 0, 512, 0, cc=5),
     Param(34, "OSC3 detune", GROUP_OSC, "slider", 0, 512, 0, cc=8),
-    Param(22, "SQR1 level", GROUP_OSC, "slider", 0, 127, 127, cc=9),
-    Param(23, "SQR2 level", GROUP_OSC, "slider", 0, 127, 0, cc=12),
+    Param(22, "OSC1 level", GROUP_OSC, "slider", 0, 127, 127, cc=9),
+    Param(23, "OSC2 level", GROUP_OSC, "slider", 0, 127, 0, cc=12),
+    Param(38, "OSC3 level", GROUP_OSC, "slider", 0, 127, 0, cc=83),
     Param(24, "Sub level", GROUP_OSC, "slider", 0, 127, 0, cc=13),
-    Param(5, "SQR1 enable", GROUP_OSC, "check", default=1, cc=14),
-    Param(6, "SQR2 enable", GROUP_OSC, "check", default=0, cc=15),
-    Param(1, "Saw enable", GROUP_OSC, "check", default=0, note="wave mux, needs ENABLE_WAVE_MUX", cc=16),
-    Param(2, "Saw2 enable", GROUP_OSC, "check", default=0, note="wave mux", cc=17),
-    Param(3, "Tri enable", GROUP_OSC, "check", default=0, note="wave mux", cc=18),
-    Param(4, "Sine enable", GROUP_OSC, "check", default=0, note="wave mux", cc=19),
+    Param(1, "OSC1 Saw enable", GROUP_OSC, "check", default=0,
+          note="DG411 via dual 595; needs ENABLE_WAVE_MUX", cc=16),
+    Param(2, "OSC1 Pulse enable", GROUP_OSC, "check", default=0, note="analog Pulse", cc=17),
+    Param(3, "OSC1 Tri enable", GROUP_OSC, "check", default=0, cc=18),
+    Param(84, "OSC2 Saw enable", GROUP_OSC, "check", default=0, cc=112),
+    Param(85, "OSC2 Pulse enable", GROUP_OSC, "check", default=0, cc=113),
+    Param(86, "OSC2 Tri enable", GROUP_OSC, "check", default=0, cc=114),
+    Param(87, "OSC3 Saw enable", GROUP_OSC, "check", default=0, cc=115),
+    Param(88, "OSC3 Pulse enable", GROUP_OSC, "check", default=0, cc=116),
+    Param(89, "OSC3 Tri enable", GROUP_OSC, "check", default=0, cc=117),
 
     # --- Sync and PIO ---
     Param(31, "Hard sync topology", GROUP_SYNC, "combo", default=0,
@@ -212,6 +242,33 @@ PARAMS: list[Param] = [
     Param(30, "Analog drift spread", GROUP_VOICE, "slider", 1, 127, 1, cc=75),
     Param(43, "VCA level", GROUP_VOICE, "slider", 0, 128, 128, cc=76),
     Param(21, "Velocity to VCA", GROUP_VOICE, "slider", 0, 20, 0, cc=77),
+
+    # --- Mod matrix (ParamIds 60–83; see DCO/docs/MOD_MATRIX.md) ---
+    # CCs skip reserved 98–101.
+    Param(60, "Mod slot 0 source", GROUP_MOD, "combo", default=255, choices=_MOD_SOURCES, cc=84),
+    Param(61, "Mod slot 0 dest", GROUP_MOD, "combo", default=255, choices=_MOD_DESTS, cc=85),
+    Param(62, "Mod slot 0 depth", GROUP_MOD, "slider", -4095, 4095, 0, cc=86),
+    Param(63, "Mod slot 1 source", GROUP_MOD, "combo", default=255, choices=_MOD_SOURCES, cc=87),
+    Param(64, "Mod slot 1 dest", GROUP_MOD, "combo", default=255, choices=_MOD_DESTS, cc=88),
+    Param(65, "Mod slot 1 depth", GROUP_MOD, "slider", -4095, 4095, 0, cc=89),
+    Param(66, "Mod slot 2 source", GROUP_MOD, "combo", default=255, choices=_MOD_SOURCES, cc=90),
+    Param(67, "Mod slot 2 dest", GROUP_MOD, "combo", default=255, choices=_MOD_DESTS, cc=91),
+    Param(68, "Mod slot 2 depth", GROUP_MOD, "slider", -4095, 4095, 0, cc=92),
+    Param(69, "Mod slot 3 source", GROUP_MOD, "combo", default=255, choices=_MOD_SOURCES, cc=93),
+    Param(70, "Mod slot 3 dest", GROUP_MOD, "combo", default=255, choices=_MOD_DESTS, cc=94),
+    Param(71, "Mod slot 3 depth", GROUP_MOD, "slider", -4095, 4095, 0, cc=95),
+    Param(72, "Mod slot 4 source", GROUP_MOD, "combo", default=255, choices=_MOD_SOURCES, cc=96),
+    Param(73, "Mod slot 4 dest", GROUP_MOD, "combo", default=255, choices=_MOD_DESTS, cc=97),
+    Param(74, "Mod slot 4 depth", GROUP_MOD, "slider", -4095, 4095, 0, cc=102),
+    Param(75, "Mod slot 5 source", GROUP_MOD, "combo", default=255, choices=_MOD_SOURCES, cc=103),
+    Param(76, "Mod slot 5 dest", GROUP_MOD, "combo", default=255, choices=_MOD_DESTS, cc=104),
+    Param(77, "Mod slot 5 depth", GROUP_MOD, "slider", -4095, 4095, 0, cc=105),
+    Param(78, "Mod slot 6 source", GROUP_MOD, "combo", default=255, choices=_MOD_SOURCES, cc=106),
+    Param(79, "Mod slot 6 dest", GROUP_MOD, "combo", default=255, choices=_MOD_DESTS, cc=107),
+    Param(80, "Mod slot 6 depth", GROUP_MOD, "slider", -4095, 4095, 0, cc=108),
+    Param(81, "Mod slot 7 source", GROUP_MOD, "combo", default=255, choices=_MOD_SOURCES, cc=109),
+    Param(82, "Mod slot 7 dest", GROUP_MOD, "combo", default=255, choices=_MOD_DESTS, cc=110),
+    Param(83, "Mod slot 7 depth", GROUP_MOD, "slider", -4095, 4095, 0, cc=111),
 
     # --- Calibration ---
     # The two pulses keep cc=None on purpose: autotune takes over the board for a minute

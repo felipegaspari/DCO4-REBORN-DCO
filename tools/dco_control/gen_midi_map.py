@@ -67,6 +67,7 @@ GROUP_ACCENT = {
     params.GROUP_PWM: "#b98bd1",
     params.GROUP_LFO: "#4fb3c4",
     params.GROUP_VOICE: "#c0a06a",
+    params.GROUP_MOD: "#a67c52",
     params.GROUP_CAL: "#8d97a3",
 }
 

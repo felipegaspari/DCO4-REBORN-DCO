@@ -51,8 +51,6 @@ float porta_note_step_f [NUM_OSCILLATORS];  // semitones per microsecond
 
 uint8_t highestNote = 124;
 
-bool sqr1Status;
-
 static const int multiplierTableSize = 200;
 const int32_t multiplierTableScale = 10000;
 

@@ -871,7 +871,9 @@ inline void voice_task() {
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], pwm_gpio_to_channel(RANGE_PINS[DCO_B]), chanLevel2);
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], pwm_gpio_to_channel(RANGE_PINS[DCO_C]), chanLevel3);
 
-        if (sqr1Status) {
+        // Shared PW PWM when any oscillator has analog Pulse enabled (DG411).
+        const bool pulseOn = waveEnable[0][1] || waveEnable[1][1] || waveEnable[2][1];
+        if (pulseOn) {
           BENCH_FBEGIN(vt_pwm_calc);
           // Optimized: This version avoids storing large intermediate products.
           // The multiplication and shift are combined into one expression per modulator,
@@ -1516,7 +1518,8 @@ inline void voice_task_float() {
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], pwm_gpio_to_channel(RANGE_PINS[DCO_B]), chanLevel2);
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], pwm_gpio_to_channel(RANGE_PINS[DCO_C]), chanLevel3);
   
-        if (sqr1Status) {
+        const bool pulseOn = waveEnable[0][1] || waveEnable[1][1] || waveEnable[2][1];
+        if (pulseOn) {
           BENCH_FBEGIN(vt_pwm_calc);
           float adsr1_delta = ((float)ADSR1Level[i] * (float)local_ADSR1toPWM) / 2048.0f; // 2^11
           float lfo2_delta  = ((float)LFO2Level    * (float)local_LFO2toPW)   / 512.0f;   // 2^9

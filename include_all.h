@@ -40,7 +40,7 @@
 #include "LFO.h"
 #include "adsr.h"
 #include "wave_mux.h"
-#include "mcp4728_dco.h"
+#include "mod_matrix.h"
 
 #include "PID.h"
 #include "autotune.h"
