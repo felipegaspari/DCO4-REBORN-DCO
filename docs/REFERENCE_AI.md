@@ -7,6 +7,7 @@ Related docs:
 - Flat file + function + call-site inventory: [`FILE_INDEX.md`](FILE_INDEX.md) (same `docs/` folder)
 - System topology (other boards): [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md)
 - Float vs fixed build flags and precision modes: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
+- Hot-path profiling: [`BENCHMARKING.md`](BENCHMARKING.md)
 - Autotune algorithms / refactor layout: [`AUTOTUNE.md`](AUTOTUNE.md), [`AUTOTUNE_REFACTORED.md`](AUTOTUNE_REFACTORED.md)
 - Repo entry point: [`../README.md`](../README.md)
 
@@ -25,7 +26,8 @@ Related docs:
     - See [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) for precision vs speed trade-offs.
   - Configures USB product strings in `setup()` (via Adafruit TinyUSB; product **DCO3-MONO**), toggles board pins (23/24) for hardware fixes, and selects DCO calibration mode.
   - Core‑0 pushes `DETUNE_INTERNAL_q24` (LFO1 detune) through `rp2040.fifo`; core‑1 pops it and uses it inside the voice task (float path converts Q24 → float each frame).
-  - `loop1()` calls `voice_task_main()` (dispatch to float or fixed). Optionally prints detailed timing statistics when `RUNNING_AVERAGE` is enabled.
+  - `loop1()` calls `voice_task_main()` (dispatch to float or fixed), then `bench_service(1)` to hand its profiler counters to core 0.
+  - **Profiling** (`RUNNING_AVERAGE`, optionally `RUNNING_AVERAGE_FINE`): both loops are bracketed by `BENCH_*` probes from [`bench.h`](../bench.h); core 0 does all the printing from `bench_poll_core0()`. See [`BENCHMARKING.md`](BENCHMARKING.md).
 
 - **`include_all.h`**  
   - Convenience umbrella header used by most `.ino` implementation files.  
@@ -50,12 +52,12 @@ Related docs:
 ## 2. Voice Architecture & Real-Time Engine
 
 - **`voices.h`**  
-  - Declares `init_voices()`, `print_voice_task_timings()` and core voice‑engine globals:
+  - Declares `init_voices()` and core voice‑engine globals:
     - Portamento configuration and mode (`PORTA_MODE_TIME` / `PORTA_MODE_SLEW`).
     - Per‑DCO portamento state in **Q24 Hz** (`portamento_*_q24`) and in **Q16 semitone space** for slew‑rate mode.
     - When `USE_FLOAT_VOICE_TASK`: parallel float portamento state (`porta_*_f`) in Hz and semitone domains.
     - Precomputed pitch multiplier table storage (`xMultiplierTable`, `yMultiplierTable`, float mirrors `xMultiplierTableF` / `yMultiplierTableF`, `slopeQ*` / `slopeF`, `interpSegCache`).
-    - RunningAverage externs (when enabled) for fine‑grained performance profiling.
+    - No profiler declarations. Probe storage is generated from the `BENCH_PROBES` table in [`bench.h`](../bench.h); the extern block that used to live here named probes that had been renamed or removed and compiled regardless, since an unused `extern` needs no definition.
 
 - **`voices.ino`**  
   - Central **voice engine** and DCO front‑end with a **compile-time dual implementation**:
@@ -100,7 +102,8 @@ Related docs:
     - Calibration front‑end:
       - `voice_task_autotune()` – dedicated per‑oscillator routine used during DCO/DCO+PW calibration to drive the PIO and PWM into specific measurement or calibration modes (float-style clkdiv + `get_chan_level_for_engine`).
     - Timing diagnostics:
-      - `print_voice_task_timings()` – prints detailed microsecond averages for each phase of the voice task when `RUNNING_AVERAGE` is active.
+      - Every stage of both voice tasks is bracketed by `BENCH_*` probes; the report is produced by [`bench.h`](../bench.h) on core 0. See [`BENCHMARKING.md`](BENCHMARKING.md).
+      - `clkdiv_bench_sample()` / `print_clkdiv_bench()` – under `CLKDIV_BENCHMARK`, run the float and double divider candidates side by side and report the timing plus the resulting divider and Hz difference.
 
 ---
 
@@ -326,7 +329,7 @@ Related docs:
     - Resets and updates flag variables (`timer99microsFlag`, `timer200msFlag`, `timer1000msFlag`, etc.) used by:
       - `loop1()` (core 1) to rate‑limit ADSR updates.
       - The voice task to schedule PW updates.
-      - `print_running_averages()` for periodic diagnostic prints.
+  - The profiler no longer hangs off `timer1000msFlag`: its periodic dump is timed on core 0 in `bench_poll_core0()`, so nothing is printed from the audio core.
 
 - **`utils.h` / `utils.ino`**  
   - Small helper utilities:

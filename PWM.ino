@@ -49,10 +49,26 @@ void init_cv_pwm() {
   VCA_PWM_CHAN = pwm_gpio_to_channel(VCA_PIN);
   pwm_set_wrap(VCA_PWM_SLICE, DIV_COUNTER_CV);
   pwm_set_enabled(VCA_PWM_SLICE, true);
+
+  // Dist Mix shares slice 5 with VCA (wrap already 4095). Drive is alone on slice 4 B.
+  gpio_set_function(DIST_DRIVE_PIN, GPIO_FUNC_PWM);
+  DIST_DRIVE_PWM_SLICE = pwm_gpio_to_slice_num(DIST_DRIVE_PIN);
+  DIST_DRIVE_PWM_CHAN = pwm_gpio_to_channel(DIST_DRIVE_PIN);
+  pwm_set_wrap(DIST_DRIVE_PWM_SLICE, DIV_COUNTER_CV);
+  pwm_set_enabled(DIST_DRIVE_PWM_SLICE, true);
+
+  gpio_set_function(DIST_MIX_PIN, GPIO_FUNC_PWM);
+  DIST_MIX_PWM_SLICE = pwm_gpio_to_slice_num(DIST_MIX_PIN);
+  DIST_MIX_PWM_CHAN = pwm_gpio_to_channel(DIST_MIX_PIN);
+  if (DIST_MIX_PWM_SLICE != VCA_PWM_SLICE) {
+    pwm_set_wrap(DIST_MIX_PWM_SLICE, DIV_COUNTER_CV);
+  }
+  pwm_set_enabled(DIST_MIX_PWM_SLICE, true);
 }
 
-// Push raw compare values to the cutoff / resonance / VCA slices (already inverted).
-void write_cv_pwm_raw(uint16_t cutoff, uint16_t resonance, uint16_t vca) {
+// Push raw compare values to the cutoff / resonance / VCA / dist slices.
+void write_cv_pwm_raw(uint16_t cutoff, uint16_t resonance, uint16_t vca,
+                      uint16_t dist_drive, uint16_t dist_mix) {
   for (int i = 0; i < NUM_FILTERS; i++) {
     pwm_set_chan_level(CUTOFF_PWM_SLICES[i], CUTOFF_PWM_CHANS[i], cutoff);
 
@@ -64,11 +80,13 @@ void write_cv_pwm_raw(uint16_t cutoff, uint16_t resonance, uint16_t vca) {
     pwm_set_chan_level(RESO_PWM_SLICES[i], RESO_PWM_CHANS[i], reso_level);
   }
   pwm_set_chan_level(VCA_PWM_SLICE, VCA_PWM_CHAN, vca);
+  pwm_set_chan_level(DIST_DRIVE_PWM_SLICE, DIST_DRIVE_PWM_CHAN, dist_drive);
+  pwm_set_chan_level(DIST_MIX_PWM_SLICE, DIST_MIX_PWM_CHAN, dist_mix);
 }
 
-// Push soft VCF/VCA/reso levels to Pico PWM compares.
+// Push soft VCF/VCA/reso/dist levels to Pico PWM compares.
 void write_cv_pwm() {
-  write_cv_pwm_raw(VCF_PWM[0], RESONANCE_PWM, VCA_PWM[0]);
+  write_cv_pwm_raw(VCF_PWM[0], RESONANCE_PWM, VCA_PWM[0], DIST_DRIVE, DIST_MIX);
 }
 
 #endif  // ENABLE_CV_OUTS

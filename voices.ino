@@ -4,27 +4,95 @@
 #define DCO_DEBUG_REPORT 0
 
 
-#ifdef RUNNING_AVERAGE
-// RunningAverage object definitions for timing measurements
-RunningAverage ra_pitchbend(2000);
-RunningAverage ra_osc2_detune(2000);
-RunningAverage ra_portamento(2000);
-RunningAverage ra_adsr_modifier(2000);
-RunningAverage ra_unison_modifier(2000);
-RunningAverage ra_drift_multiplier(2000);
-RunningAverage ra_modifiers_combination(2000);
-RunningAverage ra_freq_scaling_x(2000);
-RunningAverage ra_freq_scaling_ratio(2000);
-RunningAverage ra_freq_scaling_post(2000);
-RunningAverage ra_get_chan_level(2000);
-RunningAverage ra_pwm_calculations(2000);
-RunningAverage ra_voice_task_total(2000);
-RunningAverage ra_clk_div_calc(2000);
-
-unsigned long last_timing_print = 0;
-unsigned long voice_task_max_time = 0;
-const unsigned long TIMING_PRINT_INTERVAL = 1000;  // Print every 5 seconds
+#ifdef CLKDIV_BENCHMARK
+// Float vs double comparison for the clock-divider math. Both candidates run on the same
+// inputs every frame, so this roughly triples the cost of that stage — bench flag only.
+// What is compared is the divider that actually reaches the state machine (post
+// pio_clk_div_for_y), not the intermediate cycle count, plus the frequency each one
+// reconstructs through the PIO period model.
+uint32_t clkdiv_bench_count = 0;
+double clkdiv_time_float_sum_us = 0.0;
+double clkdiv_time_double_sum_us = 0.0;
+int32_t clkdiv_delta1_sum = 0;
+int32_t clkdiv_delta2_sum = 0;
+uint32_t clkdiv_delta1_max = 0;
+uint32_t clkdiv_delta2_max = 0;
+double clkdiv_freq1_diff_sum = 0.0;
+double clkdiv_freq2_diff_sum = 0.0;
+double clkdiv_freq1_diff_max_abs = 0.0;
+double clkdiv_freq2_diff_max_abs = 0.0;
+double clkdiv_last_target1_Hz = 0.0;
+double clkdiv_last_out1_float_Hz = 0.0;
+double clkdiv_last_out1_double_Hz = 0.0;
+double clkdiv_last_target2_Hz = 0.0;
+double clkdiv_last_out2_float_Hz = 0.0;
+double clkdiv_last_out2_double_Hz = 0.0;
 #endif
+
+// Run both candidate divider implementations on this frame's OSC1/OSC2 frequencies and
+// accumulate the timing and accuracy difference. Compiles away entirely without
+// CLKDIV_BENCHMARK. Called from voice_task_float() just before the live divider math.
+static inline void clkdiv_bench_sample(float freqA_Hz, float freqB_Hz) {
+#ifdef CLKDIV_BENCHMARK
+  if (!(freqA_Hz > 0.0f) || !(freqB_Hz > 0.0f)) return;
+
+  const uint32_t wA = osc_ramp_weight(0), kA = osc_period_overhead(0), yA = osc_last_y[0];
+  const uint32_t wB = osc_ramp_weight(1), kB = osc_period_overhead(1), yB = osc_last_y[1];
+
+  const uint32_t t0 = bench_now();
+  const uint32_t cyc_f1 = (uint32_t)fminf((float)sysClock_Hz / freqA_Hz + 0.5f, 4.0e9f);
+  const uint32_t cyc_f2 = (uint32_t)fminf((float)sysClock_Hz / freqB_Hz + 0.5f, 4.0e9f);
+  const uint32_t t1 = bench_now();
+  const uint32_t cyc_d1 = (uint32_t)fmin((double)sysClock_Hz / (double)freqA_Hz + 0.5, 4.0e9);
+  const uint32_t cyc_d2 = (uint32_t)fmin((double)sysClock_Hz / (double)freqB_Hz + 0.5, 4.0e9);
+  const uint32_t t2 = bench_now();
+
+  const double us_per_cycle = 1.0 / (double)bench_cycles_per_us;
+  clkdiv_time_float_sum_us += (double)bench_span(t0, t1) * us_per_cycle;
+  clkdiv_time_double_sum_us += (double)bench_span(t1, t2) * us_per_cycle;
+
+  // Compare the divider that actually reaches the state machine, not the intermediate
+  // cycle count: rounding inside pio_clk_div_for_y can absorb a difference, or create one.
+  const uint32_t div_f1 = pio_clk_div_for_y(cyc_f1, yA, wA, kA);
+  const uint32_t div_d1 = pio_clk_div_for_y(cyc_d1, yA, wA, kA);
+  const uint32_t div_f2 = pio_clk_div_for_y(cyc_f2, yB, wB, kB);
+  const uint32_t div_d2 = pio_clk_div_for_y(cyc_d2, yB, wB, kB);
+
+  const int32_t d1 = (int32_t)div_f1 - (int32_t)div_d1;
+  const int32_t d2 = (int32_t)div_f2 - (int32_t)div_d2;
+  clkdiv_delta1_sum += d1;
+  clkdiv_delta2_sum += d2;
+  const uint32_t abs1 = (uint32_t)((d1 < 0) ? -d1 : d1);
+  const uint32_t abs2 = (uint32_t)((d2 < 0) ? -d2 : d2);
+  if (abs1 > clkdiv_delta1_max) clkdiv_delta1_max = abs1;
+  if (abs2 > clkdiv_delta2_max) clkdiv_delta2_max = abs2;
+
+  // What each divider is actually worth in Hz, through the same period model the PIO uses.
+  const double out_f1 = (double)sysClock_Hz / (double)(yA + (uint64_t)div_f1 * wA + kA);
+  const double out_d1 = (double)sysClock_Hz / (double)(yA + (uint64_t)div_d1 * wA + kA);
+  const double out_f2 = (double)sysClock_Hz / (double)(yB + (uint64_t)div_f2 * wB + kB);
+  const double out_d2 = (double)sysClock_Hz / (double)(yB + (uint64_t)div_d2 * wB + kB);
+
+  const double fd1 = out_f1 - out_d1;
+  const double fd2 = out_f2 - out_d2;
+  clkdiv_freq1_diff_sum += fd1;
+  clkdiv_freq2_diff_sum += fd2;
+  if (fabs(fd1) > clkdiv_freq1_diff_max_abs) clkdiv_freq1_diff_max_abs = fabs(fd1);
+  if (fabs(fd2) > clkdiv_freq2_diff_max_abs) clkdiv_freq2_diff_max_abs = fabs(fd2);
+
+  clkdiv_last_target1_Hz = (double)freqA_Hz;
+  clkdiv_last_out1_float_Hz = out_f1;
+  clkdiv_last_out1_double_Hz = out_d1;
+  clkdiv_last_target2_Hz = (double)freqB_Hz;
+  clkdiv_last_out2_float_Hz = out_f2;
+  clkdiv_last_out2_double_Hz = out_d2;
+
+  clkdiv_bench_count++;
+#else
+  (void)freqA_Hz;
+  (void)freqB_Hz;
+#endif
+}
 
 // Boot init: seed notes, build pitch tables, apply voice mode, run one voice_task_main().
 void init_voices() {
@@ -97,10 +165,6 @@ static inline float noteIndex_to_freqFloat(float noteIndex) {
 // Fixed-point realtime voice engine (portamento, modifiers, clkdiv, amp, PIO/PWM/PW).
 // Selected by voice_task_main() when USE_FLOAT_VOICE_TASK is not defined.
 inline void voice_task() {
-#ifdef RUNNING_AVERAGE
-  unsigned long voice_task_start_time = micros();
-#endif
-
   // Track portamento-time and mode changes between calls so we can smoothly
   // retime the glide without introducing pitch discontinuities.
   static uint32_t last_portamento_time = 0;
@@ -113,17 +177,13 @@ inline void voice_task() {
   // Pre-calculate pitch bend as a Q24 value. This is done once per voice_task call.
   int32_t calcPitchbend_q24;
 
-#ifdef RUNNING_AVERAGE
-  unsigned long t_start = micros();
-#endif
+  BENCH_FBEGIN(vt_pitchbend);
   // Optimized: Perform pitch bend calculation entirely in fixed-point Q24.
   // ((bend / 8192.0) - 1.0) * pitchBendMultiplier
   // This avoids float conversions and multiplications in the hot path.
   int32_t bend_normalized_q24 = ((int32_t)midi_pitch_bend << 11) - (1 << 24);
   calcPitchbend_q24 = (int32_t)(((int64_t)bend_normalized_q24 * pitchBendMultiplier_q24) >> 24);
-#ifdef RUNNING_AVERAGE
-  ra_pitchbend.addValue((float)(micros() - t_start));
-#endif
+  BENCH_FEND(vt_pitchbend);
 
   last_midi_pitch_bend = midi_pitch_bend;
 
@@ -164,9 +224,7 @@ inline void voice_task() {
       if (note2 >= NOTE_TABLE_LEN) note2 = (uint8_t)(NOTE_TABLE_LEN - 1);
       if (note3 >= NOTE_TABLE_LEN) note3 = (uint8_t)(NOTE_TABLE_LEN - 1);
 
-#ifdef RUNNING_AVERAGE
-      unsigned long t_osc2 = micros();
-#endif
+      BENCH_FBEGIN(vt_osc_detune);
       // Optimized: Calculate OSC2/OSC3 detune in Q24 and keep it there.
       // The float conversion has been removed as it is no longer needed.
       // detune = 1.0 + 0.0002 * (256 - val)
@@ -175,9 +233,7 @@ inline void voice_task() {
       int32_t detune_q24 = (1 << 24) + (detune_steps * DETUNE_SCALE_Q24);
       int32_t detune3_steps = ((int)256 - OSC3DetuneVal);
       int32_t detune3_q24 = (1 << 24) + (detune3_steps * DETUNE_SCALE_Q24);
-#ifdef RUNNING_AVERAGE
-      ra_osc2_detune.addValue((float)(micros() - t_osc2));
-#endif
+      BENCH_FEND(vt_osc_detune);
 
       int64_t freq_q24_A;
       int64_t freq_q24_B;
@@ -191,9 +247,7 @@ inline void voice_task() {
 
       // Serial.println("VOICE TASK 2");
       ////***********************    PORTAMENTO CODE   ****************************************/////
-#ifdef RUNNING_AVERAGE
-      unsigned long t_portamento = micros();
-#endif
+      BENCH_BEGIN(vt_portamento);
       if (portaTime > 0 /*&& portamento_start != 0 && portamento_stop != 0*/) {
         uint32_t now_us = micros();
         portamentoTimer[i] = now_us - portamentoStartMicros[i];
@@ -439,14 +493,10 @@ inline void voice_task() {
       // Debug: OSC1 base frequency after portamento, before modifiers (in Hz)
       dbg_freq_base_Hz = (float)portamento_cur_freq_q24[DCO_A] / (float)(1 << 24);
 #endif
-#ifdef RUNNING_AVERAGE
-      ra_portamento.addValue((float)(micros() - t_portamento));
-#endif
+      BENCH_END(vt_portamento);
       ////***********************    PORTAMENTO CODE  END    ****************************************/////
 
-#ifdef RUNNING_AVERAGE
-      unsigned long t_adsr = micros();
-#endif
+      BENCH_FBEGIN(vt_adsr_mod);
       // Fixed-point ADSR modifier in Q24: ((linToLog * ADSR1toDETUNE1) / 1080000)
       int64_t ADSRModifier_q24 = 0;
       if (ADSR1toDETUNE1 != 0) {
@@ -458,11 +508,9 @@ inline void voice_task() {
       int64_t ADSRModifierOSC1_q24 = (ADSR3ToOscSelect == 0 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier_q24 : 0;
       int64_t ADSRModifierOSC2_q24 = (ADSR3ToOscSelect == 1 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier_q24 : 0;
       int64_t ADSRModifierOSC3_q24 = (ADSR3ToOscSelect == 3 || ADSR3ToOscSelect == 4) ? ADSRModifier_q24 : 0;
-#ifdef RUNNING_AVERAGE
-      ra_adsr_modifier.addValue((float)(micros() - t_adsr));
-      unsigned long t_unison = micros();
-#endif
+      BENCH_FEND(vt_adsr_mod);
 
+      BENCH_FBEGIN(vt_unison_mod);
       // Fixed-point unison modifier in Q24: 0.0001 * unisonDetune * step
       static constexpr int32_t UNISON_SCALE_Q24 = (int32_t)(0.0001f * (float)(1 << 24) + 0.5f);
       // Per-osc spread (matches float path): OSC1=0, OSC2=+1, OSC3=-1.
@@ -479,24 +527,18 @@ inline void voice_task() {
       unisonMODIFIER_OSC2_q24 += voiceUnison_q24;
       unisonMODIFIER_OSC3_q24 += voiceUnison_q24;
 #endif
-#ifdef RUNNING_AVERAGE
-      ra_unison_modifier.addValue((float)(micros() - t_unison));
-      unsigned long t_drift = micros();
-#endif
+      BENCH_FEND(vt_unison_mod);
 
+      BENCH_FBEGIN(vt_drift_mod);
       // Fixed-point drift modifiers in Q24: LFO_LEVEL * (0.0000005 * analogDrift)
       static constexpr int32_t DRIFT_UNIT_Q24 = (int32_t)(0.0000005f * (float)(1 << 24) + 0.5f);
       int32_t driftScale_q24 = (int32_t)((int32_t)analogDrift * DRIFT_UNIT_Q24);
       int64_t DETUNE_DRIFT_OSC1_q24 = (analogDrift != 0) ? ((int64_t)LFO_DRIFT_LEVEL[DCO_A] * (int64_t)driftScale_q24) : 0;
       int64_t DETUNE_DRIFT_OSC2_q24 = (analogDrift != 0) ? ((int64_t)LFO_DRIFT_LEVEL[DCO_B] * (int64_t)driftScale_q24) : 0;
       int64_t DETUNE_DRIFT_OSC3_q24 = (analogDrift != 0) ? ((int64_t)LFO_DRIFT_LEVEL[DCO_C] * (int64_t)driftScale_q24) : 0;
-#ifdef RUNNING_AVERAGE
-      ra_drift_multiplier.addValue((float)(micros() - t_drift));
-#endif
+      BENCH_FEND(vt_drift_mod);
 
-#ifdef RUNNING_AVERAGE
-      unsigned long t_modifiers = micros();
-#endif
+      BENCH_FBEGIN(vt_modifiers);
       // Combine modifiers in Q24 (faithful to original float path)
       int32_t detune_fifo_q24 = DETUNE_INTERNAL_FIFO_q24;
 
@@ -509,11 +551,9 @@ inline void voice_task() {
       int64_t freqModifiers_q24 = ADSRModifierOSC1_q24 + DETUNE_DRIFT_OSC1_q24 + modifiersBase_q24 + unisonMODIFIER_OSC1_q24;
       int64_t freq2Modifiers_q24 = ADSRModifierOSC2_q24 + DETUNE_DRIFT_OSC2_q24 + modifiersBase_q24 + unisonMODIFIER_OSC2_q24 + (int64_t)DETUNE_INTERNAL2_q24;
       int64_t freq3Modifiers_q24 = ADSRModifierOSC3_q24 + DETUNE_DRIFT_OSC3_q24 + modifiersBase_q24 + unisonMODIFIER_OSC3_q24 + (int64_t)DETUNE_INTERNAL3_q24;
-#ifdef RUNNING_AVERAGE
-      ra_modifiers_combination.addValue((float)(micros() - t_modifiers));
-      unsigned long t_freq_scaling_x = micros();
-#endif
+      BENCH_FEND(vt_modifiers);
 
+      BENCH_FBEGIN(vt_freq_scale_x);
 
 
       // Fast fixed-point equivalent of:
@@ -528,21 +568,16 @@ inline void voice_task() {
       int32_t xScaled1_Q16 = (x1_q24s >= 0) ? (int32_t)(x1_q24s >> 8) : (int32_t)(-((-x1_q24s) >> 8));
       int32_t xScaled2_Q16 = (x2_q24s >= 0) ? (int32_t)(x2_q24s >> 8) : (int32_t)(-((-x2_q24s) >> 8));
       int32_t xScaled3_Q16 = (x3_q24s >= 0) ? (int32_t)(x3_q24s >> 8) : (int32_t)(-((-x3_q24s) >> 8));
+      BENCH_FEND(vt_freq_scale_x);
 
-#ifdef RUNNING_AVERAGE
-      ra_freq_scaling_x.addValue((float)(micros() - t_freq_scaling_x));
-      unsigned long t_freq_scaling_ratio = micros();
-#endif
-
+      BENCH_BEGIN(vt_ratio_interp);
 #if PITCH_USE_RATIO_Q16
       int32_t ratio1_Q16 = interpolateRatioQ16_cached(xScaled1_Q16, DCO_A);
       int32_t ratio2_Q16 = interpolateRatioQ16_cached(xScaled2_Q16, DCO_B);
       int32_t ratio3_Q16 = interpolateRatioQ16_cached(xScaled3_Q16, DCO_C);
-#ifdef RUNNING_AVERAGE
-      ra_freq_scaling_ratio.addValue((float)(micros() - t_freq_scaling_ratio));
-      unsigned long t_freq_scaling_post = micros();
-#endif
+      BENCH_END(vt_ratio_interp);
 
+      BENCH_FBEGIN(vt_freq_scale_post);
       freq_q24_A = (portamento_cur_freq_q24[DCO_A] * (int64_t)ratio1_Q16) >> 16;
       // Combine OSC2 ratio with detune into one Q16 factor
       // detune_Q16 = round(detune_q24 / 2^8)
@@ -555,14 +590,12 @@ inline void voice_task() {
       int32_t combined3_Q16 = (int32_t)((((int64_t)ratio3_Q16 * (int64_t)detune3_Q16) + (1LL << 15)) >> 16);
       freq_q24_C = (portamento_cur_freq_q24[DCO_C] * (int64_t)combined3_Q16) >> 16;
 #else
-#ifdef RUNNING_AVERAGE
-      ra_freq_scaling_ratio.addValue((float)(micros() - t_freq_scaling_ratio));
-      unsigned long t_freq_scaling_post = micros();
-#endif
-
       int32_t yTab1 = interpolatePitchMultiplierIntQ16_cached(xScaled1_Q16, DCO_A);
       int32_t yTab2 = interpolatePitchMultiplierIntQ16_cached(xScaled2_Q16, DCO_B);
       int32_t yTab3 = interpolatePitchMultiplierIntQ16_cached(xScaled3_Q16, DCO_C);
+      BENCH_END(vt_ratio_interp);
+
+      BENCH_FBEGIN(vt_freq_scale_post);
       // Convert yTab -> ratioQ16 using reciprocal-multiply (round((yTab<<16)/10000))
       uint64_t numA = ((uint64_t)(uint32_t)yTab1 << 16) + 5000u;
       int32_t ratio1_Q16_fallback = (int32_t)((numA * 0xD1B71759ULL) >> 45);
@@ -590,9 +623,7 @@ inline void voice_task() {
 
       // Per-cycle: no caching; compute dividers directly from current Q18 frequency
 
-#ifdef RUNNING_AVERAGE
-      ra_freq_scaling_post.addValue((float)(micros() - t_freq_scaling_post));
-#endif
+      BENCH_FEND(vt_freq_scale_post);
       // Convert from Q24 fixed-point to a compact Q4 (Hz * 2^4) representation.
       // freq_q24_X is Hz * 2^24, so shifting right by 20 yields Hz * 2^4.
       uint32_t freqA_Q4 = (uint32_t)((freq_q24_A + (1LL << 19)) >> 20);  // round to nearest
@@ -611,9 +642,7 @@ inline void voice_task() {
 
       // voice_task_3_time = micros() - voice_task_start_time;
 
-#ifdef RUNNING_AVERAGE
-      unsigned long t_clk_div = micros();
-#endif
+      BENCH_BEGIN(vt_clk_div);
 
       register uint32_t clk_div1, clk_div2, clk_div3;
 
@@ -672,8 +701,13 @@ inline void voice_task() {
       // the ramp always describe the same period. Y itself can only be rewritten while
       // the SM is stopped, which happens at note-on below.
       clk_div1 = pio_clk_div_for_y(total_cycles1, osc_last_y[DCO_A], wA, kA);
+      clk_div2 = pio_clk_div_for_y(total_cycles2, osc_last_y[DCO_B], wB, kB);
       clk_div3 = pio_clk_div_for_y(total_cycles3, osc_last_y[DCO_C], wC, kC);
+      BENCH_END(vt_clk_div);
 
+      // Measured apart from the divider math because it only runs with sync on and a
+      // non-zero phase offset; averaging the two together hides both.
+      BENCH_BEGIN(vt_phase_align);
       // Phase align applies to OSC2 only (OSC1<->OSC2 sync); OSC3 is free-running.
       // The coarse part of the offset is a jump into a later ramp chunk at note-on,
       // which costs no waveform distortion at all. Only the sub-quarter residual widens
@@ -689,17 +723,9 @@ inline void voice_task() {
       } else {
         phaseDelay = 0;
       }
+      BENCH_END(vt_phase_align);
 
-      clk_div2 = pio_clk_div_for_y(total_cycles2, osc_last_y[DCO_B], wB, kB);
-
-#ifdef RUNNING_AVERAGE
-      ra_clk_div_calc.addValue((float)(micros() - t_clk_div));
-#endif
-
-
-#ifdef RUNNING_AVERAGE
-      unsigned long t_chan_level = micros();
-#endif
+      BENCH_BEGIN(vt_chan_level);
 
       uint16_t chanLevel, chanLevel2, chanLevel3;
 
@@ -736,10 +762,9 @@ inline void voice_task() {
           chanLevel3 = get_chan_level_lookup_fast(freqFx_C, DCO_C);
           break;
       }
-#ifdef RUNNING_AVERAGE
-      ra_get_chan_level.addValue((float)(micros() - t_chan_level));
-#endif
+      BENCH_END(vt_chan_level);
 
+      BENCH_BEGIN(vt_pio_write);
       pio_sm_put(pioN_A, smAN, clk_div1);
       pio_sm_put(pioN_B, smBN, clk_div2);
       pio_sm_put(pioN_C, smCN, clk_div3);
@@ -749,8 +774,10 @@ inline void voice_task() {
       osc_last_clk_div[DCO_A] = clk_div1;
       osc_last_clk_div[DCO_B] = clk_div2;
       osc_last_clk_div[DCO_C] = clk_div3;
+      BENCH_END(vt_pio_write);
 
       if (note_on_flag_flag[i]) {
+        BENCH_BEGIN(vt_note_retrig);
         // --- Exact period split, only safe here because the SMs get stopped below ---
         // OSC3 is deliberately absent: it is never retriggered, so its Y stays at
         // pioPulseLength and its clk_div keeps the rounded path.
@@ -836,6 +863,7 @@ inline void voice_task() {
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], pwm_gpio_to_channel(RANGE_PINS[DCO_A]), chanLevel);
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], pwm_gpio_to_channel(RANGE_PINS[DCO_B]), chanLevel2);
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], pwm_gpio_to_channel(RANGE_PINS[DCO_C]), chanLevel3);
+        BENCH_END(vt_note_retrig);
       }
 
       if (timer99microsFlag) {
@@ -844,9 +872,7 @@ inline void voice_task() {
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], pwm_gpio_to_channel(RANGE_PINS[DCO_C]), chanLevel3);
 
         if (sqr1Status) {
-#ifdef RUNNING_AVERAGE
-          unsigned long t_pwm = micros();
-#endif
+          BENCH_FBEGIN(vt_pwm_calc);
           // Optimized: This version avoids storing large intermediate products.
           // The multiplication and shift are combined into one expression per modulator,
           // allowing the compiler to make better use of registers.
@@ -857,11 +883,12 @@ inline void voice_task() {
           if (pw_calc < 0) pw_calc = 0;
           if (pw_calc > (int32_t)DIV_COUNTER_PW - 1) pw_calc = (int32_t)DIV_COUNTER_PW - 1;
           PW_PWM[i] = (uint16_t)pw_calc;
-#ifdef RUNNING_AVERAGE
-          ra_pwm_calculations.addValue((float)(micros() - t_pwm));
-#endif
+          BENCH_FEND(vt_pwm_calc);
+
+          BENCH_BEGIN(vt_pw_update);
           // PW_PWM[i] = (uint16_t)constrain(DIV_COUNTER_PW - 1 - /*((float)ADSR3Level[i] * ADSR3toPWM_formula)*/ - ((float)LFO2Level * LFO2toPWM_formula) - PW /*+ RANDOMNESS1 + RANDOMNESS2*/, 0, DIV_COUNTER_PW-1);
           pwm_set_chan_level(PW_PWM_SLICES[i], pwm_gpio_to_channel(PW_PINS[i]), get_PW_level_interpolated(PW_PWM[i], i));
+          BENCH_END(vt_pw_update);
 
         } else {
           pwm_set_chan_level(PW_PWM_SLICES[i], pwm_gpio_to_channel(PW_PINS[i]), 0);
@@ -871,13 +898,8 @@ inline void voice_task() {
     note_on_flag_flag[i] = false;
   }
 
-#ifdef RUNNING_AVERAGE
-  unsigned long voice_task_duration = micros() - voice_task_start_time;
-  ra_voice_task_total.addValue((float)voice_task_duration);
-  if (voice_task_duration > voice_task_max_time) {
-    voice_task_max_time = voice_task_duration;
-  }
-#endif
+  // Whole-task timing is taken by the BENCH_voice_task probe around voice_task_main() in
+  // loop1(), so both engines are measured at the same boundary.
 
   // Update cached portamento parameters for next call
   last_portamento_time = portaTime;
@@ -898,10 +920,6 @@ inline void voice_task_main() {
 #ifdef USE_FLOAT_VOICE_TASK
 // Float realtime voice engine (same stages as voice_task, in Hz). Current default with USE_FLOAT_ENGINE.
 inline void voice_task_float() {
-  #ifdef RUNNING_AVERAGE
-    unsigned long voice_task_start_time = micros();
-  #endif
-  
     // --- Track portamento control changes exactly as in original ---
     static uint32_t last_portamento_time = 0;
     static uint8_t  last_portamento_mode = PORTA_MODE_SLEW;
@@ -911,9 +929,7 @@ inline void voice_task_float() {
     bool portaModeChanged = (portaMode != last_portamento_mode);
   
     // --- 1. Pitch bend as float, equivalent to Q24 math ---
-  #ifdef RUNNING_AVERAGE
-    unsigned long t_start = micros();
-  #endif
+    BENCH_FBEGIN(vt_pitchbend);
     // Use original float pitch bend behaviour, but derive multiplier from Q24
     float pitchBendMultiplier = (float)pitchBendMultiplier_q24 / (float)(1 << 24);
     float calcPitchbend;
@@ -925,11 +941,8 @@ inline void voice_task_float() {
     } else {  // midi_pitch_bend > 8192
       calcPitchbend = (((float)midi_pitch_bend / 8192.99f) - 1.0f) * pitchBendMultiplier;
     }
-  
-  #ifdef RUNNING_AVERAGE
-    ra_pitchbend.addValue((float)(micros() - t_start));
-  #endif
-  
+    BENCH_FEND(vt_pitchbend);
+
     last_midi_pitch_bend = midi_pitch_bend;
   
     // Cache PWM sources like original
@@ -973,17 +986,13 @@ inline void voice_task_float() {
       if (note2 >= NOTE_TABLE_LEN) note2 = (uint8_t)(NOTE_TABLE_LEN - 1);
       if (note3 >= NOTE_TABLE_LEN) note3 = (uint8_t)(NOTE_TABLE_LEN - 1);
   
-  #ifdef RUNNING_AVERAGE
-      unsigned long t_osc2 = micros();
-  #endif
+      BENCH_FBEGIN(vt_osc_detune);
       // --- 2.2 OSC2/OSC3 detune (float equivalent of Q24) ---
       float detuneSteps = (float)((int)256 - OSC2DetuneVal);
       float osc2DetuneRatio = 1.0f + 0.0002f * detuneSteps;
       float detune3Steps = (float)((int)256 - OSC3DetuneVal);
       float osc3DetuneRatio = 1.0f + 0.0002f * detune3Steps;
-  #ifdef RUNNING_AVERAGE
-      ra_osc2_detune.addValue((float)(micros() - t_osc2));
-  #endif
+      BENCH_FEND(vt_osc_detune);
   
       // base note frequencies from float table
       float noteFreq1 = sNotePitches[note1];
@@ -997,10 +1006,8 @@ inline void voice_task_float() {
       const uint8_t DCO_C = 2;
   
       // --- 2.3 Portamento (time mode & slew mode), float-only implementation ---
-  #ifdef RUNNING_AVERAGE
-      unsigned long t_portamento = micros();
-  #endif
-  
+      BENCH_BEGIN(vt_portamento);
+
       if (portaTime > 0) {
         uint32_t now_us = micros();
         portamentoTimer[i] = now_us - portamentoStartMicros[i];
@@ -1293,14 +1300,10 @@ inline void voice_task_float() {
       dbg_freq_base_Hz = freqA;
   #endif
   
-  #ifdef RUNNING_AVERAGE
-      ra_portamento.addValue((float)(micros() - t_portamento));
-  #endif
-  
+      BENCH_END(vt_portamento);
+
       // --- 2.4 ADSR detune (float equivalent of Q24) ---
-  #ifdef RUNNING_AVERAGE
-      unsigned long t_adsr = micros();
-  #endif
+      BENCH_FBEGIN(vt_adsr_mod);
       float ADSRModifier = 0.0f;
       if (ADSR1toDETUNE1 != 0) {
         float env = (float)linToLogLookup[ADSR1Level[i]];  // original int table
@@ -1310,36 +1313,27 @@ inline void voice_task_float() {
       float ADSRModifierOSC1 = (ADSR3ToOscSelect == 0 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier : 0.0f;
       float ADSRModifierOSC2 = (ADSR3ToOscSelect == 1 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier : 0.0f;
       float ADSRModifierOSC3 = (ADSR3ToOscSelect == 3 || ADSR3ToOscSelect == 4) ? ADSRModifier : 0.0f;
-  #ifdef RUNNING_AVERAGE
-      ra_adsr_modifier.addValue((float)(micros() - t_adsr));
-      unsigned long t_unison = micros();
-  #endif
-  
+      BENCH_FEND(vt_adsr_mod);
+
+      BENCH_FBEGIN(vt_unison_mod);
       // --- 2.5 Unison modifier (float equivalent) ---
       static constexpr float UNISON_SCALE = 0.0001f; // from original Q24 constant
       static constexpr int32_t OSC_UNISON_STEP[3] = { 0, 1, -1 };
       float unisonMODIFIER_OSC1 = (float)unisonDetune * UNISON_SCALE * (float)OSC_UNISON_STEP[0];
       float unisonMODIFIER_OSC2 = (float)unisonDetune * UNISON_SCALE * (float)OSC_UNISON_STEP[1];
       float unisonMODIFIER_OSC3 = (float)unisonDetune * UNISON_SCALE * (float)OSC_UNISON_STEP[2];
-  #ifdef RUNNING_AVERAGE
-      ra_unison_modifier.addValue((float)(micros() - t_unison));
-      unsigned long t_drift = micros();
-  #endif
-  
+      BENCH_FEND(vt_unison_mod);
+
+      BENCH_FBEGIN(vt_drift_mod);
       // --- 2.6 Drift modifiers (float) ---
       static constexpr float DRIFT_UNIT = 0.0000005f; // from original
       float driftScale = (float)analogDrift * DRIFT_UNIT;
       float DETUNE_DRIFT_OSC1 = (analogDrift != 0) ? (float)LFO_DRIFT_LEVEL[DCO_A] * driftScale : 0.0f;
       float DETUNE_DRIFT_OSC2 = (analogDrift != 0) ? (float)LFO_DRIFT_LEVEL[DCO_B] * driftScale : 0.0f;
       float DETUNE_DRIFT_OSC3 = (analogDrift != 0) ? (float)LFO_DRIFT_LEVEL[DCO_C] * driftScale : 0.0f;
-  #ifdef RUNNING_AVERAGE
-      ra_drift_multiplier.addValue((float)(micros() - t_drift));
-  #endif
-  
-  #ifdef RUNNING_AVERAGE
-      unsigned long t_modifiers = micros();
-  #endif
-  
+      BENCH_FEND(vt_drift_mod);
+
+      BENCH_FBEGIN(vt_modifiers);
       float detune_fifo = (float)DETUNE_INTERNAL_FIFO_q24 / (float)(1 << 24);
       float detune2      = (float)DETUNE_INTERNAL2_q24     / (float)(1 << 24);
       float detune3      = (float)DETUNE_INTERNAL3_q24     / (float)(1 << 24);
@@ -1350,35 +1344,30 @@ inline void voice_task_float() {
       float freqModifiers1 = ADSRModifierOSC1 + DETUNE_DRIFT_OSC1 + modifiersBase + unisonMODIFIER_OSC1;
       float freqModifiers2 = ADSRModifierOSC2 + DETUNE_DRIFT_OSC2 + modifiersBase + unisonMODIFIER_OSC2 + detune2;
       float freqModifiers3 = ADSRModifierOSC3 + DETUNE_DRIFT_OSC3 + modifiersBase + unisonMODIFIER_OSC3 + detune3;
-  
-  #ifdef RUNNING_AVERAGE
-      ra_modifiers_combination.addValue((float)(micros() - t_modifiers));
-      unsigned long t_freq_scaling_x = micros();
-  #endif
-  
+      BENCH_FEND(vt_modifiers);
+
+      BENCH_FBEGIN(vt_freq_scale_x);
       // --- 2.7 Multiplier table x scaling & ratio interpolation (float version) ---
       float x1 = freqModifiers1 * (float)multiplierTableScale;
       float x2 = freqModifiers2 * (float)multiplierTableScale;
       float x3 = freqModifiers3 * (float)multiplierTableScale;
-  
-  #ifdef RUNNING_AVERAGE
-      ra_freq_scaling_x.addValue((float)(micros() - t_freq_scaling_x));
-      unsigned long t_freq_scaling_ratio = micros();
-  #endif
-  
+      BENCH_FEND(vt_freq_scale_x);
+
+      BENCH_BEGIN(vt_ratio_interp);
   #if PITCH_USE_RATIO_Q16
       float ratio1 = interpolateRatioFloat_cached(x1, DCO_A);
       float ratio2 = interpolateRatioFloat_cached(x2, DCO_B);
       float ratio3 = interpolateRatioFloat_cached(x3, DCO_C);
-  #ifdef RUNNING_AVERAGE
-      ra_freq_scaling_ratio.addValue((float)(micros() - t_freq_scaling_ratio));
-      unsigned long t_freq_scaling_post = micros();
-  #endif
+      BENCH_END(vt_ratio_interp);
+
+      BENCH_FBEGIN(vt_freq_scale_post);
       // Apply ratios to portamento frequencies, with osc2/osc3 detune (Hz domain).
       float freqA_Hz = freqA * ratio1;
       float freqB_Hz = freqB * (ratio2 * osc2DetuneRatio);
       float freqC_Hz = freqC * (ratio3 * osc3DetuneRatio);
   #else
+      BENCH_END(vt_ratio_interp);
+      BENCH_FBEGIN(vt_freq_scale_post);
       // If you keep the IntQ16 path, you can still derive ratio as float from that
       ...
   #endif
@@ -1386,15 +1375,13 @@ inline void voice_task_float() {
   #if DCO_DEBUG_REPORT
       dbg_freq_after_mod_Hz = freqA_Hz;
   #endif
-  
-  #ifdef RUNNING_AVERAGE
-      ra_freq_scaling_post.addValue((float)(micros() - t_freq_scaling_post));
-  #endif
-  
+
+      BENCH_FEND(vt_freq_scale_post);
+
+      clkdiv_bench_sample(freqA_Hz, freqB_Hz);
+
       // --- 2.8 Clock divider calculation (float equivalent) ---
-  #ifdef RUNNING_AVERAGE
-      unsigned long t_clk_div = micros();
-  #endif
+      BENCH_BEGIN(vt_clk_div);
 
       float correction = 0.0f;   // keep your measured correction if needed
       float totalCycles1_f = (float)sysClock_Hz / freqA_Hz + correction;
@@ -1415,8 +1402,13 @@ inline void voice_task_float() {
       // Solve clk_div against the Y each SM currently holds; Y itself is only rewritten
       // at note-on, where the SM can be stopped safely.
       uint32_t clk_div1 = pio_clk_div_for_y(total_cycles1, osc_last_y[DCO_A], wA, kA);
+      uint32_t clk_div2 = pio_clk_div_for_y(total_cycles2, osc_last_y[DCO_B], wB, kB);
       uint32_t clk_div3 = pio_clk_div_for_y(total_cycles3, osc_last_y[DCO_C], wC, kC);
+      BENCH_END(vt_clk_div);
 
+      // Measured apart from the divider math because it only runs with sync on and a
+      // non-zero phase offset; averaging the two together hides both.
+      BENCH_BEGIN(vt_phase_align);
       // Phase align (OSC2 only). Coarse offset becomes a ramp-chunk entry jump at
       // note-on; only the sub-quarter residual widens the reset pulse.
       uint8_t phaseQuarters = 0;
@@ -1427,17 +1419,10 @@ inline void voice_task_float() {
         uint16_t residualDeg = (uint16_t)(deg - (uint16_t)phaseQuarters * 90u);
         phaseDelay = (uint32_t)(((float)total_cycles2 * (float)residualDeg / 360.0f) + 0.5f);
       }
+      BENCH_END(vt_phase_align);
 
-      uint32_t clk_div2 = pio_clk_div_for_y(total_cycles2, osc_last_y[DCO_B], wB, kB);
-
-  #ifdef RUNNING_AVERAGE
-      ra_clk_div_calc.addValue((float)(micros() - t_clk_div));
-  #endif
-  
       // --- 2.9 Amplitude compensation using engine-agnostic helper ---
-  #ifdef RUNNING_AVERAGE
-      unsigned long t_chan_level = micros();
-  #endif
+      BENCH_BEGIN(vt_chan_level);
 
       uint16_t chanLevel, chanLevel2, chanLevel3;
       switch (syncMode) {
@@ -1466,10 +1451,8 @@ inline void voice_task_float() {
           chanLevel3 = get_chan_level_for_engine(freqC_Hz, DCO_C);
           break;
       }
-  #ifdef RUNNING_AVERAGE
-      ra_get_chan_level.addValue((float)(micros() - t_chan_level));
-  #endif
-  
+      BENCH_END(vt_chan_level);
+
       // --- 2.10 PIO + PWM + PW math (very close to original, but float inside PW calc) ---
       PIO pioN_A = pio[VOICE_TO_PIO[DCO_A]];
       PIO pioN_B = pio[VOICE_TO_PIO[DCO_B]];
@@ -1477,7 +1460,8 @@ inline void voice_task_float() {
       uint8_t sm1N = VOICE_TO_SM[DCO_A];
       uint8_t sm2N = VOICE_TO_SM[DCO_B];
       uint8_t smCN = VOICE_TO_SM[DCO_C];
-  
+
+      BENCH_BEGIN(vt_pio_write);
       pio_sm_put(pioN_A, sm1N, clk_div1);
       pio_sm_put(pioN_B, sm2N, clk_div2);
       pio_sm_put(pioN_C, smCN, clk_div3);
@@ -1487,8 +1471,10 @@ inline void voice_task_float() {
       osc_last_clk_div[DCO_A] = clk_div1;
       osc_last_clk_div[DCO_B] = clk_div2;
       osc_last_clk_div[DCO_C] = clk_div3;
-  
+      BENCH_END(vt_pio_write);
+
       if (note_on_flag_flag[i]) {
+        BENCH_BEGIN(vt_note_retrig);
         // Sync logic mirrored from fixed-point voice_task, using float-derived periods.
         if (oscSync >= 1) {
           // OSC3 is deliberately absent: it is never retriggered, so its Y stays at
@@ -1522,6 +1508,7 @@ inline void voice_task_float() {
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], pwm_gpio_to_channel(RANGE_PINS[DCO_A]), chanLevel);
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], pwm_gpio_to_channel(RANGE_PINS[DCO_B]), chanLevel2);
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], pwm_gpio_to_channel(RANGE_PINS[DCO_C]), chanLevel3);
+        BENCH_END(vt_note_retrig);
       }
   
       if (timer99microsFlag) {
@@ -1530,9 +1517,7 @@ inline void voice_task_float() {
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], pwm_gpio_to_channel(RANGE_PINS[DCO_C]), chanLevel3);
   
         if (sqr1Status) {
-  #ifdef RUNNING_AVERAGE
-          unsigned long t_pwm = micros();
-  #endif
+          BENCH_FBEGIN(vt_pwm_calc);
           float adsr1_delta = ((float)ADSR1Level[i] * (float)local_ADSR1toPWM) / 2048.0f; // 2^11
           float lfo2_delta  = ((float)LFO2Level    * (float)local_LFO2toPW)   / 512.0f;   // 2^9
           float pw_calc =
@@ -1545,12 +1530,13 @@ inline void voice_task_float() {
           if (pw_calc > (float)(DIV_COUNTER_PW - 1)) pw_calc = (float)(DIV_COUNTER_PW - 1);
   
           PW_PWM[i] = (uint16_t)pw_calc;
-  #ifdef RUNNING_AVERAGE
-          ra_pwm_calculations.addValue((float)(micros() - t_pwm));
-  #endif
+          BENCH_FEND(vt_pwm_calc);
+
+          BENCH_BEGIN(vt_pw_update);
           pwm_set_chan_level(PW_PWM_SLICES[i],
                              pwm_gpio_to_channel(PW_PINS[i]),
                              get_PW_level_interpolated(PW_PWM[i], i));
+          BENCH_END(vt_pw_update);
         } else {
           pwm_set_chan_level(PW_PWM_SLICES[i], pwm_gpio_to_channel(PW_PINS[i]), 0);
         }
@@ -1558,14 +1544,9 @@ inline void voice_task_float() {
   
       note_on_flag_flag[i] = false;
     }
-  
-  #ifdef RUNNING_AVERAGE
-    unsigned long voice_task_duration = micros() - voice_task_start_time;
-    ra_voice_task_total.addValue((float)voice_task_duration);
-    if (voice_task_duration > voice_task_max_time) {
-      voice_task_max_time = voice_task_duration;
-    }
-  #endif
+
+  // Whole-task timing is taken by the BENCH_voice_task probe around voice_task_main() in
+  // loop1(), so both engines are measured at the same boundary.
 
   last_portamento_time = portaTime;
   last_portamento_mode = portaMode;
@@ -2189,69 +2170,12 @@ void initMultiplierTables() {
   }
 }
 
-#ifdef RUNNING_AVERAGE
-// Print RUNNING_AVERAGE timing stats for voice-task phases. Called from print_running_averages().
-void print_voice_task_timings() {
-  Serial.println("\n=== VOICE_TASK TIMING STATISTICS (microseconds) ===");
-  Serial.print("Pitch Bend Calc:      ");
-  if (ra_pitchbend.getCount() > 0) Serial.println(ra_pitchbend.getFastAverage(), 2);
-  else Serial.println("N/A");
-
-  Serial.print("OSC2 Detune:          ");
-  if (ra_osc2_detune.getCount() > 0) Serial.println(ra_osc2_detune.getFastAverage(), 2);
-  else Serial.println("N/A");
-
-  Serial.print("Portamento:           ");
-  if (ra_portamento.getCount() > 0) Serial.println(ra_portamento.getFastAverage(), 2);
-  else Serial.println("N/A");
-
-  Serial.print("ADSR Modifier:        ");
-  if (ra_adsr_modifier.getCount() > 0) Serial.println(ra_adsr_modifier.getFastAverage(), 2);
-  else Serial.println("N/A");
-
-  Serial.print("Unison Modifier:      ");
-  if (ra_unison_modifier.getCount() > 0) Serial.println(ra_unison_modifier.getFastAverage(), 2);
-  else Serial.println("N/A");
-
-  Serial.print("Drift Modifier:       ");
-  if (ra_drift_multiplier.getCount() > 0) Serial.println(ra_drift_multiplier.getFastAverage(), 2);
-  else Serial.println("N/A");
-
-  Serial.print("Modifiers Combination:");
-  if (ra_modifiers_combination.getCount() > 0) Serial.println(ra_modifiers_combination.getFastAverage(), 2);
-  else Serial.println("N/A");
-
-  Serial.print("Freq Scaling x:       ");
-  if (ra_freq_scaling_x.getCount() > 0) Serial.println(ra_freq_scaling_x.getFastAverage(), 2);
-  else Serial.println("N/A");
-
-  Serial.print("Freq Scaling ratio:   ");
-  if (ra_freq_scaling_ratio.getCount() > 0) Serial.println(ra_freq_scaling_ratio.getFastAverage(), 2);
-  else Serial.println("N/A");
-
-  Serial.print("Freq Scaling post:    ");
-  if (ra_freq_scaling_post.getCount() > 0) Serial.println(ra_freq_scaling_post.getFastAverage(), 2);
-  else Serial.println("N/A");
-
-  Serial.print("Get Chan Level:       ");
-  if (ra_get_chan_level.getCount() > 0) Serial.println(ra_get_chan_level.getFastAverage(), 2);
-  else Serial.println("N/A");
-
-  Serial.print("Clock Div Calc:       ");
-  if (ra_clk_div_calc.getCount() > 0) Serial.println(ra_clk_div_calc.getFastAverage(), 2);
-  else Serial.println("N/A");
-
-  Serial.print("PWM Calculations:     ");
-  if (ra_pwm_calculations.getCount() > 0) Serial.println(ra_pwm_calculations.getFastAverage(), 2);
-  else Serial.println("N/A");
-
-  Serial.print("Voice Task Total:     ");
-  Serial.print(ra_voice_task_total.getFastAverage(), 2);
-  Serial.print(" avg, max ");
-  Serial.println(voice_task_max_time);
-
-#ifdef CLKDIV_BENCHMARK
-  // Print clock-divider float vs double comparison stats
+// Report the float-vs-double clock-divider comparison and clear its accumulators.
+// Called from bench_poll_core0() on core 0, right after the main profiler report.
+// Per-phase voice-task timings now come from the BENCH_* probes in bench.h.
+void print_clkdiv_bench() {
+#if defined(CLKDIV_BENCHMARK) && defined(RUNNING_AVERAGE)
+  // Appends into bench_out_buf; paced TX is handled by bench_poll_core0().
   if (clkdiv_bench_count > 0) {
     double avgFloatUs  = clkdiv_time_float_sum_us  / (double)clkdiv_bench_count;
     double avgDoubleUs = clkdiv_time_double_sum_us / (double)clkdiv_bench_count;
@@ -2260,58 +2184,25 @@ void print_voice_task_timings() {
     double avgFreqDiff1 = clkdiv_freq1_diff_sum / (double)clkdiv_bench_count;
     double avgFreqDiff2 = clkdiv_freq2_diff_sum / (double)clkdiv_bench_count;
 
-    Serial.println("=== CLKDIV BENCH ===");
-    Serial.print("count=");
-    Serial.print(clkdiv_bench_count);
-    Serial.print(" avgFloatUs=");
-    Serial.print(avgFloatUs, 3);
-    Serial.print(" avgDoubleUs=");
-    Serial.print(avgDoubleUs, 3);
-    Serial.println();
+    bench_out_println("=== CLKDIV BENCH ===");
+    bench_out_printf("count=%lu avgFloatUs=%.3f avgDoubleUs=%.3f\n",
+                     (unsigned long)clkdiv_bench_count, avgFloatUs, avgDoubleUs);
+    bench_out_printf("clk_div1 delta avg=%.3f maxAbs=%lu\n",
+                     avgDelta1, (unsigned long)clkdiv_delta1_max);
+    bench_out_printf("clk_div2 delta avg=%.3f maxAbs=%lu\n",
+                     avgDelta2, (unsigned long)clkdiv_delta2_max);
+    bench_out_printf("freq1 diff avg=%.6f Hz maxAbs=%.6f\n",
+                     avgFreqDiff1, clkdiv_freq1_diff_max_abs);
+    bench_out_printf("freq2 diff avg=%.6f Hz maxAbs=%.6f\n",
+                     avgFreqDiff2, clkdiv_freq2_diff_max_abs);
+    bench_out_printf("OSC1 last: target=%.6f Hz float=%.6f Hz double=%.6f Hz\n",
+                     clkdiv_last_target1_Hz, clkdiv_last_out1_float_Hz,
+                     clkdiv_last_out1_double_Hz);
+    bench_out_printf("OSC2 last: target=%.6f Hz float=%.6f Hz double=%.6f Hz\n",
+                     clkdiv_last_target2_Hz, clkdiv_last_out2_float_Hz,
+                     clkdiv_last_out2_double_Hz);
+    bench_out_println("====================");
 
-    Serial.print("clk_div1 delta avg=");
-    Serial.print(avgDelta1, 3);
-    Serial.print(" maxAbs=");
-    Serial.print(clkdiv_delta1_max);
-    Serial.println();
-
-    Serial.print("clk_div2 delta avg=");
-    Serial.print(avgDelta2, 3);
-    Serial.print(" maxAbs=");
-    Serial.print(clkdiv_delta2_max);
-    Serial.println();
-
-    Serial.print("freq1 diff avg=");
-    Serial.print(avgFreqDiff1, 6);
-    Serial.print(" Hz maxAbs=");
-    Serial.print(clkdiv_freq1_diff_max_abs, 6);
-    Serial.println();
-
-    Serial.print("freq2 diff avg=");
-    Serial.print(avgFreqDiff2, 6);
-    Serial.print(" Hz maxAbs=");
-    Serial.print(clkdiv_freq2_diff_max_abs, 6);
-    Serial.println();
-
-    // Print example of last measured target vs output frequencies
-    Serial.print("OSC1 last: target=");
-    Serial.print(clkdiv_last_target1_Hz, 6);
-    Serial.print(" Hz float=");
-    Serial.print(clkdiv_last_out1_float_Hz, 6);
-    Serial.print(" Hz double=");
-    Serial.print(clkdiv_last_out1_double_Hz, 6);
-    Serial.println(" Hz");
-
-    Serial.print("OSC2 last: target=");
-    Serial.print(clkdiv_last_target2_Hz, 6);
-    Serial.print(" Hz float=");
-    Serial.print(clkdiv_last_out2_float_Hz, 6);
-    Serial.print(" Hz double=");
-    Serial.print(clkdiv_last_out2_double_Hz, 6);
-    Serial.println(" Hz");
-    Serial.println("====================");
-
-    // Reset accumulators
     clkdiv_bench_count         = 0;
     clkdiv_time_float_sum_us  = 0.0;
     clkdiv_time_double_sum_us = 0.0;
@@ -2321,7 +2212,4 @@ void print_voice_task_timings() {
     clkdiv_freq1_diff_max_abs = clkdiv_freq2_diff_max_abs = 0.0;
   }
 #endif
-
-  Serial.println("===================================================\n");
 }
-#endif

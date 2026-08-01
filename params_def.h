@@ -98,6 +98,10 @@ enum ParamId : uint16_t {
   PARAM_ADSR2_ATTACK_CURVE       = 50,
   PARAM_ADSR2_DECAY_CURVE        = 51,
 
+  // Post-LP distortion CVs (Drive VCA + dry/wet Mix). See docs/DISTORTION.md.
+  PARAM_DIST_DRIVE               = 52,
+  PARAM_DIST_MIX                 = 53,
+
   // --- Misc / control / UI flags ------------------------------------
   // Calibration mode selector (screen/UI only for now)
   PARAM_CALIBRATION_MODE         = 101,
@@ -146,6 +150,8 @@ enum ParamId : uint16_t {
   // 160: bench diagnostic trigger (DCO-local, no panel UI). Prints to USB serial.
   // 1 = PIO topology report, 2 = period probe at a low divider,
   // 3 = period probe at a high divider. See DCO/docs/PIO_OSCILLATORS.md section 12.
+  // 10 = dump profiler once, 11 = reset profiler, 12 = toggle ~1 Hz dump
+  // (RUNNING_AVERAGE builds only). See DCO/docs/BENCHMARKING.md.
   PARAM_DEBUG_COMMAND            = 160
 };
 

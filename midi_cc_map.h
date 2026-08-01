@@ -60,6 +60,8 @@ static const MidiCcEntry midiCcMap[] = {
   {  49, PARAM_VCF_KEYTRACK,               -256,   255, MIDI_CC_LINEAR },
   {  50, PARAM_VELOCITY_TO_VCF,               0,    20, MIDI_CC_LINEAR },
   {  51, PARAM_RESONANCE_COMPENSATION,        0,     1, MIDI_CC_LINEAR },
+  {  81, PARAM_DIST_DRIVE,                    0,  4095, MIDI_CC_LINEAR },
+  {  82, PARAM_DIST_MIX,                      0,  4095, MIDI_CC_LINEAR },
   {  52, CC_LOCAL_FILTER_CUTOFF,              0,  4095, MIDI_CC_LINEAR },
   {  53, CC_LOCAL_FILTER_RESONANCE,           0,  4095, MIDI_CC_LINEAR },
   {  54, CC_LOCAL_FILTER_ADSR2_TO_VCF,        0,   512, MIDI_CC_LINEAR },

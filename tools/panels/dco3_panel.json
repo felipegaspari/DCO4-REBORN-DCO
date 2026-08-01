@@ -1630,6 +1630,84 @@
             ]
           },
           {
+            "type": "panel",
+            "id": "cell_cc81_distortion_drive",
+            "layout": "vertical",
+            "scroll": false,
+            "innerPadding": false,
+            "padding": 4,
+            "css": "grid-row: span 5;",
+            "widgets": [
+              {
+                "type": "knob",
+                "id": "cc81_distortion_drive",
+                "address": "/control",
+                "preArgs": [
+                  1,
+                  81
+                ],
+                "target": "midi:dco3",
+                "default": 0,
+                "expand": true,
+                "html": "Distortion drive",
+                "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
+                "range": {
+                  "min": 0,
+                  "max": 127
+                },
+                "decimals": 0,
+                "doubleTap": true,
+                "pips": false
+              },
+              {
+                "type": "text",
+                "id": "val_cc81_distortion_drive",
+                "value": "#{ Math.floor((4095 * Math.round(@{cc81_distortion_drive}) + 63) / 127) }",
+                "height": 20,
+                "css": "font-size: 95%; opacity: 0.65;"
+              }
+            ]
+          },
+          {
+            "type": "panel",
+            "id": "cell_cc82_distortion_mix",
+            "layout": "vertical",
+            "scroll": false,
+            "innerPadding": false,
+            "padding": 4,
+            "css": "grid-row: span 5;",
+            "widgets": [
+              {
+                "type": "knob",
+                "id": "cc82_distortion_mix",
+                "address": "/control",
+                "preArgs": [
+                  1,
+                  82
+                ],
+                "target": "midi:dco3",
+                "default": 0,
+                "expand": true,
+                "html": "Distortion mix",
+                "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
+                "range": {
+                  "min": 0,
+                  "max": 127
+                },
+                "decimals": 0,
+                "doubleTap": true,
+                "pips": false
+              },
+              {
+                "type": "text",
+                "id": "val_cc82_distortion_mix",
+                "value": "#{ Math.floor((4095 * Math.round(@{cc82_distortion_mix}) + 63) / 127) }",
+                "height": 20,
+                "css": "font-size: 95%; opacity: 0.65;"
+              }
+            ]
+          },
+          {
             "type": "text",
             "id": "head_filter_block",
             "value": "FILTER BLOCK",

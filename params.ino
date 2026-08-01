@@ -349,6 +349,15 @@ static void apply_param_vca_level(int16_t v) {
   VCALevel = (uint16_t)constrain((int)v * 32, 0, 4095);
 }
 
+// PARAM_DIST_DRIVE / PARAM_DIST_MIX: post-LP distortion CVs (0..4095).
+static void apply_param_dist_drive(int16_t v) {
+  DIST_DRIVE = (uint16_t)constrain((int)v, 0, 4095);
+}
+
+static void apply_param_dist_mix(int16_t v) {
+  DIST_MIX = (uint16_t)constrain((int)v, 0, 4095);
+}
+
 static void apply_param_lfo1_to_vca(int16_t v) {
   LFO1toVCA = (uint16_t)constrain((int)v, 0, 4095);
   cv_update_mod_formulas();
@@ -485,6 +494,10 @@ static void apply_param_manual_calibration_store(int16_t /*v*/) {
 //
 // The period probe parks an oscillator at a fixed clk_div, so it only holds while no
 // note is playing — voice_task() pushes a fresh divider every frame for a held note.
+//
+// 10 / 11 / 12 drive the profiler in bench.h and only do anything in a RUNNING_AVERAGE
+// build. The dump is asynchronous: it asks both cores for a snapshot and core 0 prints
+// once both have answered, so this handler never blocks the audio core.
 static void apply_param_debug_command(int16_t v) {
   switch (v) {
     case 1:
@@ -496,6 +509,19 @@ static void apply_param_debug_command(int16_t v) {
     case 3:
       pio_period_probe(0, 20000);
       break;
+#ifdef RUNNING_AVERAGE
+    case 10:
+      bench_dump_request = true;
+      break;
+    case 11:
+      bench_reset_all();
+      break;
+    case 12:
+      bench_periodic = !bench_periodic;
+      Serial.print("bench periodic ");
+      Serial.println(bench_periodic ? "on" : "off");
+      break;
+#endif
     default:
       break;
   }
@@ -553,6 +579,8 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_ADSR1_DECAY_CURVE,         apply_param_adsr1_decay_curve },
   { PARAM_ADSR2_ATTACK_CURVE,        apply_param_adsr2_attack_curve },
   { PARAM_ADSR2_DECAY_CURVE,         apply_param_adsr2_decay_curve },
+  { PARAM_DIST_DRIVE,                apply_param_dist_drive },
+  { PARAM_DIST_MIX,                  apply_param_dist_mix },
   { PARAM_PWM_POTS_CONTROL_MANUAL,   apply_param_pwm_pots_manual },
   { PARAM_ADSR3_ENABLED,             apply_param_adsr3_enabled },
   { PARAM_FUNCTION_KEY,              apply_param_function_key },

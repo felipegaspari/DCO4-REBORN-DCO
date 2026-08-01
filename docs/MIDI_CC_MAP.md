@@ -61,6 +61,8 @@ Menu-style parameters use a 0..127 range so the scaling is an identity and a men
 | 49 | VCF keytrack | Filter | `PARAM_VCF_KEYTRACK` | -256 | 255 | linear |
 | 50 | Velocity to VCF | Filter | `PARAM_VELOCITY_TO_VCF` | 0 | 20 | linear |
 | 51 | Resonance amp compensation | Filter | `PARAM_RESONANCE_COMPENSATION` | 0 | 1 | linear |
+| 81 | Distortion drive | Filter | `PARAM_DIST_DRIVE` | 0 | 4095 | linear |
+| 82 | Distortion mix | Filter | `PARAM_DIST_MIX` | 0 | 4095 | linear |
 | 52 | Filter block: Cutoff | Filter | `CC_LOCAL_FILTER_CUTOFF` | 0 | 4095 | linear |
 | 53 | Filter block: Resonance | Filter | `CC_LOCAL_FILTER_RESONANCE` | 0 | 4095 | linear |
 | 54 | Filter block: EnvVCF to cutoff | Filter | `CC_LOCAL_FILTER_ADSR2_TO_VCF` | 0 | 512 | linear |

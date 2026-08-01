@@ -122,6 +122,7 @@ void update_CV_outs_manual_calibration() {
   mcpUpdate();
 
 #ifdef ENABLE_CV_OUTS
-  write_cv_pwm_raw(CAL_CUTOFF_COMPARE, CAL_RESONANCE_COMPARE, CAL_VCA_COMPARE);
+  // Park distortion fully dry so cal edges are not hashed by the clipper.
+  write_cv_pwm_raw(CAL_CUTOFF_COMPARE, CAL_RESONANCE_COMPARE, CAL_VCA_COMPARE, 0, 0);
 #endif
 }

@@ -74,10 +74,11 @@ Related (not engine math, but often used together):
 
 | Define | Default | Role |
 |--------|---------|------|
-| `RUNNING_AVERAGE` | off | Per-phase µs profilers in voice task / loops |
+| `RUNNING_AVERAGE` | off | Cycle-accurate hot-path profiler (`bench.h`) — see [`BENCHMARKING.md`](BENCHMARKING.md) |
+| `RUNNING_AVERAGE_FINE` | off | Adds probes on the smallest stages; needs `RUNNING_AVERAGE` |
 | `DCO_DEBUG_REPORT` | `0` in `voices.ino` | Serial dump of OSC1 frequency stages |
 | `ENABLE_FS_CALIBRATION` | on in `globals.h` | Load LittleFS voiceTables / PW cal into amp-comp arrays |
-| `CLKDIV_BENCHMARK` | off | **Incomplete** — do not rely on it (see §10) |
+| `CLKDIV_BENCHMARK` | off | Float vs double clkdiv comparison; needs `RUNNING_AVERAGE` |
 
 ---
 
@@ -205,7 +206,7 @@ System clock used by clkdiv: `sysClock = 225000` kHz → `sysClock_Hz = 225e6` (
 1. Fixed pitch/clkdiv `#define`s are **not** nested under `#ifndef USE_FLOAT_ENGINE` — they are always present in the `.ino`, but only affect fixed `voice_task()` codegen.
 2. Default `PITCH_USE_RATIO_Q16 1` → **Q8/Q12 interpolators unused** on the hot path.
 3. Float engine + `PITCH_USE_RATIO_Q16` off → **compile error** (`...` stub).
-4. `CLKDIV_BENCHMARK` is unfinished (comment mentions float vs double timing; instrumentation/globals are missing).
+4. `CLKDIV_BENCHMARK` needs `RUNNING_AVERAGE` (it borrows that module's time source) and only instruments the float engine.
 5. Do not enable `USE_FLOAT_AMP_COMP` alone while compiling fixed `voice_task()` — missing symbols / wrong types.
 6. README / older `REFERENCE_AI` text that says “fully fixed-point / no float in hot path” is obsolete while `USE_FLOAT_ENGINE` is on.
 7. Comment typos: `PITCH_INTERP_USE_Q8_` in `.ino` comments; stale “Q18 frequency” / `T_FRAC is 14` remarks in places — trust `T_FRAC = 12` in `amp_comp.h`.
@@ -218,7 +219,7 @@ System clock used by clkdiv: `sysClock = 225000` kHz → `sysClock_Hz = 225e6` (
 2. Full rebuild (both cores / clean if IDE caches oddly).
 3. Confirm `ENABLE_FS_CALIBRATION` load path matches amp-comp mode (no assert / empty tables).
 4. Play low and high notes; check for zippering, beating, or amp dropouts at plateau.
-5. Optional: enable `RUNNING_AVERAGE` and read `print_voice_task_timings()` to compare µs budgets after a flag change.
+5. Optional: enable `RUNNING_AVERAGE`, send debug command 10, and compare the `%win` budget before and after the flag change ([`BENCHMARKING.md`](BENCHMARKING.md)).
 
 ---
 

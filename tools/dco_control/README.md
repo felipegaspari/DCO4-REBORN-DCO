@@ -50,7 +50,27 @@ python3 app.py --theme light        # dark is the default
 
 Pick the port, press **Connect**, then press **Send all**. That last step matters: the
 board boots with its own defaults and has no idea what the window is showing, so nothing
-is in sync until you push it once.
+is in sync until you push it once. Loading a preset while connected also pushes the patch
+to the board.
+
+### Preset bank
+
+A classic **128-slot** program bar sits under the connection toolbar:
+
+`[ < ]  [ 000 ]  [ name ]  [ > ]  [ Load ]  [ Save ]  [ Save as… ]  [ Init ]`
+
+| Control | Behaviour |
+|---------|-----------|
+| **Prev / Next** / program number | Select slot **0–127** and load it immediately (empty slots load Init defaults) |
+| **Load** | Reload the current slot from disk, discarding unsaved edits |
+| **Save** | Store the current UI into the current slot (keeps the name) |
+| **Save as…** | Prompt for a name, then save into the current slot |
+| **Init** | Set patch controls to `params.py` defaults (slot number unchanged); mark dirty until Save |
+
+A leading `*` beside the name means the UI differs from the last loaded or saved snapshot.
+The bank lives in [`presets/bank.json`](presets/bank.json). Slot 0 ships as **Init**; the rest
+are empty until you save into them. Calibration and Diagnostics pulse commands are not stored
+— only the sound patch (the same non-pulse, non-cal set **Send all** would push for a patch).
 
 ### If the port will not open
 
@@ -65,23 +85,26 @@ is in sync until you push it once.
 
 ## 4. Layout
 
-Eight tabs, all generated from the tables in [`params.py`](params.py):
+Eight parameter tabs from the tables in [`params.py`](params.py), plus a ninth for
+bench-only buttons:
 
 | Tab | Contents |
 |-----|----------|
 | Oscillators | Intervals, detune, SQR and sub levels, wave enables |
-| Sync and PIO | Hard sync topology, soft sync, sub-osc divide, note-on sync and phase align, diagnostics |
+| Sync and PIO | Hard sync topology, soft sync, sub-osc divide, note-on sync and phase align |
 | Envelopes | The three envelope time blocks, curves, ADSR3 routing |
-| Filter | Cutoff, resonance, envelope and LFO amounts, keytrack |
+| Filter | Cutoff, resonance, envelope and LFO amounts, keytrack, distortion Drive/Mix |
 | PWM | Pulse width, LFO2 and envelope to PW |
 | LFOs | Waveforms, speeds, and the LFO routing depths |
 | Voice and Drift | Voice mode, unison, portamento, analog drift, VCA |
 | Calibration | Autotune trigger, manual calibration stage and offsets |
+| Diagnostics | PIO topology / period probes and hot-path profiler buttons |
 
-Anything the board prints — the topology report, `DCO_DEBUG_REPORT` output, autotune
-progress — lands in the **Board output** pane at the bottom. Lines this tool writes itself
-are prefixed `[link]`, `[send]` or `[ui]` and tinted, so they are easy to tell from the
-board's own output.
+Anything the board prints — the topology report, profiler tables, `DCO_DEBUG_REPORT`
+output, autotune progress — lands in the **Board output** pane under the tabs. Drag the
+sash between the notebook and that pane to give the dump more room; there is a horizontal
+scrollbar for wide profiler lines. Lines this tool writes itself are prefixed `[link]`,
+`[send]` or `[ui]` and tinted, so they are easy to tell from the board's own output.
 
 ### Appearance
 
@@ -109,8 +132,8 @@ The **Sync and PIO** tab is the reason this tool exists. `PARAM_SOFT_SYNC` (36) 
 this is the only way to exercise them. See
 [`DCO/docs/PIO_OSCILLATORS.md`](../../docs/PIO_OSCILLATORS.md) for what they do.
 
-The three **Diagnostics** buttons call the bench helpers documented in section 12 of that
-file, which nothing else in the firmware invokes:
+On the **Diagnostics** tab, the three PIO buttons call the bench helpers documented in
+section 12 of that file, which nothing else in the firmware invokes:
 
 - **PIO topology report** verifies every oscillator reset pin still reads back as PIO0.
   Expect the summary line `reset pin ownership: OK (all PIO0)`. Anything else means a pin
@@ -121,6 +144,16 @@ file, which nothing else in the firmware invokes:
   readings to `pio_solve_period_model()` to confirm the weight and overhead constants.
   **Only works with no note playing** — `voice_task()` pushes a fresh divider every frame
   for a held note, which immediately overwrites what the probe set.
+
+On the same tab, the **Hot-path profiler** buttons drive `PARAM_DEBUG_COMMAND` values
+10 / 11 / 12. They only do anything when the firmware is built with `RUNNING_AVERAGE`; see
+[`DCO/docs/BENCHMARKING.md`](../../docs/BENCHMARKING.md).
+
+- **Dump profiler once** asks both cores for a snapshot; core 0 prints the budget table
+  into the Board output pane a moment later.
+- **Reset profiler** clears every accumulator.
+- **Toggle ~1 Hz dump** turns the automatic report on or off; the board immediately prints
+  `bench periodic on` or `off`.
 
 Two controls on that tab are easy to mistake for each other, because they are different
 parameters doing different jobs:
@@ -189,6 +222,8 @@ a minute-long takeover of the board and the other writes the filesystem. Those s
 |------|------|
 | [`protocol.py`](protocol.py) | Frame builders, the envelope lin-to-exp curve, port detection |
 | [`params.py`](params.py) | The whole control surface as data; edit this to add a control |
+| [`presets.py`](presets.py) | 128-slot bank load/save, capture/apply of patch parameters |
+| [`presets/bank.json`](presets/bank.json) | Default program bank (slot 0 = Init); edit locally via the UI |
 | [`app.py`](app.py) | tkinter UI generated from `params.py` |
 | [`theme.py`](theme.py) | Dark and light palettes, ttk styling, plain-Tk recolouring |
 | [`gen_midi_map.py`](gen_midi_map.py) | Emits the CC map, its chart and the panel session from `params.py` |

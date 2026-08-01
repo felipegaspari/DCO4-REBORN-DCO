@@ -77,6 +77,8 @@ Full detail on the programs, the period model, sync modes and phase align:
 | Resonance 0 | **5** | 2 | B | Same slice as cut1 (shared wrap OK for CV) |
 | Resonance 1 | **7** | 3 | B | **Shares slice 3 with RANGE OSC2 (GP22)** — firmware scales duty into `DIV_COUNTER` |
 | VCA | **11** | 5 | B | |
+| Dist Drive | **9** | 4 | B | Post-LP distortion; see [`DISTORTION.md`](DISTORTION.md) |
+| Dist Mix | **26** | 5 | A | Shares slice 5 with VCA |
 
 | Function | GPIO | Notes |
 |----------|------|-------|
@@ -86,7 +88,7 @@ Full detail on the programs, the period model, sync modes and phase align:
 | I2C0 SDA | **16** | MCP4728 ×3 @ 0x63/0x64/0x65 |
 | I2C0 SCL | **18** | |
 
-**Spare / TBD:** GP2, GP6, GP25, GP26 (ADC-capable). Prefer leaving ADC pins free unless needed.
+**Spare / TBD:** GP2, GP6, GP25 (ADC-capable). Prefer leaving remaining ADC pins free unless needed.
 
 ---
 
@@ -100,7 +102,7 @@ Full detail on the programs, the period model, sync modes and phase align:
 | 5 | Resonance 0 PWM |
 | 7 | Resonance 1 PWM |
 | 8 | Sub-osc square out (PIO1) — needs a mixer input on the carrier |
-| 9 | Spare (was the SerialPIO Screen UART, now removed) |
+| 9 | Dist Drive PWM (provisional) |
 | 10 | Cal sense |
 | 11 | VCA PWM |
 | 12–14 | 74HC595 |
@@ -110,9 +112,10 @@ Full detail on the programs, the period model, sync modes and phase align:
 | 19,27,29 | RESET ×3 (all PIO0) |
 | 20,21 | HW UART Input |
 | 23,24 | Board fix |
-| 2,6,25,26 | Spare / TBD |
+| 26 | Dist Mix PWM (provisional; slice 5 with VCA) |
+| 2,6,25 | Spare / TBD |
 
-Approx **24** GPIOs used → stock Pico 2 is tight; **RP2350B recommended** for production.
+Approx **26** GPIOs used with dist CVs → stock Pico 2 is tight; **RP2350B recommended** for production.
 
 ---
 

@@ -4,6 +4,7 @@ Purpose of **every file**, and for each source function: **what it does**, **who
 
 - Deep narrative: [`REFERENCE_AI.md`](REFERENCE_AI.md)
 - Engine flags: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
+- Hot-path profiling: [`BENCHMARKING.md`](BENCHMARKING.md)
 - Repo entry / doc index: [`../README.md`](../README.md)
 
 Headers with no bodies are marked **no function definitions**.  
@@ -68,14 +69,37 @@ Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine build f
 - `loop()` — Core 0: MIDI read, Serial2 pump, LFO1; ~100 µs LFO2 + drift + FIFO push.
   - **Called from:** Arduino framework (Core 0).
   - **When:** Forever.
-- `loop1()` — Core 1: `millisTimer`; auto/manual cal **or** ADSR + FIFO pop + `voice_task_main`.
+- `loop1()` — Core 1: `millisTimer`; auto/manual cal **or** ADSR + FIFO pop + `voice_task_main`; ends with `bench_service(1)`.
   - **Called from:** Arduino framework (Core 1).
   - **When:** Forever.
-- `print_running_averages()` — Print loop/voice timing averages; calls `print_voice_task_timings()`.
-  - **Called from:** `loop1()` when `RUNNING_AVERAGE` and `timer1000msFlag`.
-  - **When:** Debug ~1 Hz only if profiling enabled.
 
-**Key macros:** `USE_FLOAT_ENGINE`, `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `PITCH_USE_RATIO_Q16`, `PITCH_INTERP_USE_Q*`, `HIGH_PRECISION_CLKDIV`.
+**Key macros:** `USE_FLOAT_ENGINE`, `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `PITCH_USE_RATIO_Q16`, `PITCH_INTERP_USE_Q*`, `HIGH_PRECISION_CLKDIV`, `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`.
+
+### `bench.h`
+
+Hot-path profiler. All storage, ids, nesting and labels are generated from the single
+`BENCH_PROBES` X-macro table, so a probe cannot exist at a call site and be missing from the
+report. Time source is SysTick read as a 24-bit cycle counter (RP2040's M0+ has no DWT), with
+`BENCH_PERIOD()` falling back to the 1 µs timer for spans that can exceed the 24-bit wrap.
+Compiles to nothing without `RUNNING_AVERAGE`.
+
+**Subsystem reference:** [`BENCHMARKING.md`](BENCHMARKING.md).
+
+**Functions**
+- `bench_init_core()` — Arm this core's SysTick and calibrate the probe overhead.
+  - **Called from:** `setup()` and `setup1()`.
+  - **When:** Boot, once per core (SysTick is core-local).
+- `bench_now()` / `bench_span()` / `bench_us_now()` — Raw counter reads and wrap-safe deltas.
+  - **Called from:** `BENCH_*` macros; `clkdiv_bench_sample()`.
+- `bench_service()` — Snapshot and clear this core's probes on request.
+  - **Called from:** `bench_poll_core0()` for core 0; `loop1()` for core 1.
+- `bench_poll_core0()` — Drive the handshake and print the report; calls `print_clkdiv_bench()`.
+  - **Called from:** `loop()`.
+  - **When:** Every iteration; prints only once both cores have answered a dump request.
+- `bench_reset_all()` — Clear every accumulator.
+  - **Called from:** `apply_param_debug_command()` value 11.
+- `bench_print_report()` / `bench_print_core()` / `bench_print_row()` / `bench_print_unattributed()` — Format the budget table.
+  - **Called from:** `bench_poll_core0()`.
 
 ### `include_all.h`
 
@@ -99,7 +123,9 @@ Legacy descriptors — fully commented. **No active function definitions.**
 
 ### `voices.h`
 
-Declarations / portamento & table state. **No function definitions.**
+Declarations / portamento & table state. **No function definitions.** Carries no profiler
+declarations: probe storage lives in the `bench.h` table instead, because the extern block
+that used to be here drifted out of step with `voices.ino` and compiled anyway.
 
 ### `voices.ino`
 
@@ -162,9 +188,12 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `initMultiplierTables()` — Build int/float pitch tables and slopes (uses `expInterpolationSolveY`).
   - **Called from:** `init_voices()`.
   - **When:** Boot Core1.
-- `print_voice_task_timings()` — Dump voice-task phase averages.
-  - **Called from:** `print_running_averages()`.
-  - **When:** Debug only (`RUNNING_AVERAGE`).
+- `clkdiv_bench_sample()` — Run the float and double divider candidates side by side and accumulate the time and Hz difference.
+  - **Called from:** `voice_task_float()`, just before the live divider math.
+  - **When:** Float hot path, `CLKDIV_BENCHMARK` only; compiles away otherwise.
+- `print_clkdiv_bench()` — Report and clear that comparison.
+  - **Called from:** `bench_poll_core0()` (`bench.h`), on core 0.
+  - **When:** Each profiler dump.
 
 ### `noteList.h`
 
@@ -681,7 +710,7 @@ Prototype. **No function definitions.**
 - `apply_param_manual_calibration_stage()` — Manual cal stage index.
 - `apply_param_manual_calibration_offset()` — Per-osc manual offset.
 - `apply_param_manual_calibration_store()` — → `update_FS_ManualCalibrationOffset`.
-- `apply_param_debug_command()` — Bench diagnostics (id 160): 1 → `pio_topology_report()`, 2/3 → `pio_period_probe()` at a low/high divider. The only caller of those helpers; output goes to USB serial. Probes only hold with no note playing.
+- `apply_param_debug_command()` — Bench diagnostics (id 160): 1 → `pio_topology_report()`, 2/3 → `pio_period_probe()` at a low/high divider, 10/11/12 → profiler dump / reset / periodic toggle (`RUNNING_AVERAGE` builds only). The only caller of those helpers; output goes to USB serial. Period probes only hold with no note playing.
 
 ---
 
@@ -746,6 +775,8 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | `docs/DOCUMENTATION_PROCEDURE.md` | Reusable phased guide to document any DCO4 board. |
 | `docs/SYSTEM_OVERVIEW.md` | Four-board system / UART topology. |
 | `docs/ENGINE_OPTIONS.md` | Float/fixed engine flags. |
+| `docs/BENCHMARKING.md` | Hot-path profiler: probes, reading the budget, adding a probe. |
+| `docs/DISTORTION.md` | Post-LP Drive/Mix distortion hardware idea and CV prototype. |
 | `docs/REFERENCE_AI.md` | Deep semantic map. |
 | `docs/FILE_INDEX.md` | This file — files, functions, call sites. |
 | `docs/README_serial_and_params.md` | Shared serial / ParamId how-to, including the MIDI CC path. |
@@ -793,3 +824,4 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | MIDI notes | `loop` → MIDI `.read` → `note_on`/`note_off` → local `noteStart[]`/`noteEnd[]` (no serial note frames) |
 | MIDI CC assignments | `tools/dco_control/params.py` `cc=` field → `gen_midi_map.py` → `midi_cc_map.h` + [`MIDI_CC_MAP.md`](MIDI_CC_MAP.md) |
 | Play audio path | `loop1` → `ADSR_update` + `voice_task_main` |
+| Measure where the time goes | `RUNNING_AVERAGE` in `DCO.ino` → probe table in `bench.h` → debug command 10 |

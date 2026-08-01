@@ -138,6 +138,7 @@ float BASE_NOTE = 440.0f;
 //   Screen UART GP8  TX / GP9  RX
 //   DIN MIDI    GP0/GP1 via PIO UART (interim: keep HW UART on 0/1)
 //   Cutoff      GP15, GP4   Reso GP5, GP7   VCA GP11
+//   Dist Drive  GP9         Dist Mix GP26 (slice 5 A with VCA on 5 B)
 //   74HC595     GP12/13/14   I2C MCP4728 GP16 SDA / GP18 SCL
 //
 // CV PWM wrap is 4095 except Reso1 (GP7): shares slice 3 with RANGE OSC2 (GP22),
@@ -146,6 +147,8 @@ float BASE_NOTE = 440.0f;
 static constexpr uint8_t CUTOFF_PINS[NUM_FILTERS] = { 15, 4 };
 static constexpr uint8_t RESO_PINS[NUM_FILTERS]   = { 5, 7 };
 static constexpr uint8_t VCA_PIN                  = 11;
+static constexpr uint8_t DIST_DRIVE_PIN           = 9;
+static constexpr uint8_t DIST_MIX_PIN             = 26;
 static constexpr uint8_t HC595_DATA_PIN           = 12;
 static constexpr uint8_t HC595_LATCH_PIN          = 13;
 static constexpr uint8_t HC595_CLK_PIN            = 14;
@@ -191,6 +194,10 @@ uint8_t RESO_PWM_SLICES[NUM_FILTERS];
 uint8_t RESO_PWM_CHANS[NUM_FILTERS];
 uint8_t VCA_PWM_SLICE;
 uint8_t VCA_PWM_CHAN;
+uint8_t DIST_DRIVE_PWM_SLICE;
+uint8_t DIST_DRIVE_PWM_CHAN;
+uint8_t DIST_MIX_PWM_SLICE;
+uint8_t DIST_MIX_PWM_CHAN;
 #endif
 
 uint16_t PW_CENTER[NUM_VOICES_TOTAL] = { 570 };

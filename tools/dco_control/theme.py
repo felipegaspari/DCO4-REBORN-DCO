@@ -81,7 +81,7 @@ def check_style() -> str:
     return "Switch.TCheckbutton" if _backend == "sv_ttk" else "TCheckbutton"
 
 
-def apply(root: tk.Misc, mode: str = "dark", base_size: int = 10) -> dict:
+def apply(root: tk.Misc, mode: str = "dark", base_size: int = 12) -> dict:
     """Apply `mode` to `root` and everything already inside it. Returns the palette.
 
     Safe to call again at runtime to switch modes: ttk resolves styles dynamically, so
@@ -200,9 +200,11 @@ def _style_clam(style: ttk.Style, root: tk.Misc, p: dict) -> None:
     style.configure("TLabelframe.Label", background=p["bg"], foreground=p["accent"])
 
     # clam names these indicatorbackground / indicatorforeground, not indicatorcolor.
+    # indicatorsize matches Horizontal.TScale arrowsize so ticks and faders share a height.
     style.configure("TCheckbutton", background=p["bg"], foreground=p["fg"],
                     indicatorbackground=p["field"], indicatorforeground=p["accent_text"],
-                    indicatormargin=(1, 1, 6, 1), padding=4, focusthickness=0)
+                    indicatorsize=30, indicatormargin=(1, 1, 6, 1), padding=4,
+                    focusthickness=0)
     style.map(
         "TCheckbutton",
         background=[("active", p["bg"])],
@@ -227,9 +229,12 @@ def _style_clam(style: ttk.Style, root: tk.Misc, p: dict) -> None:
               selectforeground=[("readonly", p["fg"])])
 
     # In clam the handle is drawn from -background; -gripcount 0 drops its grip lines.
+    # Scale trough thickness is arrowsize here (sliderthickness is ignored on this Tk);
+    # default is ~15, so 30 doubles the bar. sliderlength is the thumb along the track.
+    style.configure("TScale", arrowsize=30, sliderlength=48)
     style.configure("Horizontal.TScale", background=p["accent"], troughcolor=p["trough"],
                     bordercolor=p["border"], lightcolor=p["accent"], darkcolor=p["accent"],
-                    gripcount=0, sliderlength=24, sliderthickness=15, troughrelief="flat")
+                    gripcount=0, arrowsize=30, sliderlength=48, troughrelief="flat")
     style.map(
         "Horizontal.TScale",
         background=[("active", p["select_bg"]), ("disabled", p["trough"])],
@@ -237,9 +242,17 @@ def _style_clam(style: ttk.Style, root: tk.Misc, p: dict) -> None:
         darkcolor=[("active", p["select_bg"])],
     )
 
+    # Default clam scrollbar is width=12 / arrowsize=12; double both so the trough
+    # (not only the arrows) is easier to grab.
+    style.configure("TScrollbar", width=24, arrowsize=24)
     style.configure("Vertical.TScrollbar", background=p["surface"], troughcolor=p["bg"],
-                    bordercolor=p["bg"], arrowcolor=p["muted"], borderwidth=0)
+                    bordercolor=p["bg"], arrowcolor=p["muted"], borderwidth=0,
+                    width=24, arrowsize=24)
     style.map("Vertical.TScrollbar", background=[("active", p["accent"])])
+    style.configure("Horizontal.TScrollbar", background=p["surface"], troughcolor=p["bg"],
+                    bordercolor=p["bg"], arrowcolor=p["muted"], borderwidth=0,
+                    width=24, arrowsize=24)
+    style.map("Horizontal.TScrollbar", background=[("active", p["accent"])])
     style.configure("TSeparator", background=p["border"])
 
 

@@ -25,6 +25,8 @@ GROUP_PWM = "PWM"
 GROUP_LFO = "LFOs"
 GROUP_VOICE = "Voice and Drift"
 GROUP_CAL = "Calibration"
+# App-only tab (PIO reports + profiler). Not in GROUP_ORDER — no MIDI CC / OSC panel.
+GROUP_DIAG = "Diagnostics"
 
 GROUP_ORDER = [
     GROUP_OSC,
@@ -173,6 +175,10 @@ PARAMS: list[Param] = [
     Param(19, "VCF keytrack", GROUP_FILTER, "slider", -256, 255, 0, cc=49),
     Param(20, "Velocity to VCF", GROUP_FILTER, "slider", 0, 20, 0, cc=50),
     Param(7, "Resonance amp compensation", GROUP_FILTER, "check", default=0, cc=51),
+    Param(52, "Distortion drive", GROUP_FILTER, "slider", 0, 4095, 0,
+          note="post-LP Drive VCA CV; needs ENABLE_CV_OUTS + analog stage", cc=81),
+    Param(53, "Distortion mix", GROUP_FILTER, "slider", 0, 4095, 0,
+          note="0 = dry, 4095 = full wet; post-LP / pre-HP", cc=82),
 
     # --- PWM ---
     Param(45, "LFO2 to PW", GROUP_PWM, "slider", 0, 511, 0, cc=56),
@@ -274,4 +280,13 @@ DEBUG_COMMANDS = (
     ("Period probe, clk_div 2000", 2),
     ("Period probe, clk_div 20000", 3),
 )
+
+# PARAM_DEBUG_COMMAND (160). Needs RUNNING_AVERAGE in the firmware; otherwise no-ops.
+# See DCO/docs/BENCHMARKING.md.
+BENCH_COMMANDS = (
+    ("Dump profiler once", 10),
+    ("Reset profiler", 11),
+    ("Toggle ~1 Hz dump", 12),
+)
+
 DEBUG_PARAM_ID = 160

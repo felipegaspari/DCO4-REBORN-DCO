@@ -45,6 +45,10 @@ int16_t ADSR1toVCA = 0;
 uint16_t VCALevel = 0;
 uint16_t LFO1toVCA = 0;
 
+// Post-LP distortion CVs (0..4095). Mix 0 = dry. See docs/DISTORTION.md.
+uint16_t DIST_DRIVE = 0;
+uint16_t DIST_MIX = 0;
+
 float ADSR2toVCF_formula = 0.0f;
 float LFO2toVCF_formula = 0.0f;
 float LFO1toVCA_formula = 0.0f;
