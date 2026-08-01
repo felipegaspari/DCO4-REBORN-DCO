@@ -16,7 +16,7 @@
 // RUNNING_AVERAGE_FINE additionally instruments the smallest stages (a few multiplies
 // each). Every probe is an optimisation barrier, so enabling FINE changes codegen — it is
 // there to measure that distortion, not to be left on.
- #define RUNNING_AVERAGE
+// #define RUNNING_AVERAGE
 // #define RUNNING_AVERAGE_FINE
 
 // ---------------------------------------------------------------------------
