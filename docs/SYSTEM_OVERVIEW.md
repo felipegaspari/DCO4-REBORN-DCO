@@ -4,7 +4,9 @@ DCO3-MONOSYNTH is a **fully digitally controlled analog monosynth**, forked from
 
 The shipping instrument is **three firmwares** (Mainboard absorbed into DCO). Board-specific details live in each board folder / docs.
 
-**DCO board:** Raspberry Pi Pico 2, **1 voice × 3 oscillators**, freq on PIO0/1/2 SM0, amp via RANGE PWM, EnvDCO/VCA/VCF, LFOs, opt-in CV PWM / mux / MCP4728. Autotune stack retained (PW center/limits + amp-comp).
+**DCO board:** RP2350 (**A** with helper, or **B** solo), **1 voice × 3 oscillators**, freq on PIO, amp via RANGE PWM, EnvDCO/VCA/VCF, LFOs, opt-in CV PWM / mux / MCP4728. Autotune stack retained (PW center/limits + amp-comp).
+
+**Dual MCU (concept):** RP2350A + helper RP2040 sharing Input TX — see [`DUAL_MCU.md`](DUAL_MCU.md). `DCO/` keeps full IO code for a later RP2350B-only build.
 
 **Absorption:** STM32 Mainboard firmware is archived under [`../../_archived/Mainboard/`](../../_archived/Mainboard/). History: [`MAINBOARD_ABSORPTION.md`](MAINBOARD_ABSORPTION.md).
 
@@ -14,8 +16,9 @@ The shipping instrument is **three firmwares** (Mainboard absorbed into DCO). Bo
 
 | Board | Repo / folder | MCU | Owns |
 |-------|---------------|-----|------|
-| **DCO (voice + hub)** | `DCO/` | RP2350 Pico 2 | MIDI, 1×3 PIO DCOs, EnvDCO/VCA/VCF, LFOs, cal, LittleFS; Input UART (panel + gap); CV outs (flags) |
-| **Input controller** | `INPUT-CONTROLLER/` | RP2040 | Front panel, presets; UART to DCO hub; relays gap `'x'` 154 → Screen |
+| **DCO (voice + hub)** | `DCO/` | RP2350A or B | MIDI, 1×3 PIO DCOs, EnvDCO/VCA/VCF, LFOs, cal, LittleFS; Input UART (panel + gap); Cut/Res/VCA CV; osc wave/level. Full dist/mode/FX **code** retained for solo-B |
+| **Voice aux** | [`VOICE-AUX/`](../../VOICE-AUX/) | RP2040 | RX-only on Input TX; AS3320 mode, dist Drive/Mix, FX stubs — [`DUAL_MCU.md`](DUAL_MCU.md) |
+| **Input controller** | `INPUT-CONTROLLER/` | RP2040 | Front panel, presets; UART to voice (fanout to DCO ± aux); relays gap `'x'` 154 → Screen |
 | **Screen controller** | `SCREEN-CONTROLLER/` | RP2040 | ILI9488 + LVGL; UI from Input; gap relayed by Input |
 | ~~Mainboard~~ | [`_archived/Mainboard/`](../../_archived/Mainboard/) | STM32 | *Archived* — no firmware path remains on any board |
 
@@ -23,15 +26,18 @@ The shipping instrument is **three firmwares** (Mainboard absorbed into DCO). Bo
 
 ---
 
-## Inter-board links (default — three boards)
+## Inter-board links (default — three boards; optional voice aux)
 
 ```mermaid
 flowchart LR
-  World["MIDI USB + DIN"] --> DCO["DCO hub Pico 2"]
-  Input["Input"] -->|"Input Serial1 TX GP0 to DCO Serial2 RX GP21 @ 2.5M\na..f, p, w"| DCO
+  World["MIDI USB + DIN"] --> DCO["DCO hub RP2350"]
+  Input["Input"] -->|"Input Serial1 TX GP0 @ 2.5M\na..f, p, w"| Fan["TX_fanout"]
+  Fan --> DCO
+  Fan --> Aux["RP2040 aux RX-only"]
   DCO -->|"DCO Serial2 TX GP20 to Input Serial1 RX GP1\ngap x 154 + cal 155"| Input
   Input -->|"Input Serial2 TX GP4: UI + gap forward"| Screen["Screen"]
-  DCO --> Analog["3× DCO + VCF/VCA + mux + DAC"]
+  DCO --> AnalogFront["Osc + Cut/Res/VCA CV"]
+  Aux --> AnalogPost["Mode + Dist + FX"]
 ```
 
 ### Link details (hub default)
@@ -39,8 +45,8 @@ flowchart LR
 | Link | Baud | Peers | Role |
 |------|------|-------|------|
 | DCO `Serial1` | 31250 | DIN MIDI | MIDI in (RX1 / TX0) — interim HW; PIO MIDI later |
-| DCO `Serial2` **RX GP21** | 2.5M | Input `Serial1` **TX GP0** | Panel in (`'a'..'f'`, `'p'`/`'w'`) |
-| DCO `Serial2` **TX GP20** | 2.5M | Input `Serial1` **RX GP1** | Gap/offset `'x'` 154 / 155 out |
+| DCO `Serial2` **RX GP21** | 2.5M | Input `Serial1` **TX GP0** | Panel in (`'a'..'f'`, `'p'`/`'w'`); same TX may fan out to RP2040 aux RX ([`DUAL_MCU.md`](DUAL_MCU.md)) |
+| DCO `Serial2` **TX GP20** | 2.5M | Input `Serial1` **RX GP1** | Gap/offset `'x'` 154 / 155 out (DCO only — aux never TX) |
 | Input `Serial2` **TX GP4** | 2.5M | Screen `Serial1` **RX GP13** | UI frames / preset names + forwarded gap `'x'` 154 |
 
 On a Pico the silkscreen `UART0` is GP0/GP1 and is Arduino-Pico's `Serial1`; `UART1` is `Serial2`.

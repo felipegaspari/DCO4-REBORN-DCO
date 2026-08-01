@@ -102,6 +102,13 @@ enum ParamId : uint16_t {
   PARAM_DIST_DRIVE               = 52,
   PARAM_DIST_MIX                 = 53,
 
+  // AS3320 multimode select (0..N). Dual-MCU: RP2040 aux; solo-B: DCO. See docs/FILTER_ROUTING.md.
+  PARAM_FILTER_MODE              = 54,
+
+  // FX placeholders (RP2040 aux in dual-MCU builds). IDs reserved; not wired yet.
+  // PARAM_FX_PROGRAM             = 55,
+  // PARAM_FX_MIX                 = 56,
+
   // --- Misc / control / UI flags ------------------------------------
   // Calibration mode selector (screen/UI only for now)
   PARAM_CALIBRATION_MODE         = 101,

@@ -49,6 +49,9 @@ uint16_t LFO1toVCA = 0;
 uint16_t DIST_DRIVE = 0;
 uint16_t DIST_MIX = 0;
 
+// AS3320 multimode (PARAM_FILTER_MODE). Dual-MCU: aux drives GPIO; solo keeps state for local IO.
+uint8_t FILTER_MODE = 0;
+
 float ADSR2toVCF_formula = 0.0f;
 float LFO2toVCF_formula = 0.0f;
 float LFO1toVCA_formula = 0.0f;

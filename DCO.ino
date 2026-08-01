@@ -44,6 +44,11 @@
 // #define ENABLE_WAVE_MUX
 // #define ENABLE_MCP4728
 
+// Dual-MCU: RP2040 voice-aux owns Dist Drive/Mix PWM + filter mode GPIO (and later FX).
+// Keep dist/mode apply handlers and state; skip local pin writers so they do not fight the aux.
+// Leave commented for solo RP2350B / single-MCU builds (full local IO). See docs/DUAL_MCU.md.
+// #define ENABLE_VOICE_AUX
+
 // Derived switches for the different subsystems:
 #ifdef USE_FLOAT_ENGINE
   // Use float-based voice task (pitch path, modifiers, clock-divider, etc.)

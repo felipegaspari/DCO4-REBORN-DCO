@@ -358,6 +358,11 @@ static void apply_param_dist_mix(int16_t v) {
   DIST_MIX = (uint16_t)constrain((int)v, 0, 4095);
 }
 
+// PARAM_FILTER_MODE: AS3320 multimode index (0..N). Pin drive is solo-B / not ENABLE_VOICE_AUX.
+static void apply_param_filter_mode(int16_t v) {
+  FILTER_MODE = (uint8_t)constrain((int)v, 0, 255);
+}
+
 static void apply_param_lfo1_to_vca(int16_t v) {
   LFO1toVCA = (uint16_t)constrain((int)v, 0, 4095);
   cv_update_mod_formulas();
@@ -581,6 +586,7 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_ADSR2_DECAY_CURVE,         apply_param_adsr2_decay_curve },
   { PARAM_DIST_DRIVE,                apply_param_dist_drive },
   { PARAM_DIST_MIX,                  apply_param_dist_mix },
+  { PARAM_FILTER_MODE,               apply_param_filter_mode },
   { PARAM_PWM_POTS_CONTROL_MANUAL,   apply_param_pwm_pots_manual },
   { PARAM_ADSR3_ENABLED,             apply_param_adsr3_enabled },
   { PARAM_FUNCTION_KEY,              apply_param_function_key },

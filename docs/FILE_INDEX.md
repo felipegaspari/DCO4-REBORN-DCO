@@ -773,10 +773,14 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 |------|---------|
 | `README.md` (repo root) | Overview, build, documentation index. |
 | `docs/DOCUMENTATION_PROCEDURE.md` | Reusable phased guide to document any DCO4 board. |
-| `docs/SYSTEM_OVERVIEW.md` | Four-board system / UART topology. |
+| `docs/SYSTEM_OVERVIEW.md` | System / UART topology (incl. optional RP2040 voice aux). |
+| `docs/DUAL_MCU.md` | RP2350A + RP2040 ownership; Input TX fanout; `ENABLE_VOICE_AUX`; ParamId table. |
+| `../VOICE-AUX/` | RP2040 voice-aux sketch (Dist 52/53, mode 54); see `VOICE-AUX/docs/README.md`. |
 | `docs/ENGINE_OPTIONS.md` | Float/fixed engine flags. |
 | `docs/BENCHMARKING.md` | Hot-path profiler: probes, reading the budget, adding a probe. |
 | `docs/DISTORTION.md` | Post-LP Drive/Mix distortion hardware idea and CV prototype. |
+| `docs/FILTER_ROUTING.md` | SSI2144 → dist → AS3320 multimode concept; digital stage switching (DG411/4066). |
+| `docs/schematics/distortion/` | KiCad 10 project (`distortion.kicad_pro`) for the distortion stage. |
 | `docs/REFERENCE_AI.md` | Deep semantic map. |
 | `docs/FILE_INDEX.md` | This file — files, functions, call sites. |
 | `docs/README_serial_and_params.md` | Shared serial / ParamId how-to, including the MIDI CC path. |

@@ -2,7 +2,7 @@
 
 **Status:** Phase 0 complete (provisional). **Not frozen for PCB fab** until reviewed against the physical monosynth carrier.
 
-**Platform assumption:** RP2350 with GPIO0–29 available (custom / WEACT-style). Stock Pico 2 header only exposes **26** GPIOs and may omit some pins used below (notably **GPIO29**). Production default: prefer **RP2350B carrier (48 GPIO)** for headroom.
+**Platform assumption:** RP2350A (GPIO0–29 class) plus optional helper **RP2040**, or a solo **RP2350B**. Stock Pico 2 header only exposes **26** GPIOs and may omit some pins used below (notably **GPIO29**). Dual-MCU architecture: [`DUAL_MCU.md`](DUAL_MCU.md).
 
 Related: [`MAINBOARD_ABSORPTION.md`](MAINBOARD_ABSORPTION.md). Live constants still only cover RESET/RANGE/PW/cal in [`globals.h`](../globals.h); hub/CV pins are commented there until Phase 3.
 
@@ -12,7 +12,7 @@ Related: [`MAINBOARD_ABSORPTION.md`](MAINBOARD_ABSORPTION.md). Live constants st
 
 | Decision | Choice |
 |----------|--------|
-| Carrier | Target **RP2350B** for production; bench may use Pico 2 / WEACT if pins fit |
+| Carrier | Prefer **RP2350A + RP2040 aux** for production pin budget; keep **RP2350B solo** as alternate (DCO firmware retains full IO code). Bench may use Pico 2 / WEACT |
 | UART split | **Input on HW UART** (only peer link); Screen UI and gap via Input relay; **DIN MIDI on PIO UART** long-term (interim: HW MIDI @ GP0/1) |
 | Cut0 vs PW | Cut0 on **GP15** (slice 7 B) — **avoid sharing slice 1 with PW** (wrap 1024 vs CV ~4095) |
 | Reso1 | **GP7** (slice 3 B), not GP6 (would collide with RANGE OSC2 slice 3 A) |
@@ -77,8 +77,8 @@ Full detail on the programs, the period model, sync modes and phase align:
 | Resonance 0 | **5** | 2 | B | Same slice as cut1 (shared wrap OK for CV) |
 | Resonance 1 | **7** | 3 | B | **Shares slice 3 with RANGE OSC2 (GP22)** — firmware scales duty into `DIV_COUNTER` |
 | VCA | **11** | 5 | B | |
-| Dist Drive | **9** | 4 | B | Post-LP distortion; see [`DISTORTION.md`](DISTORTION.md) |
-| Dist Mix | **26** | 5 | A | Shares slice 5 with VCA |
+| Dist Drive | **9** | 4 | B | Solo-B / `ENABLE_CV_OUTS` without aux. Dual-MCU: enable `ENABLE_VOICE_AUX` (no local drive); aux pins in [`VOICE-AUX/docs/README.md`](../../VOICE-AUX/docs/README.md) |
+| Dist Mix | **26** | 5 | A | Same as Dist Drive; shares slice 5 with VCA on solo-B map |
 
 | Function | GPIO | Notes |
 |----------|------|-------|
@@ -87,8 +87,9 @@ Full detail on the programs, the period model, sync modes and phase align:
 | 74HC595 CLK | **14** | |
 | I2C0 SDA | **16** | MCP4728 ×3 @ 0x63/0x64/0x65 |
 | I2C0 SCL | **18** | |
+| AS3320 mode | *TBD* | Dual-MCU → **RP2040**; solo-B → DCO spares — [`FILTER_ROUTING.md`](FILTER_ROUTING.md) |
 
-**Spare / TBD:** GP2, GP6, GP25 (ADC-capable). Prefer leaving remaining ADC pins free unless needed.
+**Spare / TBD (DCO):** GP2, GP6, GP25 (ADC-capable). Prefer leaving remaining ADC pins free unless needed. Solo-B candidates for AS3320 mode.
 
 ---
 

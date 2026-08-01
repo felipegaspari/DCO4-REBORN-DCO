@@ -38,7 +38,10 @@ Main sketch: `DCO.ino`.
 See `docs/` — especially:
 
 - [`docs/PINOUT.md`](docs/PINOUT.md) — provisional hub + CV pin / UART map (Phase 0)
+- [`docs/DUAL_MCU.md`](docs/DUAL_MCU.md) — RP2350A + RP2040 aux; `ENABLE_VOICE_AUX`; ParamId ownership
+- [`../VOICE-AUX/`](../VOICE-AUX/) — RP2040 helper firmware (Dist / filter mode)
 - [`docs/DISTORTION.md`](docs/DISTORTION.md) — post-LP Drive/Mix distortion stage (hardware idea + CV prototype)
+- [`docs/FILTER_ROUTING.md`](docs/FILTER_ROUTING.md) — SSI2144 → dist → AS3320 multimode concept
 - [`docs/PIO_OSCILLATORS.md`](docs/PIO_OSCILLATORS.md) — PIO programs, state machine topology, period model, sync modes, phase align, sub-osc, and the invariants behind them
 - [`tools/dco_control/`](tools/dco_control/README.md) — Linux bench controller: drive every parameter over USB with no Input board or Screen attached
 - [`docs/MIDI_CC_MAP.md`](docs/MIDI_CC_MAP.md) — MIDI CC implementation chart: the same control surface over 7-bit CC, for a panel app or a DAW (generated, along with the Open Stage Control session in `tools/panels/`)

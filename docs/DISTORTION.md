@@ -2,7 +2,15 @@
 
 **Status:** hardware idea locked for breadboard / PCB; firmware prototype exposes the two CVs.
 
-Related: [`PINOUT.md`](PINOUT.md), [`MAINBOARD_ABSORPTION.md`](MAINBOARD_ABSORPTION.md). Soft/PWM writers live behind `ENABLE_CV_OUTS` like the other panel CVs.
+Related: [`PINOUT.md`](PINOUT.md), [`MAINBOARD_ABSORPTION.md`](MAINBOARD_ABSORPTION.md), [`FILTER_ROUTING.md`](FILTER_ROUTING.md) (SSI2144 → dist → AS3320 multimode), [`DUAL_MCU.md`](DUAL_MCU.md) (Drive/Mix → RP2040 aux when dual-MCU; `DCO/` keeps writers for solo-B). Soft/PWM writers live behind `ENABLE_CV_OUTS` like the other panel CVs.
+
+### Schematic (KiCad)
+
+Open the KiCad **10** project:
+
+[`schematics/distortion/distortion.kicad_pro`](schematics/distortion/distortion.kicad_pro)
+
+Sheet: [`schematics/distortion/distortion.kicad_sch`](schematics/distortion/distortion.kicad_sch) — **fully wired** left→right (CV RC / dry buf + AS2164 / drive process / mix summer / `DIST_OUT`). Embedded symbols (`DCO:AS2164`, `DCO:TL074`, …); edge labels `LP_OUT`, `DRIVE_CV`, `MIX_CV`, `DIST_OUT`, plus mid-chain `DRY`, `WET`, `MIX_FILT`, `MIX_CV_INV`. PDF: [`schematics/distortion/distortion.pdf`](schematics/distortion/distortion.pdf). Regenerate with `python3 schematics/distortion/generate_sch.py`.
 
 ---
 
@@ -10,15 +18,15 @@ Related: [`PINOUT.md`](PINOUT.md), [`MAINBOARD_ABSORPTION.md`](MAINBOARD_ABSORPT
 
 ```text
 Osc / sub mix (level VCAs — may run hot into the LP)
-  → Filter 1 LOWPASS
+  → SSI2144 LOWPASS (Cut0 / Res0)
   → Distortion (Drive + Mix only)
-  → Filter 2 HIGHPASS
+  → AS3320 multimode (Cut1 / Res1; digital mode — see FILTER_ROUTING.md)
   → Main Amp VCA
   → FV-1 (later)
   → outs
 ```
 
-Dry for Mix is taken at **post-LP / pre-dist** (same node that feeds the Drive VCA). No symmetry, tone, or pre/post switch in v1.
+Dry for Mix is taken at **post-SSI2144 / pre-dist** (same node that feeds the Drive VCA). No symmetry, tone, or pre/post filter-order switch in v1; AS3320 mode select is separate ([`FILTER_ROUTING.md`](FILTER_ROUTING.md)).
 
 ```text
 LP out ──┬── dry ──────────────────────────────┐
@@ -47,7 +55,7 @@ LP out ──┬── dry ─────────────────�
 
 ## Detailed circuit
 
-One audio input (`LP_OUT`), one audio output (`DIST_OUT` → HP). Two control voltages from the Pico (PWM+RC or DAC): **Drive** and **Mix**, roughly 0…3 V into the VCA CVs (exact scaling depends on 2164-style expo CV vs linear OTA).
+One audio input (`LP_OUT`), one audio output (`DIST_OUT` → HP). Two control voltages from the Pico (PWM+RC or DAC): **Drive** and **Mix**, roughly 0…3 V into the **AS2164** Ec pins (expo control; scale/trim to the chip’s CV range).
 
 ### 1. Split dry / wet
 
@@ -62,7 +70,7 @@ Keep both taps AC-coupled from the LP if the LP output sits on a DC bias; otherw
 
 **Job:** set how hard the nonlinear core is hit. At Drive = 0 the wet path should be quiet enough that Mix ≈ dry.
 
-**Part:** one channel of **SSI2164 / AS2164 / V2164** (same family as many synth VCAs), or an OTA (e.g. LM13700 half) as a VCA.
+**Part:** one channel of **AS2164** (Coolaudio SSM2164-compatible quad VCA). Current in / current out — use a series Rin into `I_IN` and an op-amp I–V converter on `I_OUT`.
 
 - Audio in: post-LP (after the dry tap)
 - CV: **Drive** (after RC filter / buffer from PWM)
@@ -122,7 +130,7 @@ Output of this stage is **WET**.
 
 **Job:** blend dry and wet with one CV.
 
-Preferred: **two VCA sections** (two more 2164 channels, or a dual VCA):
+Preferred: **two more AS2164 channels** (same IC as Drive):
 
 | Path | CV |
 |------|-----|
@@ -160,15 +168,15 @@ Manual calibration in firmware parks both CVs at 0.
 
 | Qty | Role |
 |-----|------|
-| 1× 2164 (or similar) | Drive + dry Mix + wet Mix (3 of 4 sections; 4th spare) |
-| 2–3× op-amps (TL074 / better audio) | Dry buffer, clip stage, summer, CV buffers |
+| 1× **AS2164** | Drive + dry Mix + wet Mix (3 of 4 sections; 4th spare) |
+| 2× **TL074** | Dry buffer, I–V converters, clip, fold buffer, summer, MIX invert |
 | Diodes + 1 LED | Asymmetric soft clip |
-| Small fold network | Transistors or diodes |
-| R’s and C’s | Presence, coupling, LPF, CV filters |
+| Small fold network | Diodes + resistors |
+| R’s and C’s | Presence, coupling, LPF, CV filters, Rin / Rf |
 
 ### Not in v1
 
-- No symmetry CV, tone pot, or pre/post filter switch (chain is fixed: LP → dist → HP)
+- No symmetry CV, tone pot, or LP↔HP **order** switch (chain is fixed: SSI2144 → dist → AS3320; AS3320 **mode** is a separate concept in [`FILTER_ROUTING.md`](FILTER_ROUTING.md))
 - No digital audio path — only two analog CVs
 
 ### Bench tune order

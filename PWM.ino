@@ -51,6 +51,8 @@ void init_cv_pwm() {
   pwm_set_enabled(VCA_PWM_SLICE, true);
 
   // Dist Mix shares slice 5 with VCA (wrap already 4095). Drive is alone on slice 4 B.
+  // Dual-MCU (ENABLE_VOICE_AUX): RP2040 owns these pins — do not claim them here.
+#ifndef ENABLE_VOICE_AUX
   gpio_set_function(DIST_DRIVE_PIN, GPIO_FUNC_PWM);
   DIST_DRIVE_PWM_SLICE = pwm_gpio_to_slice_num(DIST_DRIVE_PIN);
   DIST_DRIVE_PWM_CHAN = pwm_gpio_to_channel(DIST_DRIVE_PIN);
@@ -64,6 +66,7 @@ void init_cv_pwm() {
     pwm_set_wrap(DIST_MIX_PWM_SLICE, DIV_COUNTER_CV);
   }
   pwm_set_enabled(DIST_MIX_PWM_SLICE, true);
+#endif
 }
 
 // Push raw compare values to the cutoff / resonance / VCA / dist slices.
@@ -80,8 +83,13 @@ void write_cv_pwm_raw(uint16_t cutoff, uint16_t resonance, uint16_t vca,
     pwm_set_chan_level(RESO_PWM_SLICES[i], RESO_PWM_CHANS[i], reso_level);
   }
   pwm_set_chan_level(VCA_PWM_SLICE, VCA_PWM_CHAN, vca);
+#ifndef ENABLE_VOICE_AUX
   pwm_set_chan_level(DIST_DRIVE_PWM_SLICE, DIST_DRIVE_PWM_CHAN, dist_drive);
   pwm_set_chan_level(DIST_MIX_PWM_SLICE, DIST_MIX_PWM_CHAN, dist_mix);
+#else
+  (void)dist_drive;
+  (void)dist_mix;
+#endif
 }
 
 // Push soft VCF/VCA/reso/dist levels to Pico PWM compares.
