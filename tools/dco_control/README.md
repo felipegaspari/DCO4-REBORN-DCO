@@ -48,10 +48,13 @@ python3 app.py --port /dev/ttyACM0  # or name it explicitly
 python3 app.py --theme light        # dark is the default
 ```
 
-Pick the port, press **Connect**, then press **Send all**. That last step matters: the
-board boots with its own defaults and has no idea what the window is showing, so nothing
-is in sync until you push it once. Loading a preset while connected also pushes the patch
-to the board.
+Pick the port and press **Connect**. The tool **automatically pushes** the current UI
+(patch + cal controls) with **Send all**, so the board matches what you see — including a
+preset already loaded at startup. Loading / Prev / Next / Init while connected also push.
+Use the **Send all** button anytime to resync after a board reset.
+
+Hot-path benches are only meaningful after that sync; otherwise the UI can show a preset
+while the DCO is still on firmware defaults.
 
 ### Preset bank
 

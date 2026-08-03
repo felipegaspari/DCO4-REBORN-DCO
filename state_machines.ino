@@ -95,29 +95,6 @@ void start_voice_sms() {
   pio_enable_sm_mask_in_sync(pio[0], enableMask);
 }
 
-// Load a reset pulse width (Y) and clk_div into an oscillator whose SM is already
-// stopped. The caller is responsible for stopping and re-enabling, so that paired
-// oscillators can be restarted on the same cycle.
-//
-// Y only reaches the SM through the OSR (put -> pull -> out y), and the OSR also holds
-// clk_div for the four `mov x, OSR` chunk reads. Writing Y on a *running* SM therefore
-// leaves a window in which a chunk can latch the pulse width as its ramp count, which
-// is very audible. Hence the stopped-SM requirement.
-void osc_load_period_stopped(uint8_t osc, uint32_t y, uint32_t clk_div) {
-  uint8_t sm = VOICE_TO_SM[osc];
-
-  pio_sm_clear_fifos(pio[0], sm);
-
-  pio_sm_put(pio[0], sm, y);
-  pio_sm_exec(pio[0], sm, pio_encode_pull(false, false));
-  pio_sm_exec(pio[0], sm, pio_encode_out(pio_y, 31));
-  osc_last_y[osc] = y;
-
-  pio_sm_put(pio[0], sm, clk_div);
-  pio_sm_exec(pio[0], sm, pio_encode_pull(false, false));
-  osc_last_clk_div[osc] = clk_div;
-}
-
 // Change only the reset pulse width, keeping the divider the SM was already running.
 // Stops and restarts the SM, so this is for parameter changes rather than the audio path.
 void osc_set_reset_pulse(uint8_t osc, uint32_t y) {

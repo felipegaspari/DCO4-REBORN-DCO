@@ -2,12 +2,81 @@
 #define __STATE_MACHINES_H__
 
 #include <stdint.h>
+#include "hardware/pio.h"
 
 void init_pio();
 void start_voice_sms();
 void assign_sm_mapping();
 void set_subosc_divide(uint8_t divide);
-void osc_load_period_stopped(uint8_t osc, uint32_t y, uint32_t clk_div);
+
+// Load a reset pulse width (Y) and clk_div into an oscillator whose SM is already
+// stopped. The caller is responsible for stopping and re-enabling, so that paired
+// oscillators can be restarted on the same cycle.
+//
+// Y only reaches the SM through the OSR (put -> pull -> out y), and the OSR also holds
+// clk_div for the four `mov x, OSR` chunk reads. Writing Y on a *running* SM therefore
+// leaves a window in which a chunk can latch the pulse width as its ramp count, which
+// is very audible. Hence the stopped-SM requirement.
+//
+// Inline + direct TXF/instr MMIO: note-on EXACT_Y calls the fused noclear variant;
+// boot/topology paths use osc_load_period_stopped() which still FJOIN-clears TX.
+
+static inline void osc_load_period_stopped_noclear(uint8_t osc, uint32_t y, uint32_t clk_div) {
+  const uint sm = VOICE_TO_SM[osc];
+  pio_hw_t *const hw = pio0_hw;
+
+  const uint pull_instr = pio_encode_pull(false, false);
+  const uint out_y_instr = pio_encode_out(pio_y, 31);
+
+  hw->txf[sm] = y;
+  hw->sm[sm].instr = pull_instr;
+  hw->sm[sm].instr = out_y_instr;
+  osc_last_y[osc] = y;
+
+  hw->txf[sm] = clk_div;
+  hw->sm[sm].instr = pull_instr;
+  osc_last_clk_div[osc] = clk_div;
+}
+
+// Note-on EXACT_Y after the frame's pio put+pull: TX is empty, so FJOIN clear is skipped.
+// Hoists pull/out encodings once and loads OSC A then B back-to-back.
+static inline void osc_load_periods_stopped_noclear(uint8_t osc_a, uint32_t y_a, uint32_t clk_div_a,
+                                                   uint8_t osc_b, uint32_t y_b, uint32_t clk_div_b) {
+  pio_hw_t *const hw = pio0_hw;
+  const uint sm_a = VOICE_TO_SM[osc_a];
+  const uint sm_b = VOICE_TO_SM[osc_b];
+  const uint pull_instr = pio_encode_pull(false, false);
+  const uint out_y_instr = pio_encode_out(pio_y, 31);
+
+  hw->txf[sm_a] = y_a;
+  hw->sm[sm_a].instr = pull_instr;
+  hw->sm[sm_a].instr = out_y_instr;
+  osc_last_y[osc_a] = y_a;
+  hw->txf[sm_a] = clk_div_a;
+  hw->sm[sm_a].instr = pull_instr;
+  osc_last_clk_div[osc_a] = clk_div_a;
+
+  hw->txf[sm_b] = y_b;
+  hw->sm[sm_b].instr = pull_instr;
+  hw->sm[sm_b].instr = out_y_instr;
+  osc_last_y[osc_b] = y_b;
+  hw->txf[sm_b] = clk_div_b;
+  hw->sm[sm_b].instr = pull_instr;
+  osc_last_clk_div[osc_b] = clk_div_b;
+}
+
+// Boot / topology paths: disable does not empty TX — clear before Y/OSR reload.
+static inline void osc_load_period_stopped(uint8_t osc, uint32_t y, uint32_t clk_div) {
+  const uint sm = VOICE_TO_SM[osc];
+  pio_hw_t *const hw = pio0_hw;
+
+  // Same FJOIN-RX trick as pio_sm_clear_fifos(), without the call.
+  hw_set_bits(&hw->sm[sm].shiftctrl, PIO_SM0_SHIFTCTRL_FJOIN_RX_BITS);
+  hw_clear_bits(&hw->sm[sm].shiftctrl, PIO_SM0_SHIFTCTRL_FJOIN_RX_BITS);
+
+  osc_load_period_stopped_noclear(osc, y, clk_div);
+}
+
 void osc_set_reset_pulse(uint8_t osc, uint32_t y);
 void pio_topology_report();
 void pio_period_probe(uint8_t osc, uint32_t clk_div);

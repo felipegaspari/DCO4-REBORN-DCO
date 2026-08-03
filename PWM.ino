@@ -5,6 +5,7 @@ void init_pwm()
   {
     gpio_set_function(RANGE_PINS[i], GPIO_FUNC_PWM);
     RANGE_PWM_SLICES[i] = pwm_gpio_to_slice_num(RANGE_PINS[i]);
+    RANGE_PWM_CHANNELS[i] = pwm_gpio_to_channel(RANGE_PINS[i]);
     pwm_set_wrap(RANGE_PWM_SLICES[i], DIV_COUNTER);
     pwm_set_enabled(RANGE_PWM_SLICES[i], true);
   }

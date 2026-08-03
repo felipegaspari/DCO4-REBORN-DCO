@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import queue
+import re
 import sys
 import threading
 import tkinter as tk
@@ -108,12 +109,17 @@ class App:
         self.pending: dict[str, bytes] = {}  # dedup key -> most recent frame
         self.param_vars: dict[int, tk.Variable] = {}
         self.block_vars: dict[str, dict[str, tk.Variable]] = {}
+        # Scale readout Labels: ("p", pid) or ("b", block_key, field_key) -> Label.
+        # ttk.Scale often skips command on programmatic var.set(); we sync these after apply.
+        self._readouts: dict[tuple, ttk.Label] = {}
         self.blocks_by_key = {b.key: b for b in params.BLOCKS}
         self.mode = mode if mode in theme.MODES else "dark"
         self.dot_on = False
         self.bank = presets.empty_bank()
         self._clean_fp = ""
         self._preset_loading = False
+        self.amp_method_var = tk.StringVar(value="(unknown — press a method button)")
+        self._amp_method_re = re.compile(r"(?:amp_comp method|live_method)=(\w+)")
 
         root.title("DCO bench controller")
         # Wide enough that the toolbar's right-hand side is never squeezed out by pack().
@@ -238,6 +244,17 @@ class App:
         if self.link.is_open:
             self.send_all()
 
+    def _sync_readouts(self) -> None:
+        """Refresh Scale numeric labels from live vars (command often skipped on var.set)."""
+        for key, rd in self._readouts.items():
+            if key[0] == "p":
+                var = self.param_vars.get(key[1])
+            else:
+                var = self.block_vars.get(key[1], {}).get(key[2])
+            if var is None:
+                continue
+            rd.config(text=str(ivar(var)))
+
     def _preset_recall(self, index: int, *, send: bool, persist_current: bool) -> None:
         index = max(0, min(presets.NUM_SLOTS - 1, index))
         slot = self.bank["slots"][index]
@@ -255,6 +272,7 @@ class App:
             self.bank["current"] = index
         finally:
             self._preset_loading = False
+        self._sync_readouts()
         self.preset_dirty_var.set("")
         if persist_current:
             presets.save_bank(self.bank)
@@ -321,6 +339,7 @@ class App:
             self.preset_name_var.set("Init")
         finally:
             self._preset_loading = False
+        self._sync_readouts()
         self._refresh_dirty()
         self.log("[preset] Init defaults in UI -- Save to store in this slot\n")
         self._push_if_connected()
@@ -374,7 +393,9 @@ class App:
         self.connect_btn.config(text="Disconnect")
         self.status_var.set(f"connected to {device}")
         self._set_status_dot(True)
-        self.log(f"[link] connected to {device} -- press 'Send all' to push this window's state\n")
+        self.log(f"[link] connected to {device} -- pushing UI state\n")
+        self.send_all()
+        self.log(f"[link] pushed UI state ({len(self.pending)} frames queued)\n")
 
     # --- tabs ------------------------------------------------------------
 
@@ -406,7 +427,9 @@ class App:
         notebook.add(diag, text=params.GROUP_DIAG)
         diag_inner = self._scrollable(diag)
         row = self._add_diagnostics(diag_inner, 0)
-        self._add_bench_controls(diag_inner, row)
+        row = self._add_bench_controls(diag_inner, row)
+        row = self._add_amp_comp_controls(diag_inner, row)
+        self._add_pitch_interp_controls(diag_inner, row)
         diag_inner.columnconfigure(1, weight=1)
 
     def _scrollable(self, parent: ttk.Frame) -> ttk.Frame:
@@ -458,6 +481,8 @@ class App:
             if p.hi - p.lo <= SPINBOX_MAX_RANGE:
                 def on_spin(pid=p.pid, var=var, rd=readout):
                     rd.config(text=str(ivar(var)))
+                    if self._preset_loading:
+                        return
                     self.queue_param(pid, ivar(var))
 
                 ttk.Spinbox(parent, from_=p.lo, to=p.hi, textvariable=var, width=8,
@@ -466,11 +491,14 @@ class App:
             else:
                 def on_slide(_v, pid=p.pid, var=var, rd=readout):
                     rd.config(text=str(ivar(var)))
+                    if self._preset_loading:
+                        return
                     self.queue_param(pid, ivar(var))
 
                 ttk.Scale(parent, from_=p.lo, to=p.hi, variable=var, orient="horizontal",
                           command=on_slide).grid(row=row, column=1, sticky="ew", pady=row_pad)
                 readout.grid(row=row, column=2, sticky="e", padx=(8, 0))
+                self._readouts[("p", p.pid)] = readout
 
         elif p.kind == "combo":
             labels = [c[0] for c in p.choices]
@@ -481,6 +509,8 @@ class App:
             combo.grid(row=row, column=1, sticky="ew", pady=row_pad)
 
             def on_pick(_e=None, pid=p.pid, var=var, lookup=lookup):
+                if self._preset_loading:
+                    return
                 self.queue_param(pid, lookup[var.get()])
 
             combo.bind("<<ComboboxSelected>>", on_pick)
@@ -490,6 +520,8 @@ class App:
             self.param_vars[p.pid] = var
 
             def on_check(pid=p.pid, var=var):
+                if self._preset_loading:
+                    return
                 self.queue_param(pid, ivar(var))
 
             ttk.Checkbutton(parent, variable=var, command=on_check,
@@ -521,11 +553,14 @@ class App:
 
             def on_slide(_v, key=block.key, var=var, rd=readout):
                 rd.config(text=str(ivar(var)))
+                if self._preset_loading:
+                    return
                 self.queue_block(key)
 
             ttk.Scale(frame, from_=f.lo, to=f.hi, variable=var, orient="horizontal",
                       command=on_slide).grid(row=i, column=1, sticky="ew", pady=6)
             readout.grid(row=i, column=2, sticky="e", padx=(8, 0))
+            self._readouts[("b", block.key, f.key)] = readout
 
         if block.note:
             ttk.Label(frame, text=block.note, wraplength=700, style="Muted.TLabel").grid(
@@ -540,15 +575,16 @@ class App:
                 self.send_now(protocol.param16(params.DEBUG_PARAM_ID, value))
                 self.log(f"[send] {label}\n")
 
-            ttk.Button(frame, text=label, command=on_click).grid(row=0, column=i, padx=4)
+            ttk.Button(frame, text=label, command=on_click).grid(
+                row=i // 3, column=i % 3, padx=4, pady=2, sticky="w")
         ttk.Label(
             frame,
-            text="Output appears in the log below. The period probes only hold while no "
-                 "note is playing, because voice_task() pushes a fresh divider every frame "
-                 "for a held note.",
+            text="Output appears in the log below. Period probes only hold while no note "
+                 "is playing. Note retrig 26/27 A/B EXACT_Y vs SYNC_JMP (needs oscSync ≥ 1); "
+                 "Board ack note_retrig=… when RUNNING_AVERAGE.",
             wraplength=760,
             style="Muted.TLabel",
-        ).grid(row=1, column=0, columnspan=len(params.DEBUG_COMMANDS), sticky="w", pady=(6, 0))
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
         return row + 1
 
     def _add_bench_controls(self, parent: ttk.Frame, row: int) -> int:
@@ -569,6 +605,52 @@ class App:
             wraplength=760,
             style="Muted.TLabel",
         ).grid(row=1, column=0, columnspan=len(params.BENCH_COMMANDS), sticky="w", pady=(6, 0))
+        return row + 1
+
+    def _add_amp_comp_controls(self, parent: ttk.Frame, row: int) -> int:
+        frame = ttk.LabelFrame(parent, text="Amp-comp method / bench", padding=8)
+        frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 4))
+        for i, (label, value) in enumerate(params.AMP_COMP_COMMANDS):
+            def on_click(value=value, label=label):
+                self.send_now(protocol.param16(params.DEBUG_PARAM_ID, value))
+                self.log(f"[send] {label}\n")
+
+            ttk.Button(frame, text=label, command=on_click).grid(
+                row=i // 4, column=i % 4, padx=4, pady=2, sticky="w")
+        ttk.Label(
+            frame,
+            textvariable=self.amp_method_var,
+            style="Status.TLabel",
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ttk.Label(
+            frame,
+            text="Method buttons (20–22) switch the live lookup for profiler / speed A/B "
+                 "(PWM difference is tiny — expect Board ack amp_comp method=…). "
+                 "Default FIXED. Speed/accuracy (24–25) need AMP_COMP_BENCHMARK + "
+                 "RUNNING_AVERAGE; confirm live_method= on the speed report.",
+            wraplength=760,
+            style="Muted.TLabel",
+        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        return row + 1
+
+    def _add_pitch_interp_controls(self, parent: ttk.Frame, row: int) -> int:
+        frame = ttk.LabelFrame(parent, text="Pitch-interp bench", padding=8)
+        frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 4))
+        for i, (label, value) in enumerate(params.PITCH_INTERP_COMMANDS):
+            def on_click(value=value, label=label):
+                self.send_now(protocol.param16(params.DEBUG_PARAM_ID, value))
+                self.log(f"[send] {label}\n")
+
+            ttk.Button(frame, text=label, command=on_click).grid(
+                row=0, column=i, padx=4, pady=2, sticky="w")
+        ttk.Label(
+            frame,
+            text="Speed/accuracy (28–29) need RUNNING_AVERAGE (paced Board output). "
+                 "Compares FLOAT / RATIO_Q16 / Q12 (private tables; Q20 slope is inside RATIO). "
+                 "Profiler dump (10) prints build: … pitch=… flags.",
+            wraplength=760,
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
         return row + 1
 
     def _tooltip(self, widget: tk.Widget, text: str) -> None:
@@ -626,6 +708,9 @@ class App:
             if text.startswith(f"[{name}]"):
                 tag = name
                 break
+        m = self._amp_method_re.search(text)
+        if m:
+            self.amp_method_var.set(f"Current: {m.group(1)}")
         self.log_text.insert("end", text, tag or ())
         # Keep the buffer bounded; DCO_DEBUG_REPORT is chatty.
         if int(self.log_text.index("end-1c").split(".")[0]) > 2000:
@@ -709,6 +794,7 @@ class App:
                     self.block_vars[block.key][f.key].set(f.default)
         finally:
             self._preset_loading = False
+        self._sync_readouts()
         self._refresh_dirty()
         self.log("[ui] controls reset to defaults -- press 'Send all' to push them\n")
 

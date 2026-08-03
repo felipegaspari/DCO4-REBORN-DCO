@@ -2,52 +2,60 @@
 
 This firmware can run the real-time voice engine in **float** or **fixed-point** form. The goal is **maximum real-time speed without losing pitch / amplitude precision**. Which path you get depends on compile-time flags at the top of [`DCO.ino`](DCO.ino).
 
-**Live source of truth for flags:** the “Voice engine build options” block in `DCO.ino` (before project includes).  
+**Live source of truth for flags:** the top of [`DCO.ino`](../DCO.ino) before includes — **pitch mode ids**, **board defaults** (including `PITCH_INTERP_MODE`), **overrides**, **guards**, then profiling / board IO.  
+There is **no** `USE_FLOAT_ENGINE` umbrella; voice and amp are separate compile flags. Pitch A/B overrides use `#undef PITCH_INTERP_MODE` then `#define` (default is already set with board defaults).  
 **Historical migration notes:** [`FIXED_POINT_ANALYSIS.md`](FIXED_POINT_ANALYSIS.md) and [`FIXED_POINT_PLAN.md`](FIXED_POINT_PLAN.md) (archive only — not current flag docs).
 
 ---
 
 ## 1. Purpose and MCU guidance
 
-| Target | Recommendation | Why |
-|--------|----------------|-----|
-| **RP2350** (hardware FPU) | Leave `USE_FLOAT_ENGINE` defined | Float pitch / clkdiv / amp-comp is natural and accurate |
-| **RP2040** (no FPU) | Comment out / undefine `USE_FLOAT_ENGINE` | Soft-float is expensive; fixed-point hot path was built for this |
+| Target | Board defaults (`PICO_RP2350` / else) | Why |
+|--------|--------------------------------------|-----|
+| **RP2350** (FPU) | `USE_FLOAT_VOICE_TASK` + `PITCH_INTERP_FLOAT` + `USE_FLOAT_AMP_COMP`; amp method `FLOAT_QUAD`; HP clkdiv `1` | Float pitch / clkdiv / amp is natural |
+| **RP2040** (no FPU) | Neither float flag; `PITCH_INTERP_RATIO_Q16`; amp method `FIXED`; HP clkdiv `1` | Soft-float is expensive; lean Q8 amp (no LUT RAM) |
 
-**Current checkout default:** `USE_FLOAT_ENGINE` is **defined** (float voice task + float amp-comp).
+Overrides (after board defaults) can `#undef` / `#define` those flags. See the commented examples in `DCO.ino`.
 
 ---
 
 ## 2. Quick-pick flag sets
 
-| Goal | What to set |
-|------|-------------|
-| **Current / FPU (default)** | `#define USE_FLOAT_ENGINE` — leave `PITCH_USE_RATIO_Q16 1` |
-| **RP2040 precision** | Undefine `USE_FLOAT_ENGINE`; keep `PITCH_USE_RATIO_Q16 1`; `HIGH_PRECISION_CLKDIV 1` |
-| **RP2040 speed** | Same as precision, but `HIGH_PRECISION_CLKDIV 0` (~1 µs/voice clkdiv vs ~4 µs) |
-| **Fixed pitch alt (experimental)** | Fixed engine + set `PITCH_USE_RATIO_Q16` to `0` (or undefine), then choose `PITCH_INTERP_USE_Q8`, `PITCH_INTERP_USE_Q12`, or neither (Q20) |
+Normally **do nothing** — board defaults apply. To force behaviour, use the **ENGINE — overrides** block in `DCO.ino`.
+
+| Goal | What to set (overrides) |
+|------|-------------------------|
+| **RP2350 stock** | (leave overrides commented) |
+| **Fixed voice on RP2350** | `#undef USE_FLOAT_VOICE_TASK` (and `#undef USE_FLOAT_AMP_COMP` / pitch if needed) |
+| **RP2040 speed clkdiv** | `#define HIGH_PRECISION_CLKDIV 0` (~1 µs/voice vs ~4 µs) |
+| **Pitch interp A/B** | `#undef PITCH_INTERP_MODE` then `#define PITCH_INTERP_MODE PITCH_INTERP_RATIO_Q16` (or `Q12`) |
 
 After changing flags: clean rebuild, confirm LittleFS amp-comp tables still load, listen to low notes and amp plateau behaviour.
 
 ---
 
-## 3. Master switches
+## 3. Engine flags
 
-Defined in `DCO.ino`:
+`DCO.ino` layout:
 
 ```text
-USE_FLOAT_ENGINE
-  ├─ #define USE_FLOAT_VOICE_TASK   // voice_task_float() vs voice_task()
-  └─ #define USE_FLOAT_AMP_COMP     // float Hz amp-comp vs Q8 fixed amp-comp
+ENGINE — pitch mode ids     // PITCH_INTERP_FLOAT / RATIO_Q16 / Q12
+ENGINE — board defaults     // per-MCU: voice/amp/pitch/HP/amp-method (pitch inside each branch)
+ENGINE — overrides          // #undef / #define to force (pitch needs #undef first)
+ENGINE — guards             // FLOAT requires float voice
+PROFILING / BOARD / IO
+NOTE_RETRIG_MODE_DEFAULT
 ```
 
 | Define | Effect |
 |--------|--------|
-| `USE_FLOAT_ENGINE` | Master. When defined, forces both derived switches below. |
-| `USE_FLOAT_VOICE_TASK` | Compiles `voice_task_float()`; omits fixed `voice_task()`. Enables float portamento state in `voices.h`. |
-| `USE_FLOAT_AMP_COMP` | Float Hz amp-comp tables + `precomputeCoefficients_float()` + `get_chan_level_float()`. Changes FS load typing. |
+| `USE_FLOAT_VOICE_TASK` | Compiles `voice_task_float()`; omits fixed `voice_task()`. Float portamento in `voices.h`. |
+| `PITCH_INTERP_MODE` | Pitch table path (ids above). Board default: `FLOAT` on RP2350, `RATIO_Q16` on RP2040. |
+| `USE_FLOAT_AMP_COMP` | **Compile-time** float amp dual-build: Hz tables, LUT (~42 KB), float precompute + Q8 seed. Not the same as method (see §7). |
+| `AMP_COMP_METHOD_DEFAULT` | Live method when float amp is built: `0 FLOAT_QUAD` / `1 LUT` / `2 FIXED` (runtime cmds 20–22). |
+| `HIGH_PRECISION_CLKDIV` | Fixed-voice clkdiv only (`1` = 64-bit ~4 µs; `0` = fast ~1 µs). Ignored by float voice. |
 
-**Mixing:** With the stock cascade you cannot enable float voice + fixed amp-comp (or the reverse) without editing the derived `#ifdef` block by hand. Fixed `voice_task()` calls `get_chan_level_lookup_fast` and needs `!USE_FLOAT_AMP_COMP` — casual mixing will fail to build.
+**Voice vs amp:** independent. Float voice with `#undef USE_FLOAT_AMP_COMP` uses lean Q8 amp via `get_chan_level_for_engine`. Fixed voice with float amp is unusual (extra RAM); stock board defaults keep them paired on RP2350.
 
 ### Dispatch
 
@@ -65,7 +73,7 @@ flowchart TD
   vf --> fPitch["float modifiers + interpolateRatioFloat_cached"]
   vf --> fClk["float clkdiv: sysClock_Hz / freqHz"]
   vf --> fAmp["get_chan_level_for_engine → get_chan_level_float"]
-  vx --> xPitch["Q24 modifiers + ratio or IntQ16 interp"]
+  vx --> xPitch["Q24 modifiers + PITCH_INTERP_MODE (RATIO_Q16 / Q12)"]
   vx --> xClk["HIGH_PRECISION_CLKDIV 1 or 0"]
   vx --> xAmp["get_chan_level_lookup_fast Q8"]
 ```
@@ -76,44 +84,54 @@ Related (not engine math, but often used together):
 |--------|---------|------|
 | `RUNNING_AVERAGE` | off | Cycle-accurate hot-path profiler (`bench.h`) — see [`BENCHMARKING.md`](BENCHMARKING.md) |
 | `RUNNING_AVERAGE_FINE` | off | Adds probes on the smallest stages; needs `RUNNING_AVERAGE` |
+| `RUNNING_AVERAGE_PERIOD` | off | Loop periods only (no stage probes); needs `RUNNING_AVERAGE`; overrides FINE |
 | `DCO_DEBUG_REPORT` | `0` in `voices.ino` | Serial dump of OSC1 frequency stages |
 | `ENABLE_FS_CALIBRATION` | on in `globals.h` | Load LittleFS voiceTables / PW cal into amp-comp arrays |
 | `CLKDIV_BENCHMARK` | off | Float vs double clkdiv comparison; needs `RUNNING_AVERAGE` |
 
 ---
 
-## 4. Fixed-point pitch pipeline
+## 4. Pitch interpolation (`PITCH_INTERP_MODE`)
 
-Active only when `!USE_FLOAT_VOICE_TASK`.
+One compile-time enum selects **exactly one** interpolator and allocates **only that mode’s** slope / table storage. No runtime branch on the hot path.
 
-**Flow:**
+Defined in `DCO.ino`:
+
+| Mode | Value | Hot-path function | Storage | Engine |
+|------|-------|-------------------|---------|--------|
+| `PITCH_INTERP_FLOAT` | 0 | `interpolateRatioFloat_cached` | `x/yMultiplierTableF`, `slopeF` (natural `x∈[-1,3]`, `y`=ratio) | Float voice **required** |
+| `PITCH_INTERP_RATIO_Q16` | 1 | `interpolateRatioQ16_cached` | int `x/y` tables, **`slopeQ20`** + fused `y→ratio` | Fixed voice default, or float voice A/B |
+| `PITCH_INTERP_Q12` | 2 | `interpolatePitchMultiplierIntQ16_cached` + reciprocal | int tables, `slopeQ12` | Slope A/B only |
+
+There is **no** selectable `PITCH_INTERP_Q20` or `PITCH_INTERP_Q8`: Q20 slope lives inside `RATIO_Q16`; Q8 pitch slope A/B was removed. Accuracy bench cmd 29 still uses a private Q20 `y` lerp as the int reference.
+
+**Defaults** (set inside each MCU branch in **ENGINE — board defaults**, `#ifndef`):
+
+| Board | Default mode |
+|--------|----------------|
+| `PICO_RP2350` | `PITCH_INTERP_FLOAT` (with float voice) |
+| else (RP2040 / fallback) | `PITCH_INTERP_RATIO_Q16` |
+
+**Guards:** `FLOAT` without float voice → `#error`. Float voice may use any mode (fixed interpolators convert scaled `float x → Q16` then back to a float ratio for A/B).
+
+**Float `FLOAT` domain:** tables store natural modifier `x ∈ [-1, 3]` and frequency ratio `y` directly. Call site passes `freqModifiers` with **no** `×10000`; interpolator returns the ratio (no `/scale`). The scale exists only for int tables.
+
+**Fixed-voice flow** (`!USE_FLOAT_VOICE_TASK`):
 
 1. Portamento → current frequency in **Q24 Hz** (`Hz × 2^24`).
 2. Sum pitch modifiers in **Q24** (pitch bend, LFO1 FIFO, unison, ADSR→detune, drift, OSC2 detune, epsilon ≈ 1.00001).
 3. Scale modifiers × `multiplierTableScale` (10000) into **table-units Q16**.
-4. Interpolate pitch-multiplier table → **ratio Q16**.
+4. Interpolate → **ratio Q16** (`RATIO_Q16` fuses y→ratio; `Q12` returns table `y` then reciprocal-multiply).
 5. `freq_q24 = (portamento_cur_freq_q24 * ratioQ16) >> 16` (OSC2 also folds detune into the Q16 factor).
 
-### `PITCH_USE_RATIO_Q16` (default: `1`)
+| Mode | Slope / precision notes |
+|------|-------------------------|
+| `RATIO_Q16` | Production int path: `slopeQ20` + fused `y → ratio Q16` (`/10000` ≈ `* 0xD1B71759 >> 45`) |
+| `Q12` | Slope A/B; return `y` then reciprocal |
 
-| Setting | Hot-path function | Notes |
-|---------|-------------------|-------|
-| **Nonzero (default)** | `interpolateRatioQ16_cached` | Interpolates table `y` with **`slopeQ20`**, then converts `y → ratio Q16` via reciprocal multiply (`/10000` ≈ `* 0xD1B71759 >> 45`). **Ignores** `PITCH_INTERP_USE_Q8` / `PITCH_INTERP_USE_Q12`. |
-| **0 / undefined** | `interpolatePitchMultiplierIntQ16_cached` then reciprocal → ratio Q16 | Slope precision selected by the Q8/Q12 macros below. |
+Override example (float voice): in **ENGINE — overrides**, `#undef PITCH_INTERP_MODE` then `#define PITCH_INTERP_MODE PITCH_INTERP_RATIO_Q16`. Float porta / clkdiv stay float; only the table interpolator changes.
 
-### Pitch interpolator precision (IntQ16 path only)
-
-Used only when `PITCH_USE_RATIO_Q16` is off:
-
-| Mode | Define | Slope storage | Effective precision |
-|------|--------|---------------|---------------------|
-| Fast | `PITCH_INTERP_USE_Q8` | `slopeQ8` | 16 fractional bits |
-| Medium (default if ratio off) | `PITCH_INTERP_USE_Q12` | `slopeQ12` | 24 fractional bits |
-| Highest | neither Q8 nor Q12 | `slopeQ20` | Q20 slope × Q16 delta |
-
-**Gotcha:** With the default `PITCH_USE_RATIO_Q16 1`, the Q8/Q12 macros are **inert on the hot path**. Slope arrays for Q8/Q12 may still be built at `initMultiplierTables()` if those macros remain defined.
-
-These flags are `#define`d in `DCO.ino` even when `USE_FLOAT_ENGINE` is on (layout is not wrapped in `#ifndef USE_FLOAT_ENGINE`). They only change codegen when the fixed `voice_task()` is compiled.
+Speed/accuracy one-shots for FLOAT / RATIO / Q12 (private tables in `pitch_interp_bench.ino`): debug **28/29** with `RUNNING_AVERAGE` — see [BENCHMARKING.md](BENCHMARKING.md) §9.
 
 ---
 
@@ -140,35 +158,54 @@ Active when `USE_FLOAT_VOICE_TASK` is defined.
 |-------|-----------|
 | Portamento | Separate float state in `voices.h` (`porta_*_f`): TIME = linear Hz; SLEW = linear semitones via `noteIndex_to_freqFloat` |
 | Pitch bend / LFO / ADSR / drift | Computed in float; many depths still arrive as Q24 from core 0 / params and are scaled by `1/2^24` each frame |
-| Multiplier table | `interpolateRatioFloat_cached` on float table mirrors (`xMultiplierTableF`, `slopeF`) |
+| Multiplier table | Default `interpolateRatioFloat_cached` (`FLOAT`, natural modifier→ratio). Override to `RATIO_Q16` / `Q12` for compile-time A/B (`×10000` → Q16 glue, then float ratio). |
 | Clkdiv | Always `sysClock_Hz / freqHz` (float), then OSR / phase math |
 | Amp-comp | `get_chan_level_for_engine(freqHz, dco)` → `get_chan_level_float` when float amp-comp is on |
 | PW | Float intermediates, then integer `get_PW_level_interpolated` (shared) |
 
-**Hard requirement:** float voice task expects `#if PITCH_USE_RATIO_Q16` to be true. The `#else` branch in `voice_task_float()` is a literal `...` stub and **will not compile**. Keep `PITCH_USE_RATIO_Q16 1` when using the float engine.
+**A/B:** under float voice, non-`FLOAT` modes keep the float voice shell and swap only the interpolator. The float→Q16 convert tax is part of those candidates; native `FLOAT` stays convert-free.
 
-There are **no** additional float precision `#define`s beyond the master switches.
+There are **no** additional float precision `#define`s beyond voice/amp flags and `PITCH_INTERP_MODE`.
 
 ---
 
 ## 7. Amplitude compensation
 
-Gated by `USE_FLOAT_AMP_COMP` (tied to `USE_FLOAT_ENGINE` by default).
+Gated by **compile-time** `USE_FLOAT_AMP_COMP` (board default on RP2350). That flag **builds** the float amp stack; `AMP_COMP_METHOD_*` only **picks** among methods when the stack is built.
 
 Flash format is shared: frequencies stored as **`freq × 100`** (`freq_x100`). Runtime representation diverges after `init_FS()`.
 
 | Mode | After FS load | Precompute | Runtime lookup |
 |------|---------------|------------|----------------|
 | **Fixed** (`!USE_FLOAT_AMP_COMP`) | `ampCompFrequencyArray` in **Q8 Hz** (`FREQ_FRAC_BITS = 8`), `ampCompArray` as `int32_t` | `precomputeCoefficients()` — windows with `T_FRAC = 12`, `invDxWIN_q28` | `get_chan_level_lookup_fast(xQ8, voiceN)` |
-| **Float** (`USE_FLOAT_AMP_COMP`) | `ampCompFrequencyHz` as `float`, `ampCompArray` as `uint16_t` | `precomputeCoefficients_float()` | `get_chan_level_float(freqHz, voiceN)` → `y = (a*x + b)*x + c` |
+| **Float** (`USE_FLOAT_AMP_COMP`) | `ampCompFrequencyHz` as `float`, shared `ampCompArray` as `int32_t` | Float quadratic + dense LUT fill; also seed Q8 and run fixed precompute for `FIXED` | Selected by `amp_comp_method` (see below) |
 
-Shared constants: `ampCompTableSize = 22`, `AMP_COMP_MAX_HZ = 7000`, plateau metadata per oscillator.
+Shared constants: `ampCompTableSize = 22`, `AMP_COMP_MAX_HZ = 7000`, plateau metadata per oscillator, shared `ampCompArray` (`int32_t`).
 
-`precompute_amp_comp_for_engine()` selects the correct precompute at startup.
+**Domain-max early-out:** float quadratic and FIXED both return `DIV_COUNTER` at `freq >= AMP_COMP_MAX_HZ` / `x >= AMP_COMP_MAX_HZ_Q` (cal sentinel = full RANGE). Prevents a window-scan miss at exact max from falling through to window 0.
 
-**Call-site quirk:** fixed `voice_task()` converts Q24 → Q8 and calls `get_chan_level_lookup_fast` directly. Autotune / debug helpers use `get_chan_level_for_engine` with Hz (facade that picks float or converts for fixed).
+**Plateau early-out:** float / LUT use `plateauStartIndex >= 0` plus `plateauStartFreqHz`. FIXED (`get_chan_level_lookup_fast`) does **not** use the shared index after dual-build; validity is `plateauStartFreqQ < AMP_COMP_MAX_HZ_Q` (precompute leaves Q at max when no real plateau was found — same role as `index < 0`).
 
-**Type footgun:** `ampCompArray` element type changes with amp-comp mode (`int32_t` vs `uint16_t`).
+`precompute_amp_comp_for_engine()` runs the active precompute(s) at startup. Under float amp-comp it also builds `ampCompLut[osc][0..7000]` (~42 KB) from `get_chan_level_float_quad` and keeps fixed Q8 tables for A/B.
+
+### Live methods (`USE_FLOAT_AMP_COMP`)
+
+| Id | Name | Behaviour |
+|----|------|-----------|
+| 0 | `FLOAT_QUAD` | Window scan + `y = (a*x+b)*x+c` (accuracy reference) |
+| 1 | `LUT` | Nearest Hz → `ampCompLut` index (speed A/B only) |
+| 2 | `FIXED` | Q8 `get_chan_level_lookup_fast` (tables built alongside float) |
+
+- **Compile-time default:** board defaults in [`DCO.ino`](../DCO.ino) — **RP2350 → FLOAT_QUAD**, **RP2040 → FIXED**. Override with `#define AMP_COMP_METHOD_DEFAULT` in **ENGINE — overrides**.
+- **Runtime:** `PARAM_DEBUG_COMMAND` values **20–22** (`amp_comp_set_method`). Profiler dump (10) appends `amp_comp method=…`.
+- Facade: `get_chan_level_for_engine` / `get_chan_level_float` dispatch on `amp_comp_method`.
+- **Speed order:** on RP2350 (FPU) typically **LUT ≪ FLOAT_QUAD ≲ FIXED**; on RP2040 soft-float, FLOAT_QUAD is usually slowest. See [BENCHMARKING.md](BENCHMARKING.md) §8.
+
+Without `USE_FLOAT_AMP_COMP`, only FIXED exists; method selects collapse to FIXED.
+
+**Call-site quirk:** fixed `voice_task()` converts Q24 → Q8 and calls `get_chan_level_lookup_fast` directly. Float `voice_task` and autotune use `get_chan_level_for_engine`.
+
+Speed/accuracy one-shots: `#define AMP_COMP_BENCHMARK` + `RUNNING_AVERAGE`, debug **24/25** — see [BENCHMARKING.md](BENCHMARKING.md) §8.
 
 ---
 
@@ -183,10 +220,10 @@ Shared constants: `ampCompTableSize = 22`, `AMP_COMP_MAX_HZ = 7000`, plateau met
 | Q4 Hz | `uint32_t`, `Hz × 16` | Fast fixed clkdiv (`HIGH_PRECISION_CLKDIV 0`) |
 | Q8 Hz | `int32_t`, `Hz × 256` | Fixed amp-comp frequency domain |
 | Q12 `t` | `T_FRAC = 12` | Fixed amp-comp quadratic parameter |
-| Q20 / Q12 / Q8 slopes | `slopeQ20` / `slopeQ12` / `slopeQ8` | Multiplier table interpolation |
+| Q20 / Q12 slopes | `slopeQ20` (RATIO only) / `slopeQ12` (Q12 A/B) | Multiplier table interpolation |
 | Q28 reciprocal | `invDxWIN_q28` | Fixed amp-comp `1/dx` |
 | `freq_x100` | `int32_t` | FS / calibration storage |
-| Table scale | `multiplierTableScale = 10000` | Pitch multiplier tables |
+| Table scale | `multiplierTableScale = 10000` | Int pitch tables only (`FLOAT` is unscaled) |
 
 System clock used by clkdiv: `sysClock = 225000` kHz → `sysClock_Hz = 225e6` (`globals.h`).
 
@@ -203,19 +240,19 @@ System clock used by clkdiv: `sysClock = 225000` kHz → `sysClock_Hz = 225e6` (
 
 ## 10. Known traps
 
-1. Fixed pitch/clkdiv `#define`s are **not** nested under `#ifndef USE_FLOAT_ENGINE` — they are always present in the `.ino`, but only affect fixed `voice_task()` codegen.
-2. Default `PITCH_USE_RATIO_Q16 1` → **Q8/Q12 interpolators unused** on the hot path.
-3. Float engine + `PITCH_USE_RATIO_Q16` off → **compile error** (`...` stub).
-4. `CLKDIV_BENCHMARK` needs `RUNNING_AVERAGE` (it borrows that module's time source) and only instruments the float engine.
-5. Do not enable `USE_FLOAT_AMP_COMP` alone while compiling fixed `voice_task()` — missing symbols / wrong types.
-6. README / older `REFERENCE_AI` text that says “fully fixed-point / no float in hot path” is obsolete while `USE_FLOAT_ENGINE` is on.
-7. Comment typos: `PITCH_INTERP_USE_Q8_` in `.ino` comments; stale “Q18 frequency” / `T_FRAC is 14` remarks in places — trust `T_FRAC = 12` in `amp_comp.h`.
+1. Voice / amp / pitch / HP / amp-method defaults are set **inside** each MCU branch in board defaults; force changes in **overrides** (`#undef` then `#define` when replacing a default).
+2. Under float voice, `RATIO_Q16` / `Q12` are valid A/B overrides; they allocate int tables (not `slopeF`).
+3. Only the active mode’s slope array is allocated — no inert `slopeQ12` RAM on the float / `RATIO_Q16` defaults.
+4. `CLKDIV_BENCHMARK` needs `RUNNING_AVERAGE` (it borrows that module's time source) and only instruments the float voice path.
+5. `USE_FLOAT_AMP_COMP` without float methods you need still costs LUT RAM; `#undef` it for lean Q8-only amp.
+6. README / older docs that mention `USE_FLOAT_ENGINE` / `PITCH_USE_RATIO_Q16` / `PITCH_INTERP_USE_Q*` are obsolete.
+7. Stale “Q18 frequency” / `T_FRAC is 14` remarks in places — trust `T_FRAC = 12` in `amp_comp.h`.
 
 ---
 
 ## 11. Change checklist
 
-1. Edit flags in `DCO.ino` only (before includes).
+1. Prefer **ENGINE — overrides** in `DCO.ino` (before includes); leave board defaults alone unless changing MCU policy.
 2. Full rebuild (both cores / clean if IDE caches oddly).
 3. Confirm `ENABLE_FS_CALIBRATION` load path matches amp-comp mode (no assert / empty tables).
 4. Play low and high notes; check for zippering, beating, or amp dropouts at plateau.

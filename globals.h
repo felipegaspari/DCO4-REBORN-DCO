@@ -196,6 +196,7 @@ static constexpr uint8_t SUBOSC_PIN = 8;
 static constexpr int DCO_calibration_pin = 10;
 
 uint8_t RANGE_PWM_SLICES[NUM_OSCILLATORS];
+uint8_t RANGE_PWM_CHANNELS[NUM_OSCILLATORS];
 uint8_t VCO_PWM_SLICES[NUM_OSCILLATORS];
 uint8_t PW_PWM_SLICES[NUM_VOICES_TOTAL];
 #ifdef ENABLE_CV_OUTS
@@ -295,6 +296,29 @@ uint32_t osc_last_clk_div[NUM_OSCILLATORS] = { 200, 200, 200 };
 // the slave's ramp are ignored. Deeper thresholds would need another program variant, and
 // pio0 has no room for one alongside the two already resident.
 uint8_t softSyncChunks = 0;
+
+// Note-on OSC1/OSC2 restart when oscSync >= 1 (A/B listen + profiler).
+// 0 EXACT_Y: disable + period_split + load Y + jmp + enable_in_sync (default).
+// 1 SYNC_JMP: jmp only on running SMs (keep last Y; no disable / enable_in_sync).
+#ifndef NOTE_RETRIG_MODE_DEFAULT
+#define NOTE_RETRIG_MODE_DEFAULT 0
+#endif
+enum NoteRetrigMode : uint8_t {
+  NOTE_RETRIG_EXACT_Y  = 0,
+  NOTE_RETRIG_SYNC_JMP = 1,
+};
+volatile uint8_t note_retrig_mode = (uint8_t)NOTE_RETRIG_MODE_DEFAULT;
+volatile bool note_retrig_mode_ack_pending = false;
+
+static inline const char *note_retrig_mode_name(uint8_t m) {
+  return (m == NOTE_RETRIG_SYNC_JMP) ? "SYNC_JMP" : "EXACT_Y";
+}
+
+static inline void note_retrig_set_mode(uint8_t m) {
+  if (m > NOTE_RETRIG_SYNC_JMP) m = NOTE_RETRIG_EXACT_Y;
+  note_retrig_mode = m;
+  __dmb();
+}
 
 // Sub-oscillator divide ratio: 0 = off, 2 = one octave down, 4 = two octaves.
 uint8_t subOscDivide = 0;

@@ -52,29 +52,25 @@ float porta_note_step_f [NUM_OSCILLATORS];  // semitones per microsecond
 uint8_t highestNote = 124;
 
 static const int multiplierTableSize = 200;
+// Int-table scale only (FLOAT stores natural modifier/ratio and ignores this).
 const int32_t multiplierTableScale = 10000;
 
+// Pitch-multiplier storage: only the active PITCH_INTERP_MODE is allocated (see DCO.ino).
+#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
+float   xMultiplierTableF[multiplierTableSize]; // modifier [-1,3]
+float   yMultiplierTableF[multiplierTableSize]; // frequency ratio
+float   slopeF[multiplierTableSize - 1];
+#else
 int32_t xMultiplierTable[multiplierTableSize];
 int32_t yMultiplierTable[multiplierTableSize];
-
-// Float mirrors of multiplier tables for the RP2350 float path
-float   xMultiplierTableF[multiplierTableSize];
-float   yMultiplierTableF[multiplierTableSize];
-
-// Precomputed left edge of each segment in Q16 to avoid shifts at runtime
 int32_t x0Q16_tbl[multiplierTableSize];
-// Precomputed per-segment slopes in Q20: slopeQ20[i] ≈ ((y[i+1]-y[i]) << 20) / (x[i+1]-x[i])
+#if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
 int32_t slopeQ20[multiplierTableSize - 1];
-// Float slopes (dy/dx) for the float interpolation path
-float   slopeF[multiplierTableSize - 1];
-#ifdef PITCH_INTERP_USE_Q8
-// Optional lower-precision slope in Q8 for 32-bit fast path
-int32_t slopeQ8[multiplierTableSize - 1];
-#endif
-#ifdef PITCH_INTERP_USE_Q12
-// Medium-precision slope in Q12 for balanced speed/accuracy
+#elif PITCH_INTERP_MODE == PITCH_INTERP_Q12
 int32_t slopeQ12[multiplierTableSize - 1];
 #endif
+#endif
+
 // Per-DCO segment cache for interpolation (stores last 'low' index)
 int16_t interpSegCache[NUM_OSCILLATORS];
 

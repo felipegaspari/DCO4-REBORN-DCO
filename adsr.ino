@@ -37,22 +37,15 @@ inline void ADSR_update() {
       ADSRVoices[i].adsr_vcf_voice.noteOff();
       noteEnd[i] = 0;
     } else if (noteStart[i] == 1) {
+      // A/D/R (and sustain) stay current via ADSR_set_parameters / init / curve helpers.
+      // Re-set* here used to cost ~9x 64-bit divides per note and spiked ADSR_update max.
       ADSRVoices[i].adsr1_voice.noteOff();
-      ADSRVoices[i].adsr1_voice.setAttack(ADSR1_attack);
-      ADSRVoices[i].adsr1_voice.setDecay(ADSR1_decay);
-      ADSRVoices[i].adsr1_voice.setRelease(ADSR1_release);
       ADSRVoices[i].adsr1_voice.noteOn();
 
       ADSRVoices[i].adsr_vca_voice.noteOff();
-      ADSRVoices[i].adsr_vca_voice.setAttack(ADSR_VCA_attack);
-      ADSRVoices[i].adsr_vca_voice.setDecay(ADSR_VCA_decay);
-      ADSRVoices[i].adsr_vca_voice.setRelease(ADSR_VCA_release);
       ADSRVoices[i].adsr_vca_voice.noteOn();
 
       ADSRVoices[i].adsr_vcf_voice.noteOff();
-      ADSRVoices[i].adsr_vcf_voice.setAttack(ADSR_VCF_attack);
-      ADSRVoices[i].adsr_vcf_voice.setDecay(ADSR_VCF_decay);
-      ADSRVoices[i].adsr_vcf_voice.setRelease(ADSR_VCF_release);
       ADSRVoices[i].adsr_vcf_voice.noteOn();
 
       noteStart[i] = 0;

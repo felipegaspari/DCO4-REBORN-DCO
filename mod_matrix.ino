@@ -95,19 +95,40 @@ static uint16_t mod_clamp_u16(int32_t v) {
 }
 
 uint16_t mod_matrix_apply_cv() {
-  int32_t accum[MOD_DEST_COUNT];
-  mod_matrix_accumulate(accum);
+  bool any_slot = false;
+  for (uint8_t i = 0; i < MOD_SLOT_COUNT; i++) {
+    const ModSlot& s = g_mod_slots[i];
+    if (s.source != MOD_SRC_EMPTY && s.dest != MOD_DEST_EMPTY && s.depth != 0) {
+      any_slot = true;
+      break;
+    }
+  }
 
-  // Levels: attenuator CV (high = muted). Positive depth + positive source → louder (lower CV).
-  uint16_t o1 = mod_clamp_u16((int32_t)OSC1Level - accum[MOD_DEST_OSC1_LEVEL]);
-  uint16_t o2 = mod_clamp_u16((int32_t)OSC2Level - accum[MOD_DEST_OSC2_LEVEL]);
-  uint16_t o3 = mod_clamp_u16((int32_t)OSC3Level - accum[MOD_DEST_OSC3_LEVEL]);
-  uint16_t sub = mod_clamp_u16((int32_t)SubLevel - accum[MOD_DEST_SUB_LEVEL]);
+  uint16_t o1, o2, o3, sub, dist_out;
+  if (!any_slot) {
+    // Empty matrix: panel bases only (common when no mod slots routed).
+    o1 = OSC1Level;
+    o2 = OSC2Level;
+    o3 = OSC3Level;
+    sub = SubLevel;
+    RESONANCE_PWM[0] = RESONANCE;
+    RESONANCE_PWM[1] = RESONANCE;
+    dist_out = DIST_DRIVE;
+  } else {
+    int32_t accum[MOD_DEST_COUNT];
+    mod_matrix_accumulate(accum);
 
-  RESONANCE_PWM[0] = mod_clamp_u16((int32_t)RESONANCE + accum[MOD_DEST_VCF1_RESO]);
-  RESONANCE_PWM[1] = mod_clamp_u16((int32_t)RESONANCE + accum[MOD_DEST_VCF2_RESO]);
+    // Levels: attenuator CV (high = muted). Positive depth + positive source → louder (lower CV).
+    o1 = mod_clamp_u16((int32_t)OSC1Level - accum[MOD_DEST_OSC1_LEVEL]);
+    o2 = mod_clamp_u16((int32_t)OSC2Level - accum[MOD_DEST_OSC2_LEVEL]);
+    o3 = mod_clamp_u16((int32_t)OSC3Level - accum[MOD_DEST_OSC3_LEVEL]);
+    sub = mod_clamp_u16((int32_t)SubLevel - accum[MOD_DEST_SUB_LEVEL]);
 
-  uint16_t dist_out = mod_clamp_u16((int32_t)DIST_DRIVE + accum[MOD_DEST_DIST_DRIVE]);
+    RESONANCE_PWM[0] = mod_clamp_u16((int32_t)RESONANCE + accum[MOD_DEST_VCF1_RESO]);
+    RESONANCE_PWM[1] = mod_clamp_u16((int32_t)RESONANCE + accum[MOD_DEST_VCF2_RESO]);
+
+    dist_out = mod_clamp_u16((int32_t)DIST_DRIVE + accum[MOD_DEST_DIST_DRIVE]);
+  }
 
 #ifdef ENABLE_CV_OUTS
   write_level_pwm_raw(o1, o2, o3, sub);

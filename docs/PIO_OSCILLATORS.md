@@ -443,14 +443,30 @@ itself in [`voices.ino`](../voices.ino):
 | `oscSync` | At note-on |
 |-----------|------------|
 | 0 | Nothing. The oscillators run straight through, so their phase relationship at note-on is whatever it happens to be — free running |
-| 1 | OSC1 and OSC2 are stopped, reloaded and restarted together, with no offset |
+| 1 | OSC1 and OSC2 are stopped and restarted together, with no offset |
 | 2..8 | The same restart, plus a fixed OSC2 offset of 45 to 315 degrees in 45 degree steps |
 | >8 | The same restart, with the offset in degrees being `oscSync * 2` |
 
-Worth knowing when comparing 0 against the rest: `osc_load_period_stopped()` is only reached
-inside that gated block, so free running never receives the exact-period Y rewrite from 5.2 and
-keeps the rounded `clk_div` path for its whole life. Expect a small tuning difference between
-free running and any of the sync settings, independent of the phase behaviour.
+When `oscSync >= 1`, `note_retrig_mode` selects how that restart loads period state (`PARAM_DEBUG_COMMAND` **26** / **27**, or `NOTE_RETRIG_MODE_DEFAULT` in `DCO.ino`):
+
+| Mode | Value | Behavior |
+|------|------:|----------|
+| `EXACT_Y` | 0 (default) | disable → apply stashed `pio_period_split` via `osc_load_periods_stopped_noclear` → jmp → `enable_in_sync` |
+| `SYNC_JMP` | 1 | jmp (or phase ramp-entry) only on **running** SMs — no disable / Y load / `enable_in_sync` |
+
+On EXACT_Y note-on frames, `pio_period_split` runs next to `phase align`, then the note-on
+block applies the stash. Load uses fused **noclear** (frame already did PIO put+pull so TX
+is empty); boot/topology still use `osc_load_period_stopped` with FJOIN clear. Profiler:
+`retrig period split` under `voice_task`; `retrig SM apply` + `retrig RANGE PWM` under
+`note-on retrigger` (one SM-apply probe — do not slice disable/load/jmp/enable). See
+[`BENCHMARKING.md`](BENCHMARKING.md).
+
+`SYNC_JMP` is for A/B listening (near-sync from consecutive `exec`s, no no-RESET window). Static tuning may differ slightly vs exact-Y (same idea as free-run never getting the §5.2 rewrite).
+
+Worth knowing when comparing 0 against the rest: with `EXACT_Y`, the exact-Y rewrite
+(`osc_load_periods_stopped_noclear`) runs only inside that gated block, so free running never
+receives the exact-period Y rewrite from 5.2 and keeps the rounded `clk_div` path for its
+whole life.
 
 ### 8.1 The problem with the old approach
 
@@ -542,7 +558,8 @@ inaudible until the carrier board gives GP8 a mixer input.**
 | `assign_sm_mapping()` | Rewrite `VOICE_TO_SM` so the slave sits below its master | `init_pio()`, `setSyncMode()` | Call **before** `start_voice_sms()` |
 | `init_pio()` | Load both oscillator programs into PIO0 and both sub-osc programs into PIO1, then start everything | `setup1()` | Boot only |
 | `start_voice_sms()` | Choose each SM's program, set pin and sideset pin; preload Y; start all three on one cycle | `init_pio()`, `setSyncMode()` | Safe to re-call whenever topology changes |
-| `osc_load_period_stopped(osc, y, clk_div)` | Push Y then `clk_div` to one oscillator | `start_voice_sms()`, `osc_set_reset_pulse()`, both engine note-on paths | **SM must already be stopped.** Caller handles enable/disable so paired oscillators can restart together |
+| `osc_load_period_stopped(osc, y, clk_div)` | Push Y then `clk_div` (with FJOIN clear) | `start_voice_sms()`, `osc_set_reset_pulse()` | **SM must already be stopped.** |
+| `osc_load_periods_stopped_noclear(...)` | Dual-osc Y + clk_div, no FJOIN | Both engine note-on EXACT_Y paths | After frame put+pull (TX empty); caller disable/enable |
 | `osc_set_reset_pulse(osc, y)` | Change only Y, restoring `osc_last_clk_div[osc]` | `apply_param_osc_sync_mode()` | Stops and restarts the SM itself; parameter path, not audio path |
 | `pio_topology_report()` | Print sync roles and verify every RESET pin reads back as PIO0 | Bench / diagnostics | Serial up |
 | `pio_period_probe(osc, clk_div)` | Park an oscillator at a fixed divider and print the predicted period | Bench | Disturbs the oscillator |

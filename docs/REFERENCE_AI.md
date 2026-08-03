@@ -20,9 +20,9 @@ Related docs:
   - Runs on both cores using the Arduino dual-core API:
     - `setup()` / `loop()` (core 0): USB/serial/MIDI I/O, LFO evaluation, cross‑core detune FIFO.
     - `setup1()` / `loop1()` (core 1): PID & FS init, ADSR init, DCO calibration/autotune, real‑time voice engine.  
-  - **Engine build options** (top of file, before includes):
-    - `USE_FLOAT_ENGINE` (current default **ON**) → defines `USE_FLOAT_VOICE_TASK` and `USE_FLOAT_AMP_COMP`.
-    - Fixed-path knobs (active when float voice task is off): `PITCH_USE_RATIO_Q16`, `PITCH_INTERP_USE_Q12` / `Q8`, `HIGH_PRECISION_CLKDIV`.
+  - **Engine build options** (top of file: **pitch ids** → **board defaults** → **overrides** → **guards** → profiling / board):
+    - Board defaults are per-MCU branch: RP2350 → float voice + `PITCH_INTERP_FLOAT` + float amp + FLOAT_QUAD; RP2040 → `PITCH_INTERP_RATIO_Q16` + FIXED amp (no float flags). No `USE_FLOAT_ENGINE` umbrella.
+    - Overrides can `#undef` / `#define` those flags (pitch A/B needs `#undef PITCH_INTERP_MODE` first).
     - See [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) for precision vs speed trade-offs.
   - Configures USB product strings in `setup()` (via Adafruit TinyUSB; product **DCO3-MONO**), toggles board pins (23/24) for hardware fixes, and selects DCO calibration mode.
   - Core‑0 pushes `DETUNE_INTERNAL_q24` (LFO1 detune) through `rp2040.fifo`; core‑1 pops it and uses it inside the voice task (float path converts Q24 → float each frame).
@@ -56,12 +56,12 @@ Related docs:
     - Portamento configuration and mode (`PORTA_MODE_TIME` / `PORTA_MODE_SLEW`).
     - Per‑DCO portamento state in **Q24 Hz** (`portamento_*_q24`) and in **Q16 semitone space** for slew‑rate mode.
     - When `USE_FLOAT_VOICE_TASK`: parallel float portamento state (`porta_*_f`) in Hz and semitone domains.
-    - Precomputed pitch multiplier table storage (`xMultiplierTable`, `yMultiplierTable`, float mirrors `xMultiplierTableF` / `yMultiplierTableF`, `slopeQ*` / `slopeF`, `interpSegCache`).
+    - Pitch multiplier storage gated by `PITCH_INTERP_MODE`: float tables + `slopeF`, or int tables + `slopeQ20` (RATIO) / `slopeQ12` (Q12); plus `interpSegCache`.
     - No profiler declarations. Probe storage is generated from the `BENCH_PROBES` table in [`bench.h`](../bench.h); the extern block that used to live here named probes that had been renamed or removed and compiled regardless, since an unused `extern` needs no definition.
 
 - **`voices.ino`**  
   - Central **voice engine** and DCO front‑end with a **compile-time dual implementation**:
-    - `init_voices()` sets initial notes, builds pitch multiplier tables (`initMultiplierTables()` — integer and float mirrors), sets voice mode and runs an initial `voice_task_main()`.
+    - `init_voices()` sets initial notes, builds pitch multiplier tables for the active `PITCH_INTERP_MODE` (`initMultiplierTables()`), sets voice mode and runs an initial `voice_task_main()`.
     - `voice_task_main()` → `voice_task_float()` **or** `voice_task()` depending on `USE_FLOAT_VOICE_TASK`.
 
     - **`voice_task()`** (fixed hot path, when `!USE_FLOAT_VOICE_TASK`):
@@ -73,7 +73,7 @@ Related docs:
           - Unison detune per osc (`OSC_UNISON_STEP` = `{0, +1, -1}`; optional poly voice-index term if `NUM_VOICES_TOTAL > 1`).
           - Per‑osc drift LFO (`LFO_DRIFT_LEVEL`) with analog drift amount.
           - ADSR‑to‑detune in Q24 using `ADSR1toDETUNE1_scale_q24` and `linToLogLookup` (select includes OSC3 / all).
-        - Evaluates a **precomputed pitch multiplier table** using integer interpolation (`interpolateRatioQ16_cached` or `interpolatePitchMultiplierIntQ16_cached` + Q8/Q12/Q20 slope modes) to map summed modifiers to a frequency ratio. Flag behaviour: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
+        - Evaluates the pitch multiplier table per `PITCH_INTERP_MODE`: `interpolateRatioQ16_cached` (`RATIO_Q16`, slopeQ20 fused) or `interpolatePitchMultiplierIntQ16_cached` (`Q12`). See [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
         - Produces final osc frequencies in **Q24 Hz**, then clock‑dividers via `HIGH_PRECISION_CLKDIV`:
           - **1**: 64‑bit divide on full Q24 Hz (~4 µs/voice, preferred low‑note accuracy).
           - **0**: compact **Q4 Hz** then 32‑bit divide (~1 µs/voice).
@@ -85,7 +85,7 @@ Related docs:
     - **`voice_task_float()`** (float hot path, when `USE_FLOAT_VOICE_TASK` — **current default**):
       - Same overall structure (portamento → modifiers → ratio → clkdiv → amp → PIO/PWM/PW), but in **Hz / float**:
         - Float portamento state; pitch bend / LFO / ADSR / drift / OSC3 interval+detune converted from Q24 globals where needed.
-        - `interpolateRatioFloat_cached` (requires `PITCH_USE_RATIO_Q16`; the `#else` stub does not compile).
+        - Pitch table: `interpolateRatioFloat_cached` by default (natural modifier→ratio); or fixed `RATIO_Q16` / IntQ16 via `PITCH_INTERP_MODE` (`×10000`→Q16 glue) for A/B.
         - Clkdiv always `sysClock_Hz / freqHz` in float (`HIGH_PRECISION_CLKDIV` ignored).
         - Amp via `get_chan_level_for_engine()` → float or fixed facade depending on `USE_FLOAT_AMP_COMP`.
       - Details: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) §6.
@@ -96,8 +96,9 @@ Related docs:
       - `setVoiceMode()` configures `NUM_VOICES` / `STACK_VOICES`.
       - `setSyncMode()` calls `assign_sm_mapping()` + `start_voice_sms()` to rebuild the whole sync topology (OSC1↔OSC2; OSC3 free-running), then forces a re-trigger. It no longer pokes sideset pins in place or calls `pio_sm_restart()` — that cleared the shift counters but left PC/X/Y, which could strand an SM mid-loop with a stale X for one glitched period.
     - Amplitude compensation helpers:
-      - `get_chan_level_lookup_fast()` – optimized fixed‑point quadratic interpolation per DCO (when `!USE_FLOAT_AMP_COMP`), using cached window indices and Q28 reciprocals.
-      - `get_chan_level_float()` / `get_chan_level_for_engine()` – float Hz path and engine-agnostic facade.
+      - `get_chan_level_lookup_fast()` – optimized fixed‑point quadratic interpolation per DCO (always built; live FIXED method under float engine), using cached window indices and Q28 reciprocals.
+      - `get_chan_level_float_quad()` / `get_chan_level_lut()` – float quadratic reference and dense nearest-Hz LUT (speed A/B).
+      - `get_chan_level_float()` / `get_chan_level_for_engine()` – dispatch on `amp_comp_method` (default FIXED).
       - `get_PW_level_interpolated()` – maps PW counts into calibrated limits and center values (shared by both engines).
     - Calibration front‑end:
       - `voice_task_autotune()` – dedicated per‑oscillator routine used during DCO/DCO+PW calibration to drive the PIO and PWM into specific measurement or calibration modes (float-style clkdiv + `get_chan_level_for_engine`).
@@ -129,7 +130,7 @@ Related docs:
 
 - **`PWM.h` / `PWM.ino`**  
   - `init_pwm()` configures RP2040 PWM slices for:
-    - RANGE PWM (per oscillator amplitude): `RANGE_PINS` mapped to `RANGE_PWM_SLICES`, `wrap = DIV_COUNTER`.
+    - RANGE PWM (per oscillator amplitude): `RANGE_PINS` mapped to `RANGE_PWM_SLICES` / `RANGE_PWM_CHANNELS`, `wrap = DIV_COUNTER`.
     - Shared PW PWM (voice 0): `PW_PINS` mapped to `PW_PWM_SLICES`, `wrap = DIV_COUNTER_PW`.
   - Provides the low‑level PWM targets used by both the voice task and calibration routines.
 
@@ -195,9 +196,10 @@ Related docs:
 - **`amp_comp.h`**  
   - Defines data structures and precomputation for **per‑DCO amplitude compensation**, with a dual runtime engine:
     - Shared: `freq_to_amp_comp_array`, plateau metadata, float coeffs `aCoeff` / `bCoeff` / `cCoeff`, `AMP_COMP_MAX_HZ = 7000`.
-    - **Fixed** (`!USE_FLOAT_AMP_COMP`): `ampCompFrequencyArray` in **Q8 Hz** (`FREQ_FRAC_BITS = 8`), `ampCompArray` as `int32_t`, per‑window model `y(t) = a*t^2 + b*t + c` with `T_FRAC = 12`, `invDxWIN_q28`, `aQWIN_fast` / `bQWIN_fast`.
-    - **Float** (`USE_FLOAT_AMP_COMP`): `ampCompFrequencyHz`, `ampCompArray` as `uint16_t`, runtime `y = (a*x+b)*x+c` in Hz.
-  - `precomputeCoefficients()` / `precomputeCoefficients_float()` — selected by `precompute_amp_comp_for_engine()` after FS load in `setup1()`.
+    - Shared `ampCompArray` as `int32_t`. Fixed Q8 tables always present; under float also `ampCompFrequencyHz`, `ampCompLut[osc][0..7000]`, and selectable `amp_comp_method` (`FLOAT_QUAD` / `LUT` / `FIXED`; live default FIXED).
+    - Fixed path: `ampCompFrequencyArray` in **Q8 Hz** (`FREQ_FRAC_BITS = 8`), per‑window `y(t) = a*t^2 + b*t + c` with `T_FRAC = 12`, `invDxWIN_q28`, `aQWIN_fast` / `bQWIN_fast`.
+    - Float quadratic: runtime `y = (a*x+b)*x+c` in Hz (`get_chan_level_float_quad`).
+  - `precompute_amp_comp_for_engine()` — float precompute + LUT fill + fixed Q8 seed/precompute (or fixed-only) after FS load in `setup1()`.
   - `precomputeCoefficients_OLD()` — legacy precomputation path retained for reference and debugging.
   - Flag / format details: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) §7.
 
@@ -252,9 +254,7 @@ Related docs:
   - `init_FS()`:
     - Mounts LittleFS and opens/creates calibration files.
     - Reads amp‑comp bank data from flash (`freq_x100` format) and reconstructs either:
-      - Fixed engine: `ampCompFrequencyArray` (Q8 Hz) + `ampCompArray` (`int32_t`), or
-      - Float engine: `ampCompFrequencyHz` + `ampCompArray` (`uint16_t`),
-      depending on `USE_FLOAT_AMP_COMP`.
+      - Shared `ampCompArray` (`int32_t`); float engine also fills `ampCompFrequencyHz` (Q8 seeded at precompute for FIXED).
     - Loads PW calibration values into `PW_CENTER` and `PW_LOW_LIMIT`.
   - `update_FS_voice()`:
     - Writes a single oscillator’s calibration slice (`calibrationData[]`) back to `voiceTables` in binary form.
@@ -373,7 +373,7 @@ These are **Arduino libraries** installed in the IDE / sketchbook `libraries` fo
 
 - `*.h` – Declarations, constants, global state and struct/class definitions.  
 - `*.ino` – Implementation files with function bodies and logic.  
-- Engine math flags – edit only the block at the top of `DCO.ino`; see [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).  
+- Engine math flags – pitch ids / board defaults / **ENGINE — overrides** at the top of `DCO.ino`; see [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).  
 - Shared serial/param headers – keep `ParamId` numbers stable across boards; see [`README_serial_and_params.md`](README_serial_and_params.md).
 
 ---

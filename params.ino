@@ -541,6 +541,74 @@ static void apply_param_debug_command(int16_t v) {
       Serial.println(bench_periodic ? "on" : "off");
       break;
 #endif
+    // Amp-comp live method (USE_FLOAT_AMP_COMP). Ack via paced Board pane when
+    // RUNNING_AVERAGE (same path as profiler / amp benches); else Serial.
+    // Reset profiler so amp-comp means are not dominated by the previous method.
+    case 20:
+      amp_comp_set_method(AMP_COMP_FLOAT_QUAD);
+#ifdef RUNNING_AVERAGE
+      bench_reset_all();
+      amp_comp_method_ack_pending = true;
+#else
+      Serial.print("amp_comp method=");
+      Serial.println(amp_comp_method_name(amp_comp_method));
+#endif
+      break;
+    case 21:
+      amp_comp_set_method(AMP_COMP_LUT);
+#ifdef RUNNING_AVERAGE
+      bench_reset_all();
+      amp_comp_method_ack_pending = true;
+#else
+      Serial.print("amp_comp method=");
+      Serial.println(amp_comp_method_name(amp_comp_method));
+#endif
+      break;
+    case 22:
+      amp_comp_set_method(AMP_COMP_FIXED);
+#ifdef RUNNING_AVERAGE
+      bench_reset_all();
+      amp_comp_method_ack_pending = true;
+#else
+      Serial.print("amp_comp method=");
+      Serial.println(amp_comp_method_name(amp_comp_method));
+#endif
+      break;
+#if defined(RUNNING_AVERAGE) && defined(AMP_COMP_BENCHMARK)
+    case 24:
+      amp_comp_bench_speed_pending = true;
+      break;
+    case 25:
+      amp_comp_bench_accuracy_pending = true;
+      break;
+#endif
+#ifdef RUNNING_AVERAGE
+    case 28:
+      pitch_interp_bench_speed_pending = true;
+      break;
+    case 29:
+      pitch_interp_bench_accuracy_pending = true;
+      break;
+#endif
+    // Note-on sync retrigger A/B (oscSync >= 1): EXACT_Y vs SYNC_JMP.
+    case 26:
+      note_retrig_set_mode(NOTE_RETRIG_EXACT_Y);
+#ifdef RUNNING_AVERAGE
+      note_retrig_mode_ack_pending = true;
+#else
+      Serial.print("note_retrig=");
+      Serial.println(note_retrig_mode_name(note_retrig_mode));
+#endif
+      break;
+    case 27:
+      note_retrig_set_mode(NOTE_RETRIG_SYNC_JMP);
+#ifdef RUNNING_AVERAGE
+      note_retrig_mode_ack_pending = true;
+#else
+      Serial.print("note_retrig=");
+      Serial.println(note_retrig_mode_name(note_retrig_mode));
+#endif
+      break;
     default:
       break;
   }

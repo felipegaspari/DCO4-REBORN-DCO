@@ -177,13 +177,13 @@ inline void voice_task() {
   // Pre-calculate pitch bend as a Q24 value. This is done once per voice_task call.
   int32_t calcPitchbend_q24;
 
-  BENCH_FBEGIN(vt_pitchbend);
+  BENCH_BEGIN(vt_pitchbend);
   // Optimized: Perform pitch bend calculation entirely in fixed-point Q24.
   // ((bend / 8192.0) - 1.0) * pitchBendMultiplier
   // This avoids float conversions and multiplications in the hot path.
   int32_t bend_normalized_q24 = ((int32_t)midi_pitch_bend << 11) - (1 << 24);
   calcPitchbend_q24 = (int32_t)(((int64_t)bend_normalized_q24 * pitchBendMultiplier_q24) >> 24);
-  BENCH_FEND(vt_pitchbend);
+  BENCH_END(vt_pitchbend);
 
   last_midi_pitch_bend = midi_pitch_bend;
 
@@ -224,7 +224,7 @@ inline void voice_task() {
       if (note2 >= NOTE_TABLE_LEN) note2 = (uint8_t)(NOTE_TABLE_LEN - 1);
       if (note3 >= NOTE_TABLE_LEN) note3 = (uint8_t)(NOTE_TABLE_LEN - 1);
 
-      BENCH_FBEGIN(vt_osc_detune);
+      BENCH_BEGIN(vt_osc_detune);
       // Optimized: Calculate OSC2/OSC3 detune in Q24 and keep it there.
       // The float conversion has been removed as it is no longer needed.
       // detune = 1.0 + 0.0002 * (256 - val)
@@ -233,7 +233,7 @@ inline void voice_task() {
       int32_t detune_q24 = (1 << 24) + (detune_steps * DETUNE_SCALE_Q24);
       int32_t detune3_steps = ((int)256 - OSC3DetuneVal);
       int32_t detune3_q24 = (1 << 24) + (detune3_steps * DETUNE_SCALE_Q24);
-      BENCH_FEND(vt_osc_detune);
+      BENCH_END(vt_osc_detune);
 
       int64_t freq_q24_A;
       int64_t freq_q24_B;
@@ -496,7 +496,7 @@ inline void voice_task() {
       BENCH_END(vt_portamento);
       ////***********************    PORTAMENTO CODE  END    ****************************************/////
 
-      BENCH_FBEGIN(vt_adsr_mod);
+      BENCH_BEGIN(vt_adsr_mod);
       // Fixed-point ADSR modifier in Q24: ((linToLog * ADSR1toDETUNE1) / 1080000)
       int64_t ADSRModifier_q24 = 0;
       if (ADSR1toDETUNE1 != 0) {
@@ -508,9 +508,9 @@ inline void voice_task() {
       int64_t ADSRModifierOSC1_q24 = (ADSR3ToOscSelect == 0 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier_q24 : 0;
       int64_t ADSRModifierOSC2_q24 = (ADSR3ToOscSelect == 1 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier_q24 : 0;
       int64_t ADSRModifierOSC3_q24 = (ADSR3ToOscSelect == 3 || ADSR3ToOscSelect == 4) ? ADSRModifier_q24 : 0;
-      BENCH_FEND(vt_adsr_mod);
+      BENCH_END(vt_adsr_mod);
 
-      BENCH_FBEGIN(vt_unison_mod);
+      BENCH_BEGIN(vt_unison_mod);
       // Fixed-point unison modifier in Q24: 0.0001 * unisonDetune * step
       static constexpr int32_t UNISON_SCALE_Q24 = (int32_t)(0.0001f * (float)(1 << 24) + 0.5f);
       // Per-osc spread (matches float path): OSC1=0, OSC2=+1, OSC3=-1.
@@ -527,18 +527,18 @@ inline void voice_task() {
       unisonMODIFIER_OSC2_q24 += voiceUnison_q24;
       unisonMODIFIER_OSC3_q24 += voiceUnison_q24;
 #endif
-      BENCH_FEND(vt_unison_mod);
+      BENCH_END(vt_unison_mod);
 
-      BENCH_FBEGIN(vt_drift_mod);
+      BENCH_BEGIN(vt_drift_mod);
       // Fixed-point drift modifiers in Q24: LFO_LEVEL * (0.0000005 * analogDrift)
       static constexpr int32_t DRIFT_UNIT_Q24 = (int32_t)(0.0000005f * (float)(1 << 24) + 0.5f);
       int32_t driftScale_q24 = (int32_t)((int32_t)analogDrift * DRIFT_UNIT_Q24);
       int64_t DETUNE_DRIFT_OSC1_q24 = (analogDrift != 0) ? ((int64_t)LFO_DRIFT_LEVEL[DCO_A] * (int64_t)driftScale_q24) : 0;
       int64_t DETUNE_DRIFT_OSC2_q24 = (analogDrift != 0) ? ((int64_t)LFO_DRIFT_LEVEL[DCO_B] * (int64_t)driftScale_q24) : 0;
       int64_t DETUNE_DRIFT_OSC3_q24 = (analogDrift != 0) ? ((int64_t)LFO_DRIFT_LEVEL[DCO_C] * (int64_t)driftScale_q24) : 0;
-      BENCH_FEND(vt_drift_mod);
+      BENCH_END(vt_drift_mod);
 
-      BENCH_FBEGIN(vt_modifiers);
+      BENCH_BEGIN(vt_modifiers);
       // Combine modifiers in Q24 (faithful to original float path)
       int32_t detune_fifo_q24 = DETUNE_INTERNAL_FIFO_q24;
 
@@ -551,9 +551,9 @@ inline void voice_task() {
       int64_t freqModifiers_q24 = ADSRModifierOSC1_q24 + DETUNE_DRIFT_OSC1_q24 + modifiersBase_q24 + unisonMODIFIER_OSC1_q24;
       int64_t freq2Modifiers_q24 = ADSRModifierOSC2_q24 + DETUNE_DRIFT_OSC2_q24 + modifiersBase_q24 + unisonMODIFIER_OSC2_q24 + (int64_t)DETUNE_INTERNAL2_q24;
       int64_t freq3Modifiers_q24 = ADSRModifierOSC3_q24 + DETUNE_DRIFT_OSC3_q24 + modifiersBase_q24 + unisonMODIFIER_OSC3_q24 + (int64_t)DETUNE_INTERNAL3_q24;
-      BENCH_FEND(vt_modifiers);
+      BENCH_END(vt_modifiers);
 
-      BENCH_FBEGIN(vt_freq_scale_x);
+      BENCH_BEGIN(vt_freq_scale_x);
 
 
       // Fast fixed-point equivalent of:
@@ -568,16 +568,16 @@ inline void voice_task() {
       int32_t xScaled1_Q16 = (x1_q24s >= 0) ? (int32_t)(x1_q24s >> 8) : (int32_t)(-((-x1_q24s) >> 8));
       int32_t xScaled2_Q16 = (x2_q24s >= 0) ? (int32_t)(x2_q24s >> 8) : (int32_t)(-((-x2_q24s) >> 8));
       int32_t xScaled3_Q16 = (x3_q24s >= 0) ? (int32_t)(x3_q24s >> 8) : (int32_t)(-((-x3_q24s) >> 8));
-      BENCH_FEND(vt_freq_scale_x);
+      BENCH_END(vt_freq_scale_x);
 
       BENCH_BEGIN(vt_ratio_interp);
-#if PITCH_USE_RATIO_Q16
+#if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
       int32_t ratio1_Q16 = interpolateRatioQ16_cached(xScaled1_Q16, DCO_A);
       int32_t ratio2_Q16 = interpolateRatioQ16_cached(xScaled2_Q16, DCO_B);
       int32_t ratio3_Q16 = interpolateRatioQ16_cached(xScaled3_Q16, DCO_C);
       BENCH_END(vt_ratio_interp);
 
-      BENCH_FBEGIN(vt_freq_scale_post);
+      BENCH_BEGIN(vt_freq_scale_post);
       freq_q24_A = (portamento_cur_freq_q24[DCO_A] * (int64_t)ratio1_Q16) >> 16;
       // Combine OSC2 ratio with detune into one Q16 factor
       // detune_Q16 = round(detune_q24 / 2^8)
@@ -590,12 +590,13 @@ inline void voice_task() {
       int32_t combined3_Q16 = (int32_t)((((int64_t)ratio3_Q16 * (int64_t)detune3_Q16) + (1LL << 15)) >> 16);
       freq_q24_C = (portamento_cur_freq_q24[DCO_C] * (int64_t)combined3_Q16) >> 16;
 #else
+      // PITCH_INTERP_Q12
       int32_t yTab1 = interpolatePitchMultiplierIntQ16_cached(xScaled1_Q16, DCO_A);
       int32_t yTab2 = interpolatePitchMultiplierIntQ16_cached(xScaled2_Q16, DCO_B);
       int32_t yTab3 = interpolatePitchMultiplierIntQ16_cached(xScaled3_Q16, DCO_C);
       BENCH_END(vt_ratio_interp);
 
-      BENCH_FBEGIN(vt_freq_scale_post);
+      BENCH_BEGIN(vt_freq_scale_post);
       // Convert yTab -> ratioQ16 using reciprocal-multiply (round((yTab<<16)/10000))
       uint64_t numA = ((uint64_t)(uint32_t)yTab1 << 16) + 5000u;
       int32_t ratio1_Q16_fallback = (int32_t)((numA * 0xD1B71759ULL) >> 45);
@@ -623,7 +624,7 @@ inline void voice_task() {
 
       // Per-cycle: no caching; compute dividers directly from current Q18 frequency
 
-      BENCH_FEND(vt_freq_scale_post);
+      BENCH_END(vt_freq_scale_post);
       // Convert from Q24 fixed-point to a compact Q4 (Hz * 2^4) representation.
       // freq_q24_X is Hz * 2^24, so shifting right by 20 yields Hz * 2^4.
       uint32_t freqA_Q4 = (uint32_t)((freq_q24_A + (1LL << 19)) >> 20);  // round to nearest
@@ -725,6 +726,20 @@ inline void voice_task() {
       }
       BENCH_END(vt_phase_align);
 
+      // Exact period split on note-on+EXACT_Y frames, next to hot phase_align (I-cache).
+      // Stash for the note-on block; OSC3 stays on the rounded clk_div path.
+      PioPeriod retrig_p1{};
+      PioPeriod retrig_p2{};
+      uint32_t retrig_y2 = 0;
+      if (note_on_flag_flag[i] && oscSync >= 1 &&
+          note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
+        BENCH_BEGIN(vt_retrig_split);
+        retrig_p1 = pio_period_split(total_cycles1, wA, kA);
+        retrig_p2 = pio_period_split(total_cycles2 - phaseDelay, wB, kB);
+        retrig_y2 = retrig_p2.y + phaseDelay;
+        BENCH_END(vt_retrig_split);
+      }
+
       BENCH_BEGIN(vt_chan_level);
 
       uint16_t chanLevel, chanLevel2, chanLevel3;
@@ -778,27 +793,22 @@ inline void voice_task() {
 
       if (note_on_flag_flag[i]) {
         BENCH_BEGIN(vt_note_retrig);
-        // --- Exact period split, only safe here because the SMs get stopped below ---
-        // OSC3 is deliberately absent: it is never retriggered, so its Y stays at
-        // pioPulseLength and its clk_div keeps the rounded path.
-        PioPeriod p1 = pio_period_split(total_cycles1, wA, kA);
-        PioPeriod p2 = pio_period_split(total_cycles2 - phaseDelay, wB, kB);
-        uint32_t y_val2 = p2.y + phaseDelay;
-
         // --- Reverse Calculation to find the expected output frequency ---
         uint32_t actual_total_osr_val = clk_div1 * wA;
         uint32_t actual_total_period = osc_last_y[DCO_A] + actual_total_osr_val + kA;
         float expected_freq = (double)sysClock_Hz / (double)actual_total_period;
 
 #if DCO_DEBUG_REPORT
+        // Exact split for the report only (live path splits inside oscSync below).
+        PioPeriod p1dbg = pio_period_split(total_cycles1, wA, kA);
         // --- Print Diagnostic Report ---
         Serial.println("----------------[ DCO DEBUG REPORT ]----------------");
         Serial.printf("Target Freq In:   %.2f Hz\n", (float)freq_q24_A / (float)(1 << 24));
         Serial.printf("Total Cycles Calc:  %lu (Target for the whole period)\n", total_cycles1);
-        Serial.printf("Reset pulse (Y):    %lu cycles (incl. period remainder)\n", p1.y);
+        Serial.printf("Reset pulse (Y):    %lu cycles (incl. period remainder)\n", p1dbg.y);
         Serial.printf("Period Overhead:    %lu cycles (program constant)\n", kA);
-        Serial.printf("Total OSR Delay:    %lu cycles (Remaining for loops)\n", p1.clk_div * wA);
-        Serial.printf("clk_div (Exact):    %lu (Value sent to PIO)\n", p1.clk_div);
+        Serial.printf("Total OSR Delay:    %lu cycles (Remaining for loops)\n", p1dbg.clk_div * wA);
+        Serial.printf("clk_div (Exact):    %lu (Value sent to PIO)\n", p1dbg.clk_div);
         Serial.println("---");
         Serial.printf("Actual Period Gen:  %lu cycles (Y + (clk_div*%u) + overhead)\n",
                       actual_total_period, (unsigned)wA);
@@ -831,45 +841,64 @@ inline void voice_task() {
 #endif
 
         if (oscSync >= 1) {
-          // All oscillators share pio0, so OSC1 and OSC2 can be stopped, reloaded and
-          // restarted on a single cycle. The old code drove separate blocks with separate
-          // enable calls, which left a few hundred nanoseconds of skew between them.
-          uint32_t maskAB = (1u << smAN) | (1u << smBN);
-          pio_set_sm_mask_enabled(pio[0], maskAB, false);
+          // One probe for the whole SM apply path — fine MAIN slices mis-attribute cold XIP.
+          BENCH_BEGIN(vt_retrig_sm_apply);
+          if (note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
+            // Exact split was computed after phase_align (retrig_p1 / retrig_y2).
+            // OSC3 is deliberately absent: never retriggered; Y stays at pioPulseLength.
+            uint32_t maskAB = (1u << smAN) | (1u << smBN);
+            pio_set_sm_mask_enabled(pio[0], maskAB, false);
 
-          // Note-on is the one point where Y can be rewritten safely: the SMs are
-          // stopped, and the envelope is at the start of its attack, so the phase
-          // discontinuity is inaudible. This is where the exact-period remainder and any
-          // phase-align residual actually reach the hardware.
-          osc_load_period_stopped(DCO_A, p1.y, p1.clk_div);
-          osc_load_period_stopped(DCO_B, y_val2, p2.clk_div);
+            // Note-on is the one point where Y can be rewritten safely. Frame already did
+            // put+pull, so TX is empty — fused noclear load (no FJOIN).
+            osc_load_periods_stopped_noclear(DCO_A, retrig_p1.y, retrig_p1.clk_div,
+                                             DCO_B, retrig_y2, retrig_p2.clk_div);
 
-          pio_sm_exec(pioN_A, smAN, pio_encode_jmp(osc_restart_target(DCO_A)));
+            pio_sm_exec(pioN_A, smAN, pio_encode_jmp(osc_restart_target(DCO_A)));
 
-          if (phaseQuarters != 0) {
-            // Coarse phase advance: enter a later ramp chunk so OSC2's first cycle starts
-            // partway up the ramp. That entry point skips `set pins, 0`, so the reset pin
-            // has to be driven low explicitly first.
-            pio_sm_exec(pioN_B, smBN, pio_encode_set(pio_pins, 0));
-            pio_sm_exec(pioN_B, smBN,
-                        pio_encode_jmp(osc_ramp_entry_target(DCO_B, phaseQuarters)));
+            if (phaseQuarters != 0) {
+              // Coarse phase advance: enter a later ramp chunk so OSC2's first cycle starts
+              // partway up the ramp. That entry point skips `set pins, 0`, so the reset pin
+              // has to be driven low explicitly first.
+              pio_sm_exec(pioN_B, smBN, pio_encode_set(pio_pins, 0));
+              pio_sm_exec(pioN_B, smBN,
+                          pio_encode_jmp(osc_ramp_entry_target(DCO_B, phaseQuarters)));
+            } else {
+              pio_sm_exec(pioN_B, smBN, pio_encode_jmp(osc_restart_target(DCO_B)));
+            }
+
+            pio_enable_sm_mask_in_sync(pio[0], maskAB);
           } else {
-            pio_sm_exec(pioN_B, smBN, pio_encode_jmp(osc_restart_target(DCO_B)));
+            // SYNC_JMP: phase resync only — no disable / Y load / enable_in_sync.
+            pio_sm_exec(pioN_A, smAN, pio_encode_jmp(osc_restart_target(DCO_A)));
+            if (phaseQuarters != 0) {
+              // Coarse phase advance: enter a later ramp chunk so OSC2's first cycle starts
+              // partway up the ramp. That entry point skips `set pins, 0`, so the reset pin
+              // has to be driven low explicitly first.
+              pio_sm_exec(pioN_B, smBN, pio_encode_set(pio_pins, 0));
+              pio_sm_exec(pioN_B, smBN,
+                          pio_encode_jmp(osc_ramp_entry_target(DCO_B, phaseQuarters)));
+            } else {
+              pio_sm_exec(pioN_B, smBN, pio_encode_jmp(osc_restart_target(DCO_B)));
+            }
           }
-
-          pio_enable_sm_mask_in_sync(pio[0], maskAB);
+          BENCH_END(vt_retrig_sm_apply);
         }
 
-        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], pwm_gpio_to_channel(RANGE_PINS[DCO_A]), chanLevel);
-        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], pwm_gpio_to_channel(RANGE_PINS[DCO_B]), chanLevel2);
-        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], pwm_gpio_to_channel(RANGE_PINS[DCO_C]), chanLevel3);
+        BENCH_BEGIN(vt_retrig_pwm);
+        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], RANGE_PWM_CHANNELS[DCO_A], chanLevel);
+        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], RANGE_PWM_CHANNELS[DCO_B], chanLevel2);
+        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], RANGE_PWM_CHANNELS[DCO_C], chanLevel3);
+        BENCH_END(vt_retrig_pwm);
         BENCH_END(vt_note_retrig);
       }
 
       if (timer99microsFlag) {
-        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], pwm_gpio_to_channel(RANGE_PINS[DCO_A]), chanLevel);
-        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], pwm_gpio_to_channel(RANGE_PINS[DCO_B]), chanLevel2);
-        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], pwm_gpio_to_channel(RANGE_PINS[DCO_C]), chanLevel3);
+        BENCH_BEGIN(vt_range_pwm);
+        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], RANGE_PWM_CHANNELS[DCO_A], chanLevel);
+        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], RANGE_PWM_CHANNELS[DCO_B], chanLevel2);
+        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], RANGE_PWM_CHANNELS[DCO_C], chanLevel3);
+        BENCH_END(vt_range_pwm);
 
         // Shared PW PWM when any oscillator has analog Pulse enabled (DG411).
         const bool pulseOn = waveEnable[0][1] || waveEnable[1][1] || waveEnable[2][1];
@@ -893,7 +922,9 @@ inline void voice_task() {
           BENCH_END(vt_pw_update);
 
         } else {
+          BENCH_BEGIN(vt_pw_update);
           pwm_set_chan_level(PW_PWM_SLICES[i], pwm_gpio_to_channel(PW_PINS[i]), 0);
+          BENCH_END(vt_pw_update);
         }
       }
     }
@@ -920,7 +951,7 @@ inline void voice_task_main() {
 }
 
 #ifdef USE_FLOAT_VOICE_TASK
-// Float realtime voice engine (same stages as voice_task, in Hz). Current default with USE_FLOAT_ENGINE.
+// Float realtime voice engine (same stages as voice_task, in Hz). Board default on RP2350.
 inline void voice_task_float() {
     // --- Track portamento control changes exactly as in original ---
     static uint32_t last_portamento_time = 0;
@@ -931,7 +962,7 @@ inline void voice_task_float() {
     bool portaModeChanged = (portaMode != last_portamento_mode);
   
     // --- 1. Pitch bend as float, equivalent to Q24 math ---
-    BENCH_FBEGIN(vt_pitchbend);
+    BENCH_BEGIN(vt_pitchbend);
     // Use original float pitch bend behaviour, but derive multiplier from Q24
     float pitchBendMultiplier = (float)pitchBendMultiplier_q24 / (float)(1 << 24);
     float calcPitchbend;
@@ -943,7 +974,7 @@ inline void voice_task_float() {
     } else {  // midi_pitch_bend > 8192
       calcPitchbend = (((float)midi_pitch_bend / 8192.99f) - 1.0f) * pitchBendMultiplier;
     }
-    BENCH_FEND(vt_pitchbend);
+    BENCH_END(vt_pitchbend);
 
     last_midi_pitch_bend = midi_pitch_bend;
   
@@ -988,13 +1019,13 @@ inline void voice_task_float() {
       if (note2 >= NOTE_TABLE_LEN) note2 = (uint8_t)(NOTE_TABLE_LEN - 1);
       if (note3 >= NOTE_TABLE_LEN) note3 = (uint8_t)(NOTE_TABLE_LEN - 1);
   
-      BENCH_FBEGIN(vt_osc_detune);
+      BENCH_BEGIN(vt_osc_detune);
       // --- 2.2 OSC2/OSC3 detune (float equivalent of Q24) ---
       float detuneSteps = (float)((int)256 - OSC2DetuneVal);
       float osc2DetuneRatio = 1.0f + 0.0002f * detuneSteps;
       float detune3Steps = (float)((int)256 - OSC3DetuneVal);
       float osc3DetuneRatio = 1.0f + 0.0002f * detune3Steps;
-      BENCH_FEND(vt_osc_detune);
+      BENCH_END(vt_osc_detune);
   
       // base note frequencies from float table
       float noteFreq1 = sNotePitches[note1];
@@ -1305,7 +1336,7 @@ inline void voice_task_float() {
       BENCH_END(vt_portamento);
 
       // --- 2.4 ADSR detune (float equivalent of Q24) ---
-      BENCH_FBEGIN(vt_adsr_mod);
+      BENCH_BEGIN(vt_adsr_mod);
       float ADSRModifier = 0.0f;
       if (ADSR1toDETUNE1 != 0) {
         float env = (float)linToLogLookup[ADSR1Level[i]];  // original int table
@@ -1315,27 +1346,27 @@ inline void voice_task_float() {
       float ADSRModifierOSC1 = (ADSR3ToOscSelect == 0 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier : 0.0f;
       float ADSRModifierOSC2 = (ADSR3ToOscSelect == 1 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier : 0.0f;
       float ADSRModifierOSC3 = (ADSR3ToOscSelect == 3 || ADSR3ToOscSelect == 4) ? ADSRModifier : 0.0f;
-      BENCH_FEND(vt_adsr_mod);
+      BENCH_END(vt_adsr_mod);
 
-      BENCH_FBEGIN(vt_unison_mod);
+      BENCH_BEGIN(vt_unison_mod);
       // --- 2.5 Unison modifier (float equivalent) ---
       static constexpr float UNISON_SCALE = 0.0001f; // from original Q24 constant
       static constexpr int32_t OSC_UNISON_STEP[3] = { 0, 1, -1 };
       float unisonMODIFIER_OSC1 = (float)unisonDetune * UNISON_SCALE * (float)OSC_UNISON_STEP[0];
       float unisonMODIFIER_OSC2 = (float)unisonDetune * UNISON_SCALE * (float)OSC_UNISON_STEP[1];
       float unisonMODIFIER_OSC3 = (float)unisonDetune * UNISON_SCALE * (float)OSC_UNISON_STEP[2];
-      BENCH_FEND(vt_unison_mod);
+      BENCH_END(vt_unison_mod);
 
-      BENCH_FBEGIN(vt_drift_mod);
+      BENCH_BEGIN(vt_drift_mod);
       // --- 2.6 Drift modifiers (float) ---
       static constexpr float DRIFT_UNIT = 0.0000005f; // from original
       float driftScale = (float)analogDrift * DRIFT_UNIT;
       float DETUNE_DRIFT_OSC1 = (analogDrift != 0) ? (float)LFO_DRIFT_LEVEL[DCO_A] * driftScale : 0.0f;
       float DETUNE_DRIFT_OSC2 = (analogDrift != 0) ? (float)LFO_DRIFT_LEVEL[DCO_B] * driftScale : 0.0f;
       float DETUNE_DRIFT_OSC3 = (analogDrift != 0) ? (float)LFO_DRIFT_LEVEL[DCO_C] * driftScale : 0.0f;
-      BENCH_FEND(vt_drift_mod);
+      BENCH_END(vt_drift_mod);
 
-      BENCH_FBEGIN(vt_modifiers);
+      BENCH_BEGIN(vt_modifiers);
       float detune_fifo = (float)DETUNE_INTERNAL_FIFO_q24 / (float)(1 << 24);
       float detune2      = (float)DETUNE_INTERNAL2_q24     / (float)(1 << 24);
       float detune3      = (float)DETUNE_INTERNAL3_q24     / (float)(1 << 24);
@@ -1346,39 +1377,57 @@ inline void voice_task_float() {
       float freqModifiers1 = ADSRModifierOSC1 + DETUNE_DRIFT_OSC1 + modifiersBase + unisonMODIFIER_OSC1;
       float freqModifiers2 = ADSRModifierOSC2 + DETUNE_DRIFT_OSC2 + modifiersBase + unisonMODIFIER_OSC2 + detune2;
       float freqModifiers3 = ADSRModifierOSC3 + DETUNE_DRIFT_OSC3 + modifiersBase + unisonMODIFIER_OSC3 + detune3;
-      BENCH_FEND(vt_modifiers);
+      BENCH_END(vt_modifiers);
 
-      BENCH_FBEGIN(vt_freq_scale_x);
-      // --- 2.7 Multiplier table x scaling & ratio interpolation (float version) ---
+      BENCH_BEGIN(vt_freq_scale_x);
+      // --- 2.7 Multiplier table & ratio interpolation (float version) ---
+      // FLOAT uses natural modifiers; fixed A/B modes still need table-unit scale → Q16.
+#if PITCH_INTERP_MODE != PITCH_INTERP_FLOAT
       float x1 = freqModifiers1 * (float)multiplierTableScale;
       float x2 = freqModifiers2 * (float)multiplierTableScale;
       float x3 = freqModifiers3 * (float)multiplierTableScale;
-      BENCH_FEND(vt_freq_scale_x);
+#endif
+      BENCH_END(vt_freq_scale_x);
 
       BENCH_BEGIN(vt_ratio_interp);
-  #if PITCH_USE_RATIO_Q16
-      float ratio1 = interpolateRatioFloat_cached(x1, DCO_A);
-      float ratio2 = interpolateRatioFloat_cached(x2, DCO_B);
-      float ratio3 = interpolateRatioFloat_cached(x3, DCO_C);
+#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
+      float ratio1 = interpolateRatioFloat_cached(freqModifiers1, DCO_A);
+      float ratio2 = interpolateRatioFloat_cached(freqModifiers2, DCO_B);
+      float ratio3 = interpolateRatioFloat_cached(freqModifiers3, DCO_C);
+#elif PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
+      // A/B: fixed ratio interpolator inside float voice (float x → Q16 → float ratio).
+      int32_t x1_Q16 = (int32_t)lroundf(x1 * 65536.0f);
+      int32_t x2_Q16 = (int32_t)lroundf(x2 * 65536.0f);
+      int32_t x3_Q16 = (int32_t)lroundf(x3 * 65536.0f);
+      static constexpr float Q16_TO_F = 1.0f / 65536.0f;
+      float ratio1 = (float)interpolateRatioQ16_cached(x1_Q16, DCO_A) * Q16_TO_F;
+      float ratio2 = (float)interpolateRatioQ16_cached(x2_Q16, DCO_B) * Q16_TO_F;
+      float ratio3 = (float)interpolateRatioQ16_cached(x3_Q16, DCO_C) * Q16_TO_F;
+#else
+      // A/B: IntQ16 (Q12) inside float voice.
+      int32_t x1_Q16 = (int32_t)lroundf(x1 * 65536.0f);
+      int32_t x2_Q16 = (int32_t)lroundf(x2 * 65536.0f);
+      int32_t x3_Q16 = (int32_t)lroundf(x3 * 65536.0f);
+      float ratio1 = (float)interpolatePitchMultiplierIntQ16_cached(x1_Q16, DCO_A)
+                     / (float)multiplierTableScale;
+      float ratio2 = (float)interpolatePitchMultiplierIntQ16_cached(x2_Q16, DCO_B)
+                     / (float)multiplierTableScale;
+      float ratio3 = (float)interpolatePitchMultiplierIntQ16_cached(x3_Q16, DCO_C)
+                     / (float)multiplierTableScale;
+#endif
       BENCH_END(vt_ratio_interp);
 
-      BENCH_FBEGIN(vt_freq_scale_post);
+      BENCH_BEGIN(vt_freq_scale_post);
       // Apply ratios to portamento frequencies, with osc2/osc3 detune (Hz domain).
       float freqA_Hz = freqA * ratio1;
       float freqB_Hz = freqB * (ratio2 * osc2DetuneRatio);
       float freqC_Hz = freqC * (ratio3 * osc3DetuneRatio);
-  #else
-      BENCH_END(vt_ratio_interp);
-      BENCH_FBEGIN(vt_freq_scale_post);
-      // If you keep the IntQ16 path, you can still derive ratio as float from that
-      ...
-  #endif
-  
+
   #if DCO_DEBUG_REPORT
       dbg_freq_after_mod_Hz = freqA_Hz;
   #endif
 
-      BENCH_FEND(vt_freq_scale_post);
+      BENCH_END(vt_freq_scale_post);
 
       clkdiv_bench_sample(freqA_Hz, freqB_Hz);
 
@@ -1422,6 +1471,20 @@ inline void voice_task_float() {
         phaseDelay = (uint32_t)(((float)total_cycles2 * (float)residualDeg / 360.0f) + 0.5f);
       }
       BENCH_END(vt_phase_align);
+
+      // Exact period split on note-on+EXACT_Y frames, next to hot phase_align (I-cache).
+      // Stash for the note-on block; OSC3 stays on the rounded clk_div path.
+      PioPeriod retrig_p1{};
+      PioPeriod retrig_p2{};
+      uint32_t retrig_y2 = 0;
+      if (note_on_flag_flag[i] && oscSync >= 1 &&
+          note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
+        BENCH_BEGIN(vt_retrig_split);
+        retrig_p1 = pio_period_split(total_cycles1, wA, kA);
+        retrig_p2 = pio_period_split(total_cycles2 - phaseDelay, wB, kB);
+        retrig_y2 = retrig_p2.y + phaseDelay;
+        BENCH_END(vt_retrig_split);
+      }
 
       // --- 2.9 Amplitude compensation using engine-agnostic helper ---
       BENCH_BEGIN(vt_chan_level);
@@ -1479,45 +1542,62 @@ inline void voice_task_float() {
         BENCH_BEGIN(vt_note_retrig);
         // Sync logic mirrored from fixed-point voice_task, using float-derived periods.
         if (oscSync >= 1) {
-          // OSC3 is deliberately absent: it is never retriggered, so its Y stays at
-          // pioPulseLength and its clk_div keeps the rounded path.
-          PioPeriod p1 = pio_period_split(total_cycles1, wA, kA);
-          PioPeriod p2 = pio_period_split(total_cycles2 - phaseDelay, wB, kB);
-          uint32_t y_val2 = p2.y + phaseDelay;
+          // One probe for the whole SM apply path — fine MAIN slices mis-attribute cold XIP.
+          BENCH_BEGIN(vt_retrig_sm_apply);
+          if (note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
+            // Exact split was computed after phase_align (retrig_p1 / retrig_y2).
+            // OSC3 is deliberately absent: never retriggered; Y stays at pioPulseLength.
+            uint32_t maskAB = (1u << sm1N) | (1u << sm2N);
+            pio_set_sm_mask_enabled(pio[0], maskAB, false);
 
-          // Everything is on pio0, so OSC1 and OSC2 stop, reload and restart on one cycle.
-          uint32_t maskAB = (1u << sm1N) | (1u << sm2N);
-          pio_set_sm_mask_enabled(pio[0], maskAB, false);
+            // Frame already did put+pull, so TX is empty — fused noclear load (no FJOIN).
+            osc_load_periods_stopped_noclear(DCO_A, retrig_p1.y, retrig_p1.clk_div,
+                                             DCO_B, retrig_y2, retrig_p2.clk_div);
 
-          osc_load_period_stopped(DCO_A, p1.y, p1.clk_div);
-          osc_load_period_stopped(DCO_B, y_val2, p2.clk_div);
+            pio_sm_exec(pioN_A, sm1N, pio_encode_jmp(osc_restart_target(DCO_A)));
 
-          pio_sm_exec(pioN_A, sm1N, pio_encode_jmp(osc_restart_target(DCO_A)));
+            if (phaseQuarters != 0) {
+              // Enter a later ramp chunk for the coarse phase advance; that path skips
+              // `set pins, 0`, so drive the reset pin low explicitly first.
+              pio_sm_exec(pioN_B, sm2N, pio_encode_set(pio_pins, 0));
+              pio_sm_exec(pioN_B, sm2N,
+                          pio_encode_jmp(osc_ramp_entry_target(DCO_B, phaseQuarters)));
+            } else {
+              pio_sm_exec(pioN_B, sm2N, pio_encode_jmp(osc_restart_target(DCO_B)));
+            }
 
-          if (phaseQuarters != 0) {
-            // Enter a later ramp chunk for the coarse phase advance; that path skips
-            // `set pins, 0`, so drive the reset pin low explicitly first.
-            pio_sm_exec(pioN_B, sm2N, pio_encode_set(pio_pins, 0));
-            pio_sm_exec(pioN_B, sm2N,
-                        pio_encode_jmp(osc_ramp_entry_target(DCO_B, phaseQuarters)));
+            pio_enable_sm_mask_in_sync(pio[0], maskAB);
           } else {
-            pio_sm_exec(pioN_B, sm2N, pio_encode_jmp(osc_restart_target(DCO_B)));
+            // SYNC_JMP: phase resync only — no disable / Y load / enable_in_sync.
+            pio_sm_exec(pioN_A, sm1N, pio_encode_jmp(osc_restart_target(DCO_A)));
+            if (phaseQuarters != 0) {
+              // Enter a later ramp chunk for the coarse phase advance; that path skips
+              // `set pins, 0`, so drive the reset pin low explicitly first.
+              pio_sm_exec(pioN_B, sm2N, pio_encode_set(pio_pins, 0));
+              pio_sm_exec(pioN_B, sm2N,
+                          pio_encode_jmp(osc_ramp_entry_target(DCO_B, phaseQuarters)));
+            } else {
+              pio_sm_exec(pioN_B, sm2N, pio_encode_jmp(osc_restart_target(DCO_B)));
+            }
           }
-
-          pio_enable_sm_mask_in_sync(pio[0], maskAB);
+          BENCH_END(vt_retrig_sm_apply);
         }
 
-        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], pwm_gpio_to_channel(RANGE_PINS[DCO_A]), chanLevel);
-        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], pwm_gpio_to_channel(RANGE_PINS[DCO_B]), chanLevel2);
-        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], pwm_gpio_to_channel(RANGE_PINS[DCO_C]), chanLevel3);
+        BENCH_BEGIN(vt_retrig_pwm);
+        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], RANGE_PWM_CHANNELS[DCO_A], chanLevel);
+        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], RANGE_PWM_CHANNELS[DCO_B], chanLevel2);
+        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], RANGE_PWM_CHANNELS[DCO_C], chanLevel3);
+        BENCH_END(vt_retrig_pwm);
         BENCH_END(vt_note_retrig);
       }
   
       if (timer99microsFlag) {
-        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], pwm_gpio_to_channel(RANGE_PINS[DCO_A]), chanLevel);
-        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], pwm_gpio_to_channel(RANGE_PINS[DCO_B]), chanLevel2);
-        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], pwm_gpio_to_channel(RANGE_PINS[DCO_C]), chanLevel3);
-  
+        BENCH_BEGIN(vt_range_pwm);
+        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], RANGE_PWM_CHANNELS[DCO_A], chanLevel);
+        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], RANGE_PWM_CHANNELS[DCO_B], chanLevel2);
+        pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], RANGE_PWM_CHANNELS[DCO_C], chanLevel3);
+        BENCH_END(vt_range_pwm);
+
         const bool pulseOn = waveEnable[0][1] || waveEnable[1][1] || waveEnable[2][1];
         if (pulseOn) {
           BENCH_FBEGIN(vt_pwm_calc);
@@ -1541,7 +1621,9 @@ inline void voice_task_float() {
                              get_PW_level_interpolated(PW_PWM[i], i));
           BENCH_END(vt_pw_update);
         } else {
+          BENCH_BEGIN(vt_pw_update);
           pwm_set_chan_level(PW_PWM_SLICES[i], pwm_gpio_to_channel(PW_PINS[i]), 0);
+          BENCH_END(vt_pw_update);
         }
       }
   
@@ -1659,23 +1741,16 @@ void setSyncMode() {
   }
 }
 
-#ifndef USE_FLOAT_AMP_COMP
 /**
- * @brief Fast amplitude compensation lookup tuned for the RP2040.
+ * @brief Fast amplitude compensation lookup (Q8 Hz) for fixed path / AMP_COMP_FIXED.
  *
  * Uses a deterministic window selection rule that matches the float path:
  * for each oscillator we choose the *first* window i such that
  *   freqRow[i] <= x < freqRow[i+2]
- * scanning from low to high. This guarantees that a given x always maps to the
- * same window regardless of whether we are gliding up or down in frequency
- * (no hysteresis), while keeping the table small enough that a linear scan
- * remains very cheap on the M0+.
- *
- * The core calculation uses the proven, numerically stable fixed-point
- * quadratic method with precomputed Q-format coefficients.
+ * scanning from low to high. Always compiled so float-engine builds can
+ * select FIXED for A/B and benchmarks.
  */
 uint16_t get_chan_level_lookup_fast(int32_t x, uint8_t voiceN) {
-  // --- 1. Load pointers to this oscillator's table rows (cache friendly) ---
   const int32_t* freqRow   = ampCompFrequencyArray[voiceN];
   const int32_t* ampRow    = ampCompArray[voiceN];
   const int32_t* xBaseRow  = xBaseWIN[voiceN];
@@ -1685,28 +1760,22 @@ uint16_t get_chan_level_lookup_fast(int32_t x, uint8_t voiceN) {
   const int32_t* bRow      = bQWIN_fast[voiceN];
   const uint16_t* cRow     = cQWIN[voiceN];
 
-  // --- 2. Handle boundary conditions ---
   if (x <= freqRow[0]) return (uint16_t)ampRow[0];
-  const int lastIdx = ampCompTableSize;
 
-  // --- 2a. Global plateau clamp using precomputed plateau start ---
-  // If the calibrated table provides a real breakpoint with freq < AMP_COMP_MAX_HZ
-  // and amp == DIV_COUNTER, clamp everything at/above that frequency directly
-  // to DIV_COUNTER. This avoids evaluating the quadratic in the plateau region
-  // and ignores any synthetic high-frequency filler points.
-  if (plateauStartIndex[voiceN] >= 0) {
-    int32_t plateauFreqQ = plateauStartFreqQ[voiceN];
-    if (x >= plateauFreqQ) {
-      return (uint16_t)DIV_COUNTER;
-    }
+  // Domain ceiling: at/above AMP_COMP_MAX_HZ the cal sentinel is full RANGE.
+  // Without this, x == MAX_Q matches no window (exclusive upper bound) and the
+  // fallback window-0 path clamps t∈[0,1] to the first segment — ~12k PWM off
+  // float, which extrapolates absolute Hz on that window to ~DIV_COUNTER.
+  if (x >= AMP_COMP_MAX_HZ_Q) return (uint16_t)DIV_COUNTER;
+
+  // Real plateau only: precompute leaves plateauStartFreqQ at AMP_COMP_MAX_HZ_Q
+  // when none was found (same role as plateauStartIndex < 0 in the original code).
+  // Do not use plateauStartIndex here — dual-build restores that for the float path.
+  if (plateauStartFreqQ[voiceN] < AMP_COMP_MAX_HZ_Q &&
+      x >= plateauStartFreqQ[voiceN]) {
+    return (uint16_t)DIV_COUNTER;
   }
 
-  // --- 3. Find the correct window with a deterministic linear scan ---
-  // We deliberately scan in ascending order and pick the *first* window that
-  // covers x in the [freqRow[i], freqRow[i+2]) sense. This matches the float
-  // implementation and avoids path-dependent window choices when the windows
-  // overlap, which is what previously caused different results when
-  // approaching the plateau from above vs below.
   const int maxWindow = ampCompTableSize - 2;
   int window = 0;
   for (int i = 0; i <= maxWindow; ++i) {
@@ -1716,57 +1785,45 @@ uint16_t get_chan_level_lookup_fast(int32_t x, uint8_t voiceN) {
     }
   }
 
-  // --- 4. Core quadratic calculation ---
-  // This path is now fully branchless for maximum speed.
   int32_t dx = x - xBaseRow[window];
   const int32_t span = spanRow[window];
   if (dx < 0) dx = 0;
   if (dx > span) dx = span;
 
-  // Calculate t in Q(T_FRAC) using a clean 64-bit multiply-shift.
-  // T_FRAC is 14, matching the legacy high-precision path.
   const uint32_t inv_q28 = invRow_q28[window];
   uint32_t t_q = (uint32_t)(((uint64_t)dx * inv_q28) >> (28 - T_FRAC));
 
-  // y(t) = a*t^2 + b*t + c
-  // All intermediate math uses 64-bit to prevent overflow.
   int64_t a = aRow[window];
   int64_t b = bRow[window];
   int32_t c = cRow[window];
 
-  // Perform the quadratic evaluation with correct scaling at each step.
   uint32_t t2 = (uint32_t)(((uint32_t)t_q * t_q) >> T_FRAC);
   int32_t term_a = (int32_t)((a * t2) >> T_FRAC);
   int32_t term_b = (int32_t)((b * t_q) >> T_FRAC);
 
-  // Sum the terms (all are Q(T_FRAC)) and then scale back to Q0 with rounding.
   int32_t y_q = term_a + term_b + (c << T_FRAC);
   int32_t y = (y_q + (1 << (T_FRAC - 1))) >> T_FRAC;
 
-  // --- 6. Clamp and return final value ---
   if (y < 0) y = 0;
   if (y > (int32_t)DIV_COUNTER) y = (int32_t)DIV_COUNTER;
 
   return (uint16_t)y;
 }
-#endif  // !USE_FLOAT_AMP_COMP
 
 #ifdef USE_FLOAT_AMP_COMP
 /**
- * @brief Pure-float amplitude compensation lookup (Hz domain) for the RP2350 float engine.
- *
- * Uses sanitized float-domain frequency table (Hz) and precomputed quadratic coefficients,
- * with plateau handling and the same window layout as the fixed-point path.
+ * @brief Pure-float quadratic amp-comp (Hz domain). Reference for LUT fill / accuracy.
  */
-inline uint16_t get_chan_level_float(float freqHz, uint8_t voiceN) {
-  // Boundary conditions in Hz (direct table access for minimum overhead)
+uint16_t get_chan_level_float_quad(float freqHz, uint8_t voiceN) {
   if (freqHz <= ampCompFrequencyHz[voiceN][0]) {
-    return ampCompArray[voiceN][0];
+    return (uint16_t)ampCompArray[voiceN][0];
   }
 
-  // Global plateau clamp using precomputed plateau start (Hz domain).
-  // Once we reach the first real DIV_COUNTER point below AMP_COMP_MAX_HZ,
-  // treat the response as fully saturated.
+  // Same domain ceiling as FIXED (see get_chan_level_lookup_fast).
+  if (freqHz >= (float)AMP_COMP_MAX_HZ) {
+    return (uint16_t)DIV_COUNTER;
+  }
+
   if (plateauStartIndex[voiceN] >= 0) {
     float plateauFreqHz = plateauStartFreqHz[voiceN];
     if (freqHz >= plateauFreqHz) {
@@ -1774,12 +1831,6 @@ inline uint16_t get_chan_level_float(float freqHz, uint8_t voiceN) {
     }
   }
 
-  // --- Window selection: deterministic linear scan, mirroring fixed-point path ---
-  // We have (ampCompTableSize - 1) quadratic windows, each using points
-  // (i, i+1, i+2); the last window (index ampCompTableSize-2) uses the sentinel
-  // at ampCompTableSize as its right endpoint. We scan from low to high and
-  // pick the *first* window whose [x0, x2) interval contains freqHz, ensuring
-  // hysteresis-free behaviour when approaching the plateau from either side.
   const int maxWindow = ampCompTableSize - 2;
   int window = 0;
   for (int i = 0; i <= maxWindow; ++i) {
@@ -1795,7 +1846,19 @@ inline uint16_t get_chan_level_float(float freqHz, uint8_t voiceN) {
   float c = cCoeff[voiceN][window];
 
   float interpolatedValue = (a * freqHz + b) * freqHz + c;
-  return round(interpolatedValue);
+  return (uint16_t)round(interpolatedValue);
+}
+
+uint16_t get_chan_level_lut(float freqHz, uint8_t voiceN) {
+  if (freqHz <= 0.0f) return ampCompLut[voiceN][0];
+  if (freqHz >= (float)AMP_COMP_MAX_HZ) return ampCompLut[voiceN][AMP_COMP_MAX_HZ];
+  // Nearest integer Hz (not trunc) — same single table load, lower quantize bias.
+  // Stay off LUT[MAX] until the hard clamp above: rounding 6999.75→7000 would
+  // return the plateau bin while float is still on the last window (~200 counts).
+  int32_t hz = (int32_t)(freqHz + 0.5f);
+  if (hz < 0) hz = 0;
+  if (hz >= AMP_COMP_MAX_HZ) hz = AMP_COMP_MAX_HZ - 1;
+  return ampCompLut[voiceN][hz];
 }
 #endif  // USE_FLOAT_AMP_COMP
 
@@ -1873,7 +1936,7 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
 
         pio_sm_put(pioN, sm1N, silence_clk_div1);
         pio_sm_exec(pioN, sm1N, pio_encode_pull(false, false));
-        pwm_set_chan_level(RANGE_PWM_SLICES[i], pwm_gpio_to_channel(RANGE_PINS[i]), 0);
+        pwm_set_chan_level(RANGE_PWM_SLICES[i], RANGE_PWM_CHANNELS[i], 0);
       } else {
 
         uint32_t clk_div1 = autotune_total_cycles
@@ -1885,7 +1948,7 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
 
         pio_sm_exec(pioN, sm1N, pio_encode_pull(false, false));
 
-        pwm_set_chan_level(RANGE_PWM_SLICES[i], pwm_gpio_to_channel(RANGE_PINS[i]), calibrationValue);
+        pwm_set_chan_level(RANGE_PWM_SLICES[i], RANGE_PWM_CHANNELS[i], calibrationValue);
 
         pwm_set_chan_level(PW_PWM_SLICES[0], pwm_gpio_to_channel(PW_PINS[0]), 0);
 
@@ -1908,20 +1971,20 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
 
     switch (taskAutotuneVoiceMode) {
       case 0:
-        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], pwm_gpio_to_channel(RANGE_PINS[currentDCO]), calibrationValue);
+        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], RANGE_PWM_CHANNELS[currentDCO], calibrationValue);
         break;
       case 1:
-        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], pwm_gpio_to_channel(RANGE_PINS[currentDCO]), calibrationValue);
+        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], RANGE_PWM_CHANNELS[currentDCO], calibrationValue);
         pio_sm_exec(pioN, sm1N, pio_encode_jmp(osc_restart_target(currentDCO)));
         break;
       case 2:
-        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], pwm_gpio_to_channel(RANGE_PINS[currentDCO]), chanLevel);
+        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], RANGE_PWM_CHANNELS[currentDCO], chanLevel);
         break;
       case 3:
         chanLevel = get_chan_level_for_engine(freq, currentDCO);
-        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], pwm_gpio_to_channel(RANGE_PINS[currentDCO]), chanLevel);
+        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], RANGE_PWM_CHANNELS[currentDCO], chanLevel);
       case 4:
-        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], pwm_gpio_to_channel(RANGE_PINS[currentDCO]), calibrationValue);
+        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], RANGE_PWM_CHANNELS[currentDCO], calibrationValue);
         break;
     }
 
@@ -1931,9 +1994,9 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
 }
 
 // Cached variant: pass DCO index to reuse last segment and avoid binary search
+#if PITCH_INTERP_MODE == PITCH_INTERP_Q12
 inline int32_t interpolatePitchMultiplierIntQ16_cached(int32_t xQ16, int dcoIndex) {
   int32_t xInt = xQ16 >> 16;
-  // Clamp to bounds using integer part
   if (xInt <= xMultiplierTable[0]) {
     return yMultiplierTable[0];
   }
@@ -1941,9 +2004,7 @@ inline int32_t interpolatePitchMultiplierIntQ16_cached(int32_t xQ16, int dcoInde
     return yMultiplierTable[multiplierTableSize - 1];
   }
   int low = interpSegCache[dcoIndex];
-  // Validate cache; adjust locally if possible
   if (low < 0 || low > multiplierTableSize - 2 || !(xMultiplierTable[low] <= xInt && xInt < xMultiplierTable[low + 1])) {
-    // Try step toward correct segment
     if (low >= 0 && low < multiplierTableSize - 1) {
       if (xInt >= xMultiplierTable[low + 1]) {
         while (low < multiplierTableSize - 2 && xInt >= xMultiplierTable[low + 1]) low++;
@@ -1951,7 +2012,6 @@ inline int32_t interpolatePitchMultiplierIntQ16_cached(int32_t xQ16, int dcoInde
         while (low > 0 && xInt < xMultiplierTable[low]) low--;
       }
     }
-    // If still wrong, do binary search
     if (!(low >= 0 && low < multiplierTableSize - 1 && xMultiplierTable[low] <= xInt && xInt < xMultiplierTable[low + 1])) {
       int l = 0, h = multiplierTableSize - 1;
       while (l <= h) {
@@ -1972,32 +2032,16 @@ inline int32_t interpolatePitchMultiplierIntQ16_cached(int32_t xQ16, int dcoInde
   }
   int32_t x0 = xMultiplierTable[low];
   int32_t y0 = yMultiplierTable[low];
-  int32_t slope = slopeQ20[low];
-#ifdef PITCH_INTERP_USE_Q8
-  // 32-bit friendly path: slope in Q8, delta in Q8; total 16 frac bits
-  int32_t deltaQ8 = (xQ16 - (x0 << 16)) >> 8;
-  int32_t slope8 = slopeQ8[low];
-  // Product is Q16; shift by 16 to return table units (with rounding)
-  int32_t y = y0 + (int32_t)((((int64_t)deltaQ8 * (int64_t)slope8) + (1LL << 15)) >> 16);
-#elif defined(PITCH_INTERP_USE_Q12)
-  // Medium-precision path: slope in Q12, delta in Q12; total 24 frac bits
   int32_t deltaQ12 = (xQ16 - (x0 << 16)) >> 4;
-  int32_t slope12 = slopeQ12[low];
-  int32_t y = y0 + (int32_t)((((int64_t)deltaQ12 * (int64_t)slope12) + (1LL << 23)) >> 24);
-#else
-  // High-precision path: slope in Q20, delta in Q16
-  int32_t deltaQ16 = xQ16 - (x0 << 16);
-  int32_t y = y0 + (int32_t)((((int64_t)deltaQ16 * (int64_t)slope) + (1LL << 35)) >> 36);
-#endif
+  int32_t y = y0 + (int32_t)((((int64_t)deltaQ12 * (int64_t)slopeQ12[low]) + (1LL << 23)) >> 24);
   return y;
 }
+#endif // Q12
 
-// Cached Q16 ratio interpolator: returns multiplier ratio in Q16 without divide
+#if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
 inline int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex) {
   int32_t xInt = xQ16 >> 16;
-  // Clamp to bounds using integer part
   if (xInt <= xMultiplierTable[0]) {
-    // Convert table y->Q16 ratio with rounding using reciprocal-multiply (n/10000 ≈ (n * M) >> 45)
     uint64_t num0 = ((uint64_t)(uint32_t)yMultiplierTable[0] << 16) + 5000u;
     return (int32_t)((num0 * 0xD1B71759ULL) >> 45);
   }
@@ -2006,9 +2050,7 @@ inline int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex) {
     return (int32_t)((numN * 0xD1B71759ULL) >> 45);
   }
   int low = interpSegCache[dcoIndex];
-  // Validate cache; adjust locally if possible
   if (low < 0 || low > multiplierTableSize - 2 || !(xMultiplierTable[low] <= xInt && xInt < xMultiplierTable[low + 1])) {
-    // Try step toward correct segment
     if (low >= 0 && low < multiplierTableSize - 1) {
       if (xInt >= xMultiplierTable[low + 1]) {
         while (low < multiplierTableSize - 2 && xInt >= xMultiplierTable[low + 1]) low++;
@@ -2016,7 +2058,6 @@ inline int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex) {
         while (low > 0 && xInt < xMultiplierTable[low]) low--;
       }
     }
-    // If still wrong, do binary search
     if (!(low >= 0 && low < multiplierTableSize - 1 && xMultiplierTable[low] <= xInt && xInt < xMultiplierTable[low + 1])) {
       int l = 0, h = multiplierTableSize - 1;
       while (l <= h) {
@@ -2035,48 +2076,36 @@ inline int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex) {
     }
     interpSegCache[dcoIndex] = (int16_t)low;
   }
-  // Interpolate y in table units using high-precision slope (same as IntQ16 path)
   int32_t x0 = xMultiplierTable[low];
   int32_t y0 = yMultiplierTable[low];
   int32_t slope = slopeQ20[low];
   int32_t deltaQ16 = xQ16 - (x0 << 16);
   int32_t yTab = y0 + (int32_t)((((int64_t)deltaQ16 * (int64_t)slope) + (1LL << 35)) >> 36);
-  // Convert y (table units) to ratio Q16 with rounding using reciprocal-multiply
-  uint64_t num = ((uint64_t)(uint32_t)yTab << 16) + 5000u;  // scale/2
-  int32_t ratioQ16 = (int32_t)((num * 0xD1B71759ULL) >> 45);
-  return ratioQ16;
+  uint64_t num = ((uint64_t)(uint32_t)yTab << 16) + 5000u;
+  return (int32_t)((num * 0xD1B71759ULL) >> 45);
 }
+#endif // PITCH_INTERP_RATIO_Q16
 
-// Float ratio interpolator: same table/segment logic as interpolateRatioQ16_cached,
-// but operates directly in float "table units" and returns a float ratio.
+#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
+// x = pitch modifier in ~[-1, 3]; returns frequency ratio directly (tables are unscaled).
 inline float interpolateRatioFloat_cached(float x, int dcoIndex) {
-  // Interpret x in same "table units" domain as xMultiplierTableF
-  // Clamp to bounds using float table values (mirrors integer path behaviour)
   if (x <= xMultiplierTableF[0]) {
-    return yMultiplierTableF[0] / (float)multiplierTableScale;
+    return yMultiplierTableF[0];
   }
   if (x >= xMultiplierTableF[multiplierTableSize - 1]) {
-    return yMultiplierTableF[multiplierTableSize - 1] / (float)multiplierTableScale;
+    return yMultiplierTableF[multiplierTableSize - 1];
   }
 
   int low = interpSegCache[dcoIndex];
-
-  // Validate cache; adjust locally if possible
   if (low < 0 || low > multiplierTableSize - 2 ||
       !(xMultiplierTableF[low] <= x && x < xMultiplierTableF[low + 1])) {
-    // Try stepping toward correct segment
     if (low >= 0 && low < multiplierTableSize - 1) {
       if (x >= xMultiplierTableF[low + 1]) {
-        while (low < multiplierTableSize - 2 && x >= xMultiplierTableF[low + 1]) {
-          ++low;
-        }
+        while (low < multiplierTableSize - 2 && x >= xMultiplierTableF[low + 1]) ++low;
       } else if (x < xMultiplierTableF[low]) {
-        while (low > 0 && x < xMultiplierTableF[low]) {
-          --low;
-        }
+        while (low > 0 && x < xMultiplierTableF[low]) --low;
       }
     }
-    // If still wrong, fall back to binary search
     if (!(low >= 0 && low < multiplierTableSize - 1 &&
           xMultiplierTableF[low] <= x && x < xMultiplierTableF[low + 1])) {
       int l = 0;
@@ -2098,16 +2127,10 @@ inline float interpolateRatioFloat_cached(float x, int dcoIndex) {
     interpSegCache[dcoIndex] = (int16_t)low;
   }
 
-  // Linear interpolation in table units using precomputed float slopes
-  float x0 = xMultiplierTableF[low];
-  float y0 = yMultiplierTableF[low];
-  float m  = slopeF[low];                 // dy/dx as float
-  float yTab = y0 + m * (x - x0);         // table units
-
-  // Convert table units to ratio (same as yTab / multiplierTableScale)
-  float ratio = yTab / (float)multiplierTableScale;
-  return ratio;
+  return yMultiplierTableF[low] + slopeF[low] * (x - xMultiplierTableF[low]);
 }
+#endif // PITCH_INTERP_FLOAT
+
 // Build integer/float pitch-multiplier tables and slopes (boot). Called from init_voices().
 void initMultiplierTables() {
 
@@ -2115,8 +2138,6 @@ void initMultiplierTables() {
   double divisor = multiplierTableSize;
   double fraction = 4.00d / divisor;
 
-  // Build analytic tables once, then quantize for fixed engine and keep high-precision
-  // float mirrors for the float engine.
   for (int i = 0; i < multiplierTableSize; i++) {
     double x;
 
@@ -2131,46 +2152,42 @@ void initMultiplierTables() {
       y_value = expInterpolationSolveY(x + 1.00d, 1.00d, 3.00d, 0.50d, 2.00d);
     }
 
-    // Integer tables used by the fixed-point engine (unchanged behaviour).
+#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
+    // Natural domain: x = modifier [-1,3], y = frequency ratio (no int-table scale).
+    xMultiplierTableF[i] = (float)x;
+    yMultiplierTableF[i] = y_value;
+#else
     xMultiplierTable[i] = (int32_t)(x * (double)multiplierTableScale);
     yMultiplierTable[i] = (int32_t)(y_value * (double)multiplierTableScale);
     x0Q16_tbl[i]        = xMultiplierTable[i] << 16;
-
-    // High-precision float mirrors used by the float engine: keep the analytic values
-    // directly in table units (no extra quantisation beyond multiplierTableScale).
-    xMultiplierTableF[i] = (float)(x * (double)multiplierTableScale);
-    yMultiplierTableF[i] = (float)(y_value * (double)multiplierTableScale);
+#endif
   }
-  // Precompute slopes for fast integer interpolation
+
+#if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
   for (int i = 0; i < (multiplierTableSize - 1); ++i) {
     int32_t dx = xMultiplierTable[i + 1] - xMultiplierTable[i];
     if (dx == 0) dx = 1;
-    // Precompute slope in Q20 for fast multiply-only interpolation
     int32_t dy = yMultiplierTable[i + 1] - yMultiplierTable[i];
     int64_t numSlope = ((int64_t)dy << 20) + (dx > 0 ? dx / 2 : -dx / 2);
     slopeQ20[i] = (int32_t)(numSlope / (int64_t)dx);
-#ifdef PITCH_INTERP_USE_Q8
-    // Optional lower-precision slope for 32-bit fast path
-    int64_t numSlope8 = ((int64_t)dy << 8) + (dx > 0 ? dx / 2 : -dx / 2);
-    slopeQ8[i] = (int32_t)(numSlope8 / (int64_t)dx);
-#endif
-#ifdef PITCH_INTERP_USE_Q12
-    // Medium-precision slope for balanced speed/accuracy
+  }
+#elif PITCH_INTERP_MODE == PITCH_INTERP_Q12
+  for (int i = 0; i < (multiplierTableSize - 1); ++i) {
+    int32_t dx = xMultiplierTable[i + 1] - xMultiplierTable[i];
+    if (dx == 0) dx = 1;
+    int32_t dy = yMultiplierTable[i + 1] - yMultiplierTable[i];
     int64_t numSlope12 = ((int64_t)dy << 12) + (dx > 0 ? dx / 2 : -dx / 2);
     slopeQ12[i] = (int32_t)(numSlope12 / (int64_t)dx);
-#endif
   }
-  // Initialize per-DCO cache to invalid
-  for (int d = 0; d < NUM_OSCILLATORS; ++d) interpSegCache[d] = -1;
-
+#elif PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
   for (int i = 0; i < multiplierTableSize - 1; ++i) {
-    // Float slopes computed directly from the float tables to avoid inheriting
-    // fixed-point quantisation error.
     float dxF = xMultiplierTableF[i + 1] - xMultiplierTableF[i];
     if (dxF == 0.0f) dxF = 1.0f;
-    float dyF = yMultiplierTableF[i + 1] - yMultiplierTableF[i];
-    slopeF[i] = dyF / dxF;
+    slopeF[i] = (yMultiplierTableF[i + 1] - yMultiplierTableF[i]) / dxF;
   }
+#endif
+
+  for (int d = 0; d < NUM_OSCILLATORS; ++d) interpSegCache[d] = -1;
 }
 
 // Report the float-vs-double clock-divider comparison and clear its accumulators.

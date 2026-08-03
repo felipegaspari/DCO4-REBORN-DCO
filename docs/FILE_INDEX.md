@@ -57,7 +57,7 @@ flowchart TD
 
 ### `DCO.ino`
 
-Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine build flags. Monosynth: 1 voice × 3 oscillators.
+Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine flags (**pitch ids** / **board defaults** / **overrides** / **guards** at top). Monosynth: 1 voice × 3 oscillators.
 
 **Functions**
 - `setup()` — Core 0 init: serial, MIDI, LFOs, pins, USB strings, cal pin.
@@ -73,7 +73,7 @@ Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine build f
   - **Called from:** Arduino framework (Core 1).
   - **When:** Forever.
 
-**Key macros:** `USE_FLOAT_ENGINE`, `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `PITCH_USE_RATIO_Q16`, `PITCH_INTERP_USE_Q*`, `HIGH_PRECISION_CLKDIV`, `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`.
+**Key macros:** `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `PITCH_INTERP_MODE` (`FLOAT` / `RATIO_Q16` / `Q12`), `HIGH_PRECISION_CLKDIV`, `AMP_COMP_METHOD_DEFAULT`, `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`.
 
 ### `bench.h`
 
@@ -81,7 +81,9 @@ Hot-path profiler. All storage, ids, nesting and labels are generated from the s
 `BENCH_PROBES` X-macro table, so a probe cannot exist at a call site and be missing from the
 report. Time source is SysTick read as a 24-bit cycle counter (RP2040's M0+ has no DWT), with
 `BENCH_PERIOD()` falling back to the 1 µs timer for spans that can exceed the 24-bit wrap.
-Compiles to nothing without `RUNNING_AVERAGE`.
+Compiles to nothing without `RUNNING_AVERAGE`. Core0 IO is split into `MIDI read` vs
+`serial panel/USB`. Note-on: `retrig period split` under voice_task; under note-on,
+`retrig SM apply` + `retrig RANGE PWM` (do not slice SM apply — cold XIP mis-ranks kids).
 
 **Subsystem reference:** [`BENCHMARKING.md`](BENCHMARKING.md).
 
@@ -167,25 +169,28 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `setSyncMode()` — Rebuild sync topology via `assign_sm_mapping()` + `start_voice_sms()`; retrigger.
   - **Called from:** `apply_param_sync_mode()`, `apply_param_soft_sync()`.
   - **When:** Serial2 param.
-- `get_chan_level_lookup_fast()` — Q8 Hz → range PWM (fixed amp-comp).
-  - **Called from:** `voice_task()` directly; `get_chan_level_for_engine()` when fixed amp-comp.
-  - **When:** Fixed hot path / facade.
-- `get_chan_level_float()` — Hz → range PWM (float amp-comp).
-  - **Called from:** `get_chan_level_for_engine()` when `USE_FLOAT_AMP_COMP`.
-  - **When:** Float amp-comp path.
+- `get_chan_level_lookup_fast()` — Q8 Hz → range PWM (always compiled; live FIXED / fixed `voice_task`).
+  - **Called from:** `voice_task()` directly; `get_chan_level_for_engine()` / method FIXED.
+  - **When:** Fixed hot path; float-engine FIXED method / benches.
+- `get_chan_level_float_quad()` — Float quadratic reference (Hz).
+  - **Called from:** LUT fill; accuracy bench; method FLOAT_QUAD.
+  - **When:** `USE_FLOAT_AMP_COMP`.
+- `get_chan_level_lut()` — Dense 1 Hz LUT (nearest Hz index).
+  - **Called from:** `get_chan_level_for_engine` when method LUT.
+  - **When:** `USE_FLOAT_AMP_COMP` (speed A/B; live default = FIXED).
 - `get_PW_level_interpolated()` — Map PW counter into calibrated limits/center.
   - **Called from:** `voice_task()` / `voice_task_float()` (99 µs PW update).
   - **When:** Hot path.
-- `interpolatePitchMultiplierIntQ16_cached()` — IntQ16 table interp (Q8/Q12/Q20).
-  - **Called from:** `voice_task()` when `PITCH_USE_RATIO_Q16` is off.
-  - **When:** Fixed hot path, non-default pitch mode.
-- `interpolateRatioQ16_cached()` — Table → ratio Q16.
-  - **Called from:** `voice_task()` when `PITCH_USE_RATIO_Q16`.
-  - **When:** Fixed hot path (default fixed pitch mode).
-- `interpolateRatioFloat_cached()` — Table → float ratio.
-  - **Called from:** `voice_task_float()` when `PITCH_USE_RATIO_Q16`.
-  - **When:** Float hot path.
-- `initMultiplierTables()` — Build int/float pitch tables and slopes (uses `expInterpolationSolveY`).
+- `interpolatePitchMultiplierIntQ16_cached()` — IntQ16 table interp (`PITCH_INTERP_Q12`).
+  - **Called from:** `voice_task()` or `voice_task_float()` (A/B glue) when mode is Q12.
+  - **When:** Alternate pitch modes (fixed voice or float-voice A/B).
+- `interpolateRatioQ16_cached()` — Table → ratio Q16 (`slopeQ20`).
+  - **Called from:** `voice_task()` or `voice_task_float()` (A/B glue) when `PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16`.
+  - **When:** Default fixed pitch mode; optional float-voice A/B.
+- `interpolateRatioFloat_cached()` — Natural modifier `[-1,3]` → float ratio (`slopeF`; unscaled tables).
+  - **Called from:** `voice_task_float()` when `PITCH_INTERP_MODE == PITCH_INTERP_FLOAT`.
+  - **When:** Float hot path (board default on RP2350 / `USE_FLOAT_VOICE_TASK`).
+- `initMultiplierTables()` — Build tables/slopes for the active `PITCH_INTERP_MODE` only (uses `expInterpolationSolveY`).
   - **Called from:** `init_voices()`.
   - **When:** Boot Core1.
 - `clkdiv_bench_sample()` — Run the float and double divider candidates side by side and accumulate the time and Hz difference.
@@ -226,9 +231,11 @@ PIO load, SM setup, sync topology and diagnostics. **All three oscillators live 
   via `pio_enable_sm_mask_in_sync()`.
   - **Called from:** `init_pio()`, `setSyncMode()`.
   - **When:** Boot; sync topology change.
-- `osc_load_period_stopped()` — Push Y + clk_div to a **stopped** SM (Y travels through the
-  OSR, which also feeds the chunk reads).
-  - **Called from:** `start_voice_sms()`, `osc_set_reset_pulse()`, both engine note-on paths.
+- `osc_load_period_stopped()` / `_noclear` / `osc_load_periods_stopped_noclear()` — `static inline` in `state_machines.h`: push Y + clk_div to a
+  **stopped** SM via direct TXF/instr MMIO (Y travels through the OSR, which also feeds the
+  chunk reads). Clear variant for boot/topology; fused noclear for note-on EXACT_Y.
+  - **Called from:** `start_voice_sms()`, `osc_set_reset_pulse()` (clear); both engine note-on
+    EXACT_Y paths (fused noclear).
 - `osc_set_reset_pulse()` — Change only Y, reusing `osc_last_clk_div[]`.
   - **Called from:** `apply_param_osc_sync_mode()`.
 - `pio_topology_report()` — Print sync roles and assert every RESET pin reads back as PIO0.
@@ -283,7 +290,8 @@ Prototype. **No function definitions.**
 ### `PWM.ino`
 
 **Functions**
-- `init_pwm()` — Configure range + PW PWM slices; under `ENABLE_CV_OUTS` calls `init_cv_pwm()`.
+- `init_pwm()` — Configure range + PW PWM slices (`RANGE_PWM_SLICES` / `RANGE_PWM_CHANNELS`);
+  under `ENABLE_CV_OUTS` calls `init_cv_pwm()`.
   - **Called from:** `setup1()`.
   - **When:** Boot Core1.
 - `init_cv_pwm()` — Cutoff / reso / VCA / dist PWM; calls `init_level_pwm()`.
@@ -320,21 +328,42 @@ Sparse mod matrix (8 slots). Docs: [`MOD_MATRIX.md`](MOD_MATRIX.md).
 
 ### `amp_comp.h`
 
-Amp-comp tables + dual-engine precompute/facade.
+Amp-comp tables, LUT, method select, dual precompute/facade.
 
 **Functions**
-- `precomputeCoefficients()` — Fixed Q-window precompute.
-  - **Called from:** `precompute_amp_comp_for_engine()` when `!USE_FLOAT_AMP_COMP`.
+- `precomputeCoefficients()` — Fixed Q-window precompute (also under float engine for FIXED).
+  - **Called from:** `precompute_amp_comp_for_engine()`.
   - **When:** Boot / after auto-cal reload.
 - `precomputeCoefficients_float()` — Float Hz quadratic precompute.
   - **Called from:** `precompute_amp_comp_for_engine()` when `USE_FLOAT_AMP_COMP`.
   - **When:** Boot / after auto-cal reload.
-- `precompute_amp_comp_for_engine()` — Dispatch to float or fixed precompute.
+- `fill_amp_comp_lut_from_quad()` — Fill `ampCompLut[osc][0..7000]` from float quad.
+  - **Called from:** `precompute_amp_comp_for_engine()` when `USE_FLOAT_AMP_COMP`.
+  - **When:** Boot / after auto-cal reload.
+- `precompute_amp_comp_for_engine()` — Float+LUT+fixed dual build, or fixed-only.
   - **Called from:** `setup1()`; end of `DCO_calibration()`.
   - **When:** Boot Core1; end of auto-cal.
-- `get_chan_level_for_engine()` — Hz → PWM via float or Q8 lookup.
-  - **Called from:** `voice_task_float()`, `voice_task_autotune()`.
-  - **When:** Float play path / cal / dead debug paths.
+- `amp_comp_set_method()` / `get_chan_level_for_engine()` — Runtime method + Hz → PWM facade.
+  - **Called from:** debug cmds 20–22; `voice_task_float()`, `voice_task_autotune()`.
+  - **When:** Float play path / cal / A/B.
+
+### `amp_comp_bench.ino`
+
+Amp-comp speed/accuracy one-shots (`AMP_COMP_BENCHMARK` + `RUNNING_AVERAGE`).
+
+**Functions**
+- `amp_comp_bench_run_speed()` / `amp_comp_bench_run_accuracy()` / `print_amp_comp_bench()`
+  - **Called from:** `bench_poll_core0()` when debug 24/25 pending.
+  - **When:** Diagnostics; paced `bench_out_*` TX.
+
+### `pitch_interp_bench.ino`
+
+Pitch-interpolator speed/accuracy one-shots (`RUNNING_AVERAGE`). Self-contained private tables + interpolators. Speed rows: FLOAT / RATIO_Q16 / Q12; accuracy keeps a private Q20 `y` reference (not a live mode).
+
+**Functions**
+- `pitch_interp_bench_run_speed()` / `pitch_interp_bench_run_accuracy()` / `print_pitch_interp_bench()`
+  - **Called from:** `bench_poll_core0()` when debug 28/29 pending.
+  - **When:** Diagnostics; paced `bench_out_*` TX.
 
 ---
 
@@ -743,7 +772,7 @@ Prototype. **No function definitions.**
 - `apply_param_manual_calibration_stage()` — Manual cal stage index.
 - `apply_param_manual_calibration_offset()` — Per-osc manual offset.
 - `apply_param_manual_calibration_store()` — → `update_FS_ManualCalibrationOffset`.
-- `apply_param_debug_command()` — Bench diagnostics (id 160): 1 → `pio_topology_report()`, 2/3 → `pio_period_probe()` at a low/high divider, 10/11/12 → profiler dump / reset / periodic toggle (`RUNNING_AVERAGE` builds only). The only caller of those helpers; output goes to USB serial. Period probes only hold with no note playing.
+- `apply_param_debug_command()` — Bench diagnostics (id 160): 1 → `pio_topology_report()`, 2/3 → `pio_period_probe()` at a low/high divider, 10/11/12 → profiler dump / reset / periodic toggle (`RUNNING_AVERAGE`), 20–22 → amp-comp method (FLOAT_QUAD / LUT / FIXED), 24/25 → amp-comp speed/accuracy (`AMP_COMP_BENCHMARK` + `RUNNING_AVERAGE`), 28/29 → pitch-interp speed/accuracy (`RUNNING_AVERAGE`). Period probes only hold with no note playing.
 
 ---
 

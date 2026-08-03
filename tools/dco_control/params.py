@@ -205,6 +205,10 @@ PARAMS: list[Param] = [
     Param(19, "VCF keytrack", GROUP_FILTER, "slider", -256, 255, 0, cc=49),
     Param(20, "Velocity to VCF", GROUP_FILTER, "slider", 0, 20, 0, cc=50),
     Param(7, "Resonance amp compensation", GROUP_FILTER, "check", default=0, cc=51),
+    Param(54, "Filter mode", GROUP_FILTER, "combo", default=0,
+          choices=(("0 - LP24", 0), ("1 - BP12", 1), ("2 - HP6/LP18", 2), ("3 - alt", 3)),
+          note="AS3320 multimode (PARAM_FILTER_MODE); GPIO via voice-aux or solo ENABLE_CV_OUTS",
+          cc=118),
     Param(52, "Distortion drive", GROUP_FILTER, "slider", 0, 4095, 0,
           note="post-LP Drive VCA CV; needs ENABLE_CV_OUTS + analog stage", cc=81),
     Param(53, "Distortion mix", GROUP_FILTER, "slider", 0, 4095, 0,
@@ -336,6 +340,8 @@ DEBUG_COMMANDS = (
     ("PIO topology report", 1),
     ("Period probe, clk_div 2000", 2),
     ("Period probe, clk_div 20000", 3),
+    ("Note retrig: EXACT_Y", 26),
+    ("Note retrig: SYNC_JMP", 27),
 )
 
 # PARAM_DEBUG_COMMAND (160). Needs RUNNING_AVERAGE in the firmware; otherwise no-ops.
@@ -344,6 +350,23 @@ BENCH_COMMANDS = (
     ("Dump profiler once", 10),
     ("Reset profiler", 11),
     ("Toggle ~1 Hz dump", 12),
+)
+
+# Amp-comp method + benches (PARAM_DEBUG_COMMAND 160). Method select always acks;
+# speed/accuracy need AMP_COMP_BENCHMARK + RUNNING_AVERAGE. See BENCHMARKING.md §8.
+AMP_COMP_COMMANDS = (
+    ("Amp: FLOAT_QUAD", 20),
+    ("Amp: LUT", 21),
+    ("Amp: FIXED", 22),
+    ("Amp: speed bench", 24),
+    ("Amp: accuracy", 25),
+)
+
+# Pitch-interp speed/accuracy (PARAM_DEBUG_COMMAND 160). Needs RUNNING_AVERAGE
+# for paced Board output. Self-contained private tables — see BENCHMARKING.md.
+PITCH_INTERP_COMMANDS = (
+    ("Pitch: speed bench", 28),
+    ("Pitch: accuracy", 29),
 )
 
 DEBUG_PARAM_ID = 160

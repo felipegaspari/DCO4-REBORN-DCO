@@ -4,6 +4,8 @@
 #include "include_all.h"
 #include <math.h>
 #include <limits.h>
+#include <string.h>
+#include "hardware/sync.h"
 
 // Common table dimensions and shared data
 static constexpr int     ampCompTableSize = 22;
@@ -19,11 +21,15 @@ int16_t plateauStartIndex[NUM_OSCILLATORS];
 int32_t plateauStartFreqQ[NUM_OSCILLATORS];
 float   plateauStartFreqHz[NUM_OSCILLATORS];
 
-// ----- Fixed-point (Q8) amp-comp data, used only when !USE_FLOAT_AMP_COMP -----
-#ifndef USE_FLOAT_AMP_COMP
-
+// Calibration levels (PWM counts) — shared by float and fixed precompute.
+// (Historically float used uint16_t and fixed used int32_t; unified so both engines
+// can coexist for method A/B and benches under USE_FLOAT_AMP_COMP.)
 int32_t ampCompArray[NUM_OSCILLATORS][ampCompTableSize + 1];
 
+// ----- Fixed-point (Q8) amp-comp data -----
+// Always compiled: used as the live path when !USE_FLOAT_AMP_COMP, and also built
+// under USE_FLOAT_AMP_COMP so AMP_COMP_FIXED can be selected / timed / compared.
+//
 // Frequency values for amplitude compensation are stored as fixed-point Hz (Q(FREQ_FRAC_BITS)).
 static constexpr int     FREQ_FRAC_BITS    = 8;
 static constexpr int32_t AMP_COMP_SENTINEL_FREQ_Q = 50000000; // sentinel marker from FS data (Q8)
@@ -44,37 +50,78 @@ uint16_t cQWIN      [NUM_OSCILLATORS][ampCompTableSize - 1];
 int32_t  aQWIN_fast [NUM_OSCILLATORS][ampCompTableSize - 1];
 int32_t  bQWIN_fast [NUM_OSCILLATORS][ampCompTableSize - 1];
 
-#endif // !USE_FLOAT_AMP_COMP
-
 // High-precision float coefficients (Hz-domain): y = a*x^2 + b*x + c
 // Used by both fixed-point (for reference) and float amp-comp paths.
 float    aCoeff[NUM_OSCILLATORS][ampCompTableSize - 1];
 float    bCoeff[NUM_OSCILLATORS][ampCompTableSize - 1];
 float    cCoeff[NUM_OSCILLATORS][ampCompTableSize - 1];
 
-// Float-domain frequency breakpoints (Hz) used only by the float amp-comp path.
+// Float-domain frequency breakpoints (Hz) used by the float amp-comp path.
 #ifdef USE_FLOAT_AMP_COMP
-uint16_t ampCompArray[NUM_OSCILLATORS][ampCompTableSize + 1];    
 float    ampCompFrequencyHz[NUM_OSCILLATORS][ampCompTableSize + 1];
+// Dense LUT: index = integer Hz, value = RANGE PWM.
+// Filled once after float precompute from get_chan_level_float_quad() so integer-Hz
+// LUT at integer Hz matches float quadratic exactly; lookup uses nearest Hz.
+// Selectable for speed A/B; live default is FIXED.
+uint16_t ampCompLut[NUM_OSCILLATORS][AMP_COMP_MAX_HZ + 1];
 #endif
 
+// ---------------------------------------------------------------------------
+// Method selection (live voice_task dispatch under USE_FLOAT_AMP_COMP)
+// ---------------------------------------------------------------------------
+// Compile-time default: AMP_COMP_METHOD_DEFAULT in DCO.ino board defaults
+// (RP2350 → FLOAT_QUAD, RP2040 → FIXED; overridable in ENGINE — overrides).
+// Runtime: PARAM_DEBUG_COMMAND 20–22 via amp_comp_set_method().
+enum AmpCompMethod : uint8_t {
+  AMP_COMP_FLOAT_QUAD = 0, // window scan + y=(a*x+b)*x+c — accuracy reference
+  AMP_COMP_LUT        = 1, // nearest Hz → ampCompLut index (speed A/B)
+  AMP_COMP_FIXED      = 2, // get_chan_level_lookup_fast (Q8 tables)
+};
+
+#ifndef AMP_COMP_METHOD_DEFAULT
+#define AMP_COMP_METHOD_DEFAULT AMP_COMP_FIXED
+#endif
+
+volatile uint8_t amp_comp_method = (uint8_t)AMP_COMP_METHOD_DEFAULT;
+
+// Set by PARAM_DEBUG_COMMAND 20–22; Core 0 prints via paced bench_out when RUNNING_AVERAGE.
+volatile bool amp_comp_method_ack_pending = false;
+
+static inline const char *amp_comp_method_name(uint8_t m) {
+  switch (m) {
+    case AMP_COMP_FLOAT_QUAD: return "FLOAT_QUAD";
+    case AMP_COMP_LUT:        return "LUT";
+    case AMP_COMP_FIXED:      return "FIXED";
+    default:                  return "UNKNOWN";
+  }
+}
+
+static inline void amp_comp_set_method(uint8_t m) {
+#ifdef USE_FLOAT_AMP_COMP
+  if (m > AMP_COMP_FIXED) m = AMP_COMP_FLOAT_QUAD;
+#else
+  m = AMP_COMP_FIXED;
+#endif
+  amp_comp_method = m;
+  __dmb();  // publish to Core 1 voice_task before continued audio / ack
+}
 
 /**
- * @brief Pre-calculates all necessary data for the final, non-hybrid amplitude compensation function.
+ * @brief Pre-calculates all necessary data for the fixed-point amplitude compensation function.
  *
- * This function's sole purpose is to prepare the data for `get_chan_level_final`.
- * It is called once at startup. For every 3-point window in the compensation table, it:
+ * This function's sole purpose is to prepare the data for `get_chan_level_lookup_fast`.
+ * It is called once at startup (and again under float engine so FIXED can be selected).
+ * For every 3-point window in the compensation table, it:
  * 1.  Loads the raw data into local variables for sanitization.
- * 2.  Optionally cleans the local data by handling sentinels and smoothing plateaus
- *     (new path).
+ * 2.  Optionally cleans the local data by handling sentinels and smoothing plateaus.
  * 3.  Computes the complete, consistent data package (base, width, reciprocal, and
  *     normalized coefficients) needed for the fast fixed-point quadratic calculation.
  */
-// Fixed-point precompute: builds Q-format tables for the fixed engine.
-// Only compiled when the float amp-comp engine is not in use.
-#ifndef USE_FLOAT_AMP_COMP
-
-static void precomputeCoefficients() {
+// Fixed-point precompute: builds Q-format tables for the fixed engine / FIXED method.
+// rewritePlateaus: when true (fixed-only boot), sanitize sentinels/plateaus in-place.
+// When false (dual-build after float sanitize), keep seeded breakpoints and only
+// build Q windows + plateauStartFreqQ — avoids a second rewrite that desyncs FIXED.
+static void precomputeCoefficients(bool rewritePlateaus = true) {
   static_assert(T_FRAC > 0 && T_FRAC < 28, "T_FRAC must be in a valid range for the math to work.");
 
   // --- Data Sanitization ---
@@ -121,21 +168,26 @@ static void precomputeCoefficients() {
             ampCompFrequencyArray[j][i + 1] < AMP_COMP_MAX_HZ_Q) {
           plateauStartIndex[j] = i + 1;
           plateauStartFreqQ[j] = ampCompFrequencyArray[j][i + 1];
+          plateauSeen = true;
         }
 
-        double plateau_end_y = (double)DIV_COUNTER;
-        x1_f = (x0_f + maxFreqHz) * 0.5;
-        y1_f = (y0_f + plateau_end_y) * 0.5;
-        x2_f = maxFreqHz;
-        y2_f = plateau_end_y;
+        if (rewritePlateaus) {
+          double plateau_end_y = (double)DIV_COUNTER;
+          x1_f = (x0_f + maxFreqHz) * 0.5;
+          y1_f = (y0_f + plateau_end_y) * 0.5;
+          x2_f = maxFreqHz;
+          y2_f = plateau_end_y;
 
-        ampCompFrequencyArray[j][i + 1] = (int32_t)llround(x1_f * freqScale);
-        ampCompArray[j][i + 1] = (uint16_t)llround(y1_f);
-        ampCompFrequencyArray[j][i + 2] = AMP_COMP_MAX_HZ_Q;
-        ampCompArray[j][i + 2] = (uint16_t)DIV_COUNTER;
+          ampCompFrequencyArray[j][i + 1] = (int32_t)llround(x1_f * freqScale);
+          ampCompArray[j][i + 1] = (int32_t)llround(y1_f);
+          ampCompFrequencyArray[j][i + 2] = AMP_COMP_MAX_HZ_Q;
+          ampCompArray[j][i + 2] = (int32_t)DIV_COUNTER;
+        }
       }
 
-      // --- 2. Calculate Float Coefficients (for the fallback) ---
+      // --- 2. Calculate Float Coefficients (for the fallback / reference) ---
+      // Under USE_FLOAT_AMP_COMP dual-build these aCoeff writes are overwritten by
+      // a restore after fixed precompute so FLOAT_QUAD keeps the float-engine coeffs.
       long double denom_ld = (long double)(x0_f - x1_f) * (long double)(x0_f - x2_f) * (long double)(x1_f - x2_f);
       if (denom_ld == 0.0L) denom_ld = 1.0L;
       long double inv_denom_ld = 1.0L / denom_ld;
@@ -201,7 +253,6 @@ static void precomputeCoefficients() {
     }
   }
 }
-#endif  // !USE_FLOAT_AMP_COMP
 
 /**
  * @brief Float-only variant of amplitude compensation precompute.
@@ -211,12 +262,9 @@ static void precomputeCoefficients() {
  *  - Computes float quadratic coefficients aCoeff/bCoeff/cCoeff in Hz domain.
  *  - Fills ampCompFrequencyHz (sanitised breakpoints in Hz).
  *
- * It intentionally skips all fixed-point specific structures (xBaseWIN, dxWIN,
- * invDxWIN_q28, aQWIN, bQWIN, cQWIN, aQWIN_fast, bQWIN_fast) so the float engine
- * can be built without any fixed-point amp-comp math if desired.
+ * Fixed-point structures (xBaseWIN, dxWIN, invDxWIN_q28, aQWIN*, …) are built
+ * separately afterward under dual-build via precomputeCoefficients().
  */
-// Float-only precompute: prepares Hz-domain tables for the float engine.
-// Float-only precompute: prepares Hz-domain tables for the float engine.
 #ifdef USE_FLOAT_AMP_COMP
 static void precomputeCoefficients_float() {
   // Ensure each table has a final point at the defined maximum in Hz.
@@ -270,9 +318,9 @@ static void precomputeCoefficients_float() {
         y2_f = plateau_end_y;
 
         ampCompFrequencyHz[j][i + 1] = (float)x1_f;
-        ampCompArray[j][i + 1]       = (uint16_t)llround(y1_f);
+        ampCompArray[j][i + 1]       = (int32_t)llround(y1_f);
         ampCompFrequencyHz[j][i + 2] = (float)maxFreqHz;
-        ampCompArray[j][i + 2]       = (uint16_t)DIV_COUNTER;
+        ampCompArray[j][i + 2]       = (int32_t)DIV_COUNTER;
       }
 
       // Compute float quadratic coefficients y = a*x^2 + b*x + c in Hz domain.
@@ -305,37 +353,120 @@ static void precomputeCoefficients_float() {
 }
 #endif  // USE_FLOAT_AMP_COMP
 
+// Lookups implemented in voices.ino
+uint16_t get_chan_level_lookup_fast(int32_t x, uint8_t voiceN);
+#ifdef USE_FLOAT_AMP_COMP
+uint16_t get_chan_level_float_quad(float freqHz, uint8_t voiceN);
+uint16_t get_chan_level_lut(float freqHz, uint8_t voiceN);
+#endif
+
+#ifdef USE_FLOAT_AMP_COMP
+// Fill dense LUT from the float quadratic reference (integer Hz exact match).
+static inline void fill_amp_comp_lut_from_quad() {
+  for (uint8_t o = 0; o < NUM_OSCILLATORS; ++o) {
+    for (int32_t hz = 0; hz <= AMP_COMP_MAX_HZ; ++hz) {
+      ampCompLut[o][hz] = get_chan_level_float_quad((float)hz, o);
+    }
+  }
+}
+
+// After float sanitize, copy breakpoints into Q8 arrays for fixed precompute.
+static inline void amp_comp_seed_fixed_from_float_tables() {
+  const double freqScale = (double)(1u << FREQ_FRAC_BITS);
+  for (int j = 0; j < NUM_OSCILLATORS; ++j) {
+    for (int i = 0; i <= ampCompTableSize; ++i) {
+      double hz = (double)ampCompFrequencyHz[j][i];
+      ampCompFrequencyArray[j][i] = (int32_t)llround(hz * freqScale);
+    }
+  }
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Engine-agnostic amp-comp API
 // ---------------------------------------------------------------------------
 // These helpers let the rest of the code call a single precompute/lookup API,
-// while the concrete implementation is selected at compile time.
+// while the concrete implementation is selected at compile time / runtime method.
 
 // Dispatch to the correct precompute routine based on the active amp-comp mode.
+// Under USE_FLOAT_AMP_COMP: float sanitize + coeffs, then seed Q8 + fixed tables
+// for FIXED, restore float coeffs/plateau/levels, then fill LUT from float quad.
 static inline void precompute_amp_comp_for_engine() {
 #ifdef USE_FLOAT_AMP_COMP
   precomputeCoefficients_float();
+
+  // Preserve float coeffs / plateau / levels. Fixed build must not steal float
+  // plateauStartIndex or re-derive plateauStartFreqQ from the float index into
+  // a rewritten Q row (that caused FIXED to clamp to DIV_COUNTER almost everywhere).
+  float aSave[NUM_OSCILLATORS][ampCompTableSize - 1];
+  float bSave[NUM_OSCILLATORS][ampCompTableSize - 1];
+  float cSave[NUM_OSCILLATORS][ampCompTableSize - 1];
+  int16_t plateauIdxSave[NUM_OSCILLATORS];
+  float plateauHzSave[NUM_OSCILLATORS];
+  int32_t ampSave[NUM_OSCILLATORS][ampCompTableSize + 1];
+  int32_t plateauQSave[NUM_OSCILLATORS];
+
+  memcpy(aSave, aCoeff, sizeof(aSave));
+  memcpy(bSave, bCoeff, sizeof(bSave));
+  memcpy(cSave, cCoeff, sizeof(cSave));
+  memcpy(plateauIdxSave, plateauStartIndex, sizeof(plateauIdxSave));
+  memcpy(plateauHzSave, plateauStartFreqHz, sizeof(plateauHzSave));
+  memcpy(ampSave, ampCompArray, sizeof(ampSave));
+
+  amp_comp_seed_fixed_from_float_tables();
+  // Seeded breakpoints are already float-sanitized; do not plateau-rewrite again.
+  precomputeCoefficients(/*rewritePlateaus=*/false);
+  memcpy(plateauQSave, plateauStartFreqQ, sizeof(plateauQSave));
+
+  // Restore float-domain state for FLOAT_QUAD / LUT fill / live float path.
+  memcpy(aCoeff, aSave, sizeof(aSave));
+  memcpy(bCoeff, bSave, sizeof(bSave));
+  memcpy(cCoeff, cSave, sizeof(cSave));
+  memcpy(plateauStartIndex, plateauIdxSave, sizeof(plateauIdxSave));
+  memcpy(plateauStartFreqHz, plateauHzSave, sizeof(plateauHzSave));
+  memcpy(ampCompArray, ampSave, sizeof(ampSave));
+  // FIXED early-out uses plateauStartFreqQ only (see get_chan_level_lookup_fast).
+  memcpy(plateauStartFreqQ, plateauQSave, sizeof(plateauQSave));
+
+  fill_amp_comp_lut_from_quad();
 #else
-  precomputeCoefficients();
+  precomputeCoefficients(/*rewritePlateaus=*/true);
 #endif
 }
 
-// Unified lookup facade: always take frequency in Hz, choose implementation at compile time.
-// The concrete implementations live in voices.ino; we only provide the wrapper and prototypes here.
+// Unified lookup facade: always take frequency in Hz.
+// The concrete implementations live in voices.ino; we only provide the wrapper
+// and prototypes here. Under USE_FLOAT_AMP_COMP, dispatch on amp_comp_method.
 
 #ifdef USE_FLOAT_AMP_COMP
-// Float engine: pure-Hz fast lookup implemented in voices.ino
-uint16_t get_chan_level_float(float freqHz, uint8_t voiceN);
-#else
-// Fixed engine: fast fixed-point lookup implemented in voices.ino
-uint16_t get_chan_level_lookup_fast(int32_t x, uint8_t voiceN);
+static inline uint16_t get_chan_level_by_method(float freqHz, uint8_t voiceN) {
+  switch (amp_comp_method) {
+    case AMP_COMP_LUT:
+      return get_chan_level_lut(freqHz, voiceN);
+    case AMP_COMP_FIXED: {
+      if (freqHz <= 0.0f) return 0;
+      if (freqHz >= (float)AMP_COMP_MAX_HZ) {
+        return get_chan_level_lookup_fast(AMP_COMP_MAX_HZ_Q, voiceN);
+      }
+      int32_t x_q = (int32_t)lrintf(freqHz * (float)(1 << FREQ_FRAC_BITS));
+      return get_chan_level_lookup_fast(x_q, voiceN);
+    }
+    case AMP_COMP_FLOAT_QUAD:
+    default:
+      return get_chan_level_float_quad(freqHz, voiceN);
+  }
+}
+
+// Back-compat name: previously the float-quad body; now dispatches on method.
+static inline uint16_t get_chan_level_float(float freqHz, uint8_t voiceN) {
+  return get_chan_level_by_method(freqHz, voiceN);
+}
 #endif
 
 static inline uint16_t get_chan_level_for_engine(float freqHz, uint8_t voiceN) {
 #ifdef USE_FLOAT_AMP_COMP
-  // Float amp-comp: delegate directly to the Hz-domain lookup.
-  return get_chan_level_float(freqHz, voiceN);
+  // Float amp-comp: delegate to the active method (FIXED by default).
+  return get_chan_level_by_method(freqHz, voiceN);
 #else
   // Fixed-point amp-comp: convert Hz to Q(FREQ_FRAC_BITS) and call fast lookup.
   if (freqHz <= 0.0f) return 0;
@@ -347,5 +478,12 @@ static inline uint16_t get_chan_level_for_engine(float freqHz, uint8_t voiceN) {
   return get_chan_level_lookup_fast(x_q, voiceN);
 #endif
 }
+
+// Bench / accuracy (amp_comp_bench.ino); no-ops unless AMP_COMP_BENCHMARK + RUNNING_AVERAGE
+extern volatile bool amp_comp_bench_speed_pending;
+extern volatile bool amp_comp_bench_accuracy_pending;
+void print_amp_comp_bench();
+void amp_comp_bench_run_speed();
+void amp_comp_bench_run_accuracy();
 
 #endif

@@ -30,20 +30,19 @@ void init_FS() {
         // Stored frequencies are in Hz*100.
             int32_t freq_x100 = freq_to_amp_comp_array[rawIndex];
 
+        ampCompArray[datasetIndex][pairIndex] = freq_to_amp_comp_array[rawIndex + 1];
+
 #ifdef USE_FLOAT_AMP_COMP
-        // Float engine: convert directly to Hz for the pure-float amp-comp path.
+        // Float engine: Hz table for FLOAT_QUAD / LUT; Q8 also seeded at precompute for FIXED.
         float freqHz = (float)freq_x100 / 100.0f;
         ampCompFrequencyHz[datasetIndex][pairIndex] = freqHz;
-        // Level is shared between fixed and float paths.
-        ampCompArray[datasetIndex][pairIndex] = freq_to_amp_comp_array[rawIndex + 1];
 #else
         // Fixed-point engine: convert to fixed-point Hz (Hz * 2^FREQ_FRAC_BITS).
-        int64_t scaled = (int64_t)freq_x100 * (1LL << FREQ_FRAC_BITS);  // use 64-bit to avoid overflow
-            int32_t freq_fx = (scaled >= 0)
-                            ? (int32_t)((scaled + 50LL) / 100LL)        // round to nearest
-                                : (int32_t)(-((( -scaled) + 50LL) / 100LL));
-            ampCompFrequencyArray[datasetIndex][pairIndex] = freq_fx;
-        ampCompArray[datasetIndex][pairIndex]          = freq_to_amp_comp_array[rawIndex + 1];
+        int64_t scaled = (int64_t)freq_x100 * (1LL << FREQ_FRAC_BITS);
+        int32_t freq_fx = (scaled >= 0)
+                        ? (int32_t)((scaled + 50LL) / 100LL)
+                        : (int32_t)(-((( -scaled) + 50LL) / 100LL));
+        ampCompFrequencyArray[datasetIndex][pairIndex] = freq_fx;
 #endif
         }
     }

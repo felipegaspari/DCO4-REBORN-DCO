@@ -125,7 +125,7 @@ void DCO_calibration() {
     restart_DCO_calibration();
 
     ampCompCalibrationVal = initManualAmpCompCalibrationVal[currentDCO] + manualCalibrationOffset[currentDCO];
-    pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], pwm_gpio_to_channel(RANGE_PINS[currentDCO]), ampCompCalibrationVal);
+    pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], RANGE_PWM_CHANNELS[currentDCO], ampCompCalibrationVal);
 
     DCO_calibration_current_note = DCO_calibration_start_note;
     VOICE_NOTES[0] = DCO_calibration_current_note;
@@ -803,7 +803,7 @@ void find_PW_center(uint8_t mode) {
   }
   // Center the starting PW
   pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO],
-                     pwm_gpio_to_channel(RANGE_PINS[currentDCO]),
+                     RANGE_PWM_CHANNELS[currentDCO],
                      PW[0]);
 
   voice_task_autotune(voiceTaskMode, ampCompCalibrationVal);

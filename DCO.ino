@@ -8,34 +8,97 @@
 - Ask the AI to optimize and clean the autotune code. 
 */
 
-// ---------------------------------------------------------------------------
-// Profiling (see docs/BENCHMARKING.md)
-// ---------------------------------------------------------------------------
-// RUNNING_AVERAGE enables the hot-path profiler in bench.h: per-probe count / mean / min /
-// max / total plus each probe's share of its core's wall clock. Off means zero cost.
-// RUNNING_AVERAGE_FINE additionally instruments the smallest stages (a few multiplies
-// each). Every probe is an optimisation barrier, so enabling FINE changes codegen — it is
-// there to measure that distortion, not to be left on.
-// #define RUNNING_AVERAGE
+// =============================================================================
+// ENGINE — pitch mode ids (needed by board defaults + overrides below)
+// =============================================================================
+// Deep detail: docs/ENGINE_OPTIONS.md
+//   0 FLOAT (natural modifier→ratio; needs float voice)
+//   1 RATIO_Q16 (slopeQ20 + fused y→ratio; fixed default / float A/B)
+//   2 Q12 (slope A/B: IntQ16 y + reciprocal; float A/B OK)
+#define PITCH_INTERP_FLOAT       0
+#define PITCH_INTERP_RATIO_Q16   1
+#define PITCH_INTERP_Q12         2
+
+// =============================================================================
+// ENGINE — board defaults (Arduino core: PICO_RP2350 / else)
+// =============================================================================
+#if defined(PICO_RP2350)
+  // RP2350 has an FPU: float voice + float amp-comp dual-build (LUT + Q8 for A/B).
+  #ifndef USE_FLOAT_VOICE_TASK
+    #define USE_FLOAT_VOICE_TASK
+  #endif
+  #ifndef PITCH_INTERP_MODE
+    #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT
+  #endif
+  #ifndef USE_FLOAT_AMP_COMP
+    #define USE_FLOAT_AMP_COMP
+  #endif
+  #ifndef AMP_COMP_METHOD_DEFAULT
+    #define AMP_COMP_METHOD_DEFAULT 0   // FLOAT_QUAD (0); LUT=1, FIXED=2 — cmds 20–22
+  #endif
+  #ifndef HIGH_PRECISION_CLKDIV
+    #define HIGH_PRECISION_CLKDIV 1     // fixed-voice clkdiv only; ignored by float voice
+  #endif
+#else
+  // RP2040 / fallback: fixed voice + lean Q8 amp (no float amp tables / LUT RAM).
+  #ifndef AMP_COMP_METHOD_DEFAULT
+    #define AMP_COMP_METHOD_DEFAULT 2   // FIXED
+  #endif
+  #ifndef PITCH_INTERP_MODE
+    #define PITCH_INTERP_MODE PITCH_INTERP_RATIO_Q16
+  #endif
+  #ifndef HIGH_PRECISION_CLKDIV
+    #define HIGH_PRECISION_CLKDIV 1     // 1 = ~4µs/voice 64-bit div; 0 = ~1µs fast Q-format
+  #endif
+#endif
+
+// =============================================================================
+// ENGINE — overrides (uncomment to force; after board defaults)
+// =============================================================================
+// #undef USE_FLOAT_VOICE_TASK          // fixed voice_task on RP2350
+// #define USE_FLOAT_VOICE_TASK         // float voice on RP2040 (soft-float; slow)
+// #undef USE_FLOAT_AMP_COMP            // lean Q8 amp only (no float Hz tables / LUT)
+ #define USE_FLOAT_AMP_COMP           // float amp dual-build on RP2040 (large RAM)
+// #define HIGH_PRECISION_CLKDIV 0      // fast fixed clkdiv; ignored if float voice
+// #define AMP_COMP_METHOD_DEFAULT 1    // 0 FLOAT_QUAD / 1 LUT / 2 FIXED; needs USE_FLOAT_AMP_COMP for 0/1
+// Pitch A/B (ids above; default already set — #undef then redefine):
+// #undef PITCH_INTERP_MODE
+// #define PITCH_INTERP_MODE PITCH_INTERP_RATIO_Q16
+
+// =============================================================================
+// ENGINE — guards
+// =============================================================================
+#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT && !defined(USE_FLOAT_VOICE_TASK)
+  #error "PITCH_INTERP_FLOAT requires USE_FLOAT_VOICE_TASK (board default or override)"
+#endif
+
+// =============================================================================
+// PROFILING / BENCH (see docs/BENCHMARKING.md)
+// =============================================================================
+// RUNNING_AVERAGE: hot-path profiler in bench.h (count/mean/min/max/total + core share).
+// Off = zero cost. Needed for paced bench_out_* TX (profiler dump, amp/pitch benches).
+// RUNNING_AVERAGE_FINE: also probes tiny stages; every probe is an opt barrier — changes
+// codegen; for measuring that distortion, not for leaving on.
+// RUNNING_AVERAGE_PERIOD: only loop/loop1 BENCH_PERIOD; stage probes compile out.
+// Overrides FINE. Needs RUNNING_AVERAGE.
+#define RUNNING_AVERAGE
 // #define RUNNING_AVERAGE_FINE
+// #define RUNNING_AVERAGE_PERIOD
 
-// ---------------------------------------------------------------------------
-// Voice engine build options
-// ---------------------------------------------------------------------------
-// High-level engine selection:
-// - For RP2040 (no FPU): comment this out to use the fixed-point engine.
-// - For RP2350 (with FPU): leave defined to use the float-based engine.
-#define USE_FLOAT_ENGINE
+// Float vs double clkdiv comparison in voice_task_float; needs RUNNING_AVERAGE.
+// #define CLKDIV_BENCHMARK
 
-// ---------------------------------------------------------------------------
-// Serial hub: Serial2 GP20/21 is the only peer link (Input panel protocol +
-// 'x' gap/cal TX). Screen is reached by Input relaying gap 154 on its own Screen port.
-// ---------------------------------------------------------------------------
+// Amp-comp speed/accuracy reports (debug cmds 24–25); needs RUNNING_AVERAGE + USE_FLOAT_AMP_COMP.
+#define AMP_COMP_BENCHMARK
 
-// Accept the Input panel protocol on the USB CDC port as well, so a host app can
-// drive the board with no Input or Screen attached (see tools/dco_control).
-// Comment out for production: while enabled, stray bytes typed into a serial
-// terminal are read as frame headers.
+// =============================================================================
+// BOARD / IO
+// =============================================================================
+// Serial hub: Serial2 GP20/21 is the only peer link (Input panel protocol + 'x'
+// gap/cal TX). Screen is reached by Input relaying gap 154 on its Screen port.
+
+// Accept Input panel protocol on USB CDC too (tools/dco_control). Comment out for
+// production: stray terminal bytes are read as frame headers while enabled.
 #define ENABLE_USB_CONTROL
 
 // Phase 3 CV hardware (provisional pins in globals.h / docs/PINOUT.md).
@@ -43,47 +106,15 @@
 // #define ENABLE_CV_OUTS
 // #define ENABLE_WAVE_MUX
 
-// Dual-MCU: RP2040 voice-aux owns Dist Drive/Mix PWM + filter mode GPIO (and later FX).
-// Keep dist/mode apply handlers and state; skip local pin writers so they do not fight the aux.
-// Leave commented for solo RP2350B / single-MCU builds (full local IO). See docs/DUAL_MCU.md.
+// Dual-MCU: RP2040 voice-aux owns Dist Drive/Mix PWM + filter mode GPIO (later FX).
+// Keep apply handlers/state; skip local pin writers so they do not fight the aux.
+// Leave commented for solo RP2350B / single-MCU (full local IO). See docs/DUAL_MCU.md.
 // #define ENABLE_VOICE_AUX
 
-// Derived switches for the different subsystems:
-#ifdef USE_FLOAT_ENGINE
-  // Use float-based voice task (pitch path, modifiers, clock-divider, etc.)
-  #define USE_FLOAT_VOICE_TASK
-  // Use float-based amplitude compensation (pure Hz domain).
-  #define USE_FLOAT_AMP_COMP
+// Note-on sync retrigger (oscSync >= 1): 0 = EXACT_Y, 1 = SYNC_JMP. Runtime: cmds 26/27.
+#ifndef NOTE_RETRIG_MODE_DEFAULT
+  #define NOTE_RETRIG_MODE_DEFAULT 0
 #endif
-
-
-// ---------------------------------------------------------------------------
-// RP2040 or fixed point engine specific settings
-  // Pitch interpolation mode:
-  #define PITCH_USE_RATIO_Q16 1 // Uncomment this to use Q16 for pitch interpolation. dEFAULT mode.
-
-  // IF PITCH_USE_RATIO_Q16 IS NOT DEFINED, THEN:
-    // Use Q12 for pitch interpolation. Q12 is a good compromise between accuracy and speed.
-    // This mostly affects the multiplier table interpolation (pitch bend, detune, unison, ADSR, drift etc.) applied to frequency.
-    // Higher precision means smaller stepping when modulating frequency.
-    //
-    // #ifdef PITCH_INTERP_USE_Q8_ 32-bit friendly path: slope in Q8, delta in Q8; total 16 frac bits
-    // #ifdef PITCH_INTERP_USE_Q12: enables medium-precision path: slope in Q12, delta in Q12; total 24 frac bits
-    // else: enables high-precision path: slope in Q20, delta in Q16
-  #define PITCH_INTERP_USE_Q12  // Uncomment this to use Q12 for pitch interpolation WHEN PITCH_USE_RATIO_Q16 IS NOT DEFINED.
-  //#define PITCH_INTERP_USE_Q8 // Uncomment this to use Q8 for pitch interpolation WHEN PITCH_USE_RATIO_Q16 IS NOT DEFINED.
-  
-  
-  
-  // Select clock-divider precision mode for the fixed-point path:
-  // 0 = fast 32-bit fixed-point, 1 = high-precision 64bit integer division
-  // High precision is preferred for better accuracy at low frequencies, but it is much slower than fixed point. 
-  // High precision is the default method, at 4uS per voice. Fixed-point takes 1uS per voice.
-  // The fixed-point method is there in case I want to try some crazy fast modulation, or to move the project to a much slower processor.
-#define HIGH_PRECISION_CLKDIV 1
-
-// Uncomment to benchmark float vs double clock-divider calculations in voice_task_float:
-// #define CLKDIV_BENCHMARK
 
 #include <Adafruit_TinyUSB.h>
 #include <MIDI.h>
@@ -105,6 +136,7 @@
 #include "param_router.h"
 
 #include "globals.h"
+#include "amp_comp.h"
 #include "bench.h"
 #include "cv_state.h"
 #include "cv_out.h"
@@ -112,7 +144,6 @@
 #include "FS.h"
 
 #include "noteList.h"
-#include "amp_comp.h"
 
 #include "Serial.h"
 #include "midi.h"
@@ -205,15 +236,25 @@ void loop() {
   loop0_micros = micros();
 
   {
-    BENCH_BEGIN(loop0_io);
+    BENCH_BEGIN(loop0_midi);
     MIDI_USB.read();
     MIDI_SERIAL.read();
+    BENCH_END(loop0_midi);
+  }
+
+  {
+    BENCH_BEGIN(loop0_serial);
     serial_panel_task();
 #ifdef ENABLE_USB_CONTROL
     serial_usb_task();
 #endif
+    BENCH_END(loop0_serial);
+  }
+
+  {
+    BENCH_BEGIN(loop0_lfo1);
     LFO1();
-    BENCH_END(loop0_io);
+    BENCH_END(loop0_lfo1);
   }
 
   if ((loop0_micros - loop0_microsLast) > 100) {
