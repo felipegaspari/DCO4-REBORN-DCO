@@ -39,7 +39,7 @@ Vendored Arduino libraries used by the build (passed via `--libraries ./_build_l
 
 | Library | Path | Notes |
 |---------|------|--------|
-| `ADSR_Bezier` | `_build_libs/ADSR_Bezier` → `../../ADSR_Bezier` | Symlink to monorepo root; track **`main`** branch |
+| `ADSR_Bezier` | `_build_libs/ADSR_Bezier` → `../../ADSR_Bezier` | Symlink to monorepo root; track **`main`**. Toggle math backend in [`adsr.h`](adsr.h) via `ADSR_BEZIER_USE_FLOAT` (default `0` = fixed-point). |
 | `mo-lfo` | `_build_libs/mo-lfo` | Vendored copy |
 | `MIDI_Library` | `_build_libs/MIDI_Library` | Vendored copy |
 | `PID_v1` | `_build_libs/PID_v1` | Vendored copy |
@@ -55,7 +55,7 @@ git submodule add -b main https://github.com/felipegaspari/ADSR_Bezier.git ADSR_
 git submodule update --init _build_libs/ADSR_Bezier
 ```
 
-Ensure `ADSR_Bezier` is on branch **`main`** (RP2040 fixed-point hot path).
+Ensure `ADSR_Bezier` is on branch **`main`**. To try the float envelope path on Pico 2, set `ADSR_BEZIER_USE_FLOAT` to `1` in `adsr.h` before building.
 
 ## Docs
 

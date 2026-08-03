@@ -140,6 +140,7 @@ Related docs:
 
 - **Vendored library: `ADSR_Bezier`** (`#include <ADSR_Bezier.h>`)  
   - Located at `_build_libs/ADSR_Bezier` (symlink to monorepo-root `ADSR_Bezier`, branch **`main`**).  
+  - Compile-time backend: `ADSR_BEZIER_USE_FLOAT` in `adsr.h` (`0` = Q24/Q16 fixed default, `1` = float hot path).  
   - RP2040‑friendly ADSR class (`adsr`) using **Bézier‑based curve lookup tables**.
   - Supports configurable attack/decay/release curves (8 shapes), micros‑ or millis‑based timing, and integer outputs with no float in the envelope hot path.
 

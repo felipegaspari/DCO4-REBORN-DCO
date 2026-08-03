@@ -11,6 +11,9 @@ uint16_t linToLogLookup[LIN_TO_EXP_TABLE_SIZE];
 uint16_t maxADSRControlValue = ADSR_1_DACSIZE;
 
 // ADSR Bezier library (provides curve tables and ADSR class)
+#ifndef ADSR_BEZIER_USE_FLOAT
+#define ADSR_BEZIER_USE_FLOAT 0   // RP2040: fixed-point envelope hot path (default)
+#endif
 #include <ADSR_Bezier.h>
 
 volatile byte noteStart[NUM_VOICES_TOTAL];
