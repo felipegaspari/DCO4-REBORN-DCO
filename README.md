@@ -33,6 +33,30 @@ arduino-cli compile \
 
 Main sketch: `DCO.ino`.
 
+### Libraries (`_build_libs`)
+
+Vendored Arduino libraries used by the build (passed via `--libraries ./_build_libs`):
+
+| Library | Path | Notes |
+|---------|------|--------|
+| `ADSR_Bezier` | `_build_libs/ADSR_Bezier` → `../../ADSR_Bezier` | Symlink to monorepo root; track **`main`** branch |
+| `mo-lfo` | `_build_libs/mo-lfo` | Vendored copy |
+| `MIDI_Library` | `_build_libs/MIDI_Library` | Vendored copy |
+| `PID_v1` | `_build_libs/PID_v1` | Vendored copy |
+
+**Monorepo layout:** clone `DCO3-MONOSYNTH` with the sibling [`ADSR_Bezier`](../ADSR_Bezier/) repo at the repo root so the symlink resolves.
+
+**Standalone DCO clone:** replace the symlink with a submodule:
+
+```bash
+cd _build_libs
+rm -f ADSR_Bezier
+git submodule add -b main https://github.com/felipegaspari/ADSR_Bezier.git ADSR_Bezier
+git submodule update --init _build_libs/ADSR_Bezier
+```
+
+Ensure `ADSR_Bezier` is on branch **`main`** (RP2040 fixed-point hot path).
+
 ## Docs
 
 See `docs/` — especially:

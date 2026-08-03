@@ -138,8 +138,8 @@ Related docs:
 
 ## 4. Envelope Generator (ADSR) and Modulation (LFO & Drift)
 
-- **External library: `ADSR_Bezier`** (`#include <ADSR_Bezier.h>`)  
-  - Installed as an Arduino library (not vendored under `src/` in this repo).  
+- **Vendored library: `ADSR_Bezier`** (`#include <ADSR_Bezier.h>`)  
+  - Located at `_build_libs/ADSR_Bezier` (symlink to monorepo-root `ADSR_Bezier`, branch **`main`**).  
   - RP2040‑friendly ADSR class (`adsr`) using **Bézier‑based curve lookup tables**.
   - Supports configurable attack/decay/release curves (8 shapes), micros‑ or millis‑based timing, and integer outputs with no float in the envelope hot path.
 
@@ -359,13 +359,17 @@ Related docs:
 
 ---
 
-## 10. External Libraries (not in-repo)
+## 10. External Libraries
 
-These are **Arduino libraries** installed in the IDE / sketchbook `libraries` folder, not under a repo `src/` tree:
+**Vendored in `_build_libs/`** (via `--libraries ./_build_libs`):
 
-- **`ADSR_Bezier`** — Bézier ADSR used by `adsr.*` (see section 4).
-- **`mo-lfo`** — LFO class used by `LFO.*` (see section 4).
-- **`PID_v1`**, **Adafruit TinyUSB**, **MIDI** (FortySevenEffects), **LittleFS** (core).
+- **`ADSR_Bezier`** — symlink to monorepo-root repo, branch **`main`**; used by `adsr.*` (see section 4).
+- **`mo-lfo`** — vendored copy; used by `LFO.*` (see section 4).
+- **`MIDI_Library`**, **`PID_v1`** — vendored copies.
+
+**Other dependencies** (Arduino core / sketchbook, not under `_build_libs`):
+
+- **Adafruit TinyUSB**, **LittleFS** (RP2040 core).
 
 ---
 

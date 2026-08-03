@@ -864,15 +864,20 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 
 ---
 
-## 9. External libraries (not in this repo)
+## 9. Vendored libraries (`_build_libs/`)
+
+| Library | Path | Used by |
+|---------|------|---------|
+| `ADSR_Bezier` | `_build_libs/ADSR_Bezier` (symlink → monorepo root, branch `main`) | `adsr.*` |
+| `mo-lfo` | `_build_libs/mo-lfo` | `LFO.*` |
+| `MIDI_Library` | `_build_libs/MIDI_Library` | `midi.*` |
+| `PID_v1` | `_build_libs/PID_v1` | `PID.*` / `init_PID` |
+
+## 10. Other external dependencies
 
 | Library | Used by |
 |---------|---------|
-| `ADSR_Bezier` | `adsr.*` |
-| `mo-lfo` | `LFO.*` |
-| `PID_v1` | `PID.*` / `init_PID` |
 | Adafruit TinyUSB | USB MIDI |
-| MIDI (FortySevenEffects) | `midi.*` (calls `handle*`) |
 | LittleFS (RP2040 core) | `FS.*` |
 
 ---
