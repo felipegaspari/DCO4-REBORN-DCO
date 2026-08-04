@@ -83,7 +83,7 @@
 // Overrides FINE. Needs RUNNING_AVERAGE.
 #define RUNNING_AVERAGE
 // #define RUNNING_AVERAGE_FINE
-// #define RUNNING_AVERAGE_PERIOD
+ #define RUNNING_AVERAGE_PERIOD
 
 // Float vs double clkdiv comparison in voice_task_float; needs RUNNING_AVERAGE.
 // #define CLKDIV_BENCHMARK
@@ -165,11 +165,12 @@
 
 // ****************************************************************************************** //
 
-// Core 0 boot: serial, MIDI, LFOs, board fix pins, USB descriptors, calibration input pin.
+// Core 0 boot: USB, UART serial, MIDI handlers, LFOs, board fix pins, calibration input pin.
 void setup() {
   //set_sys_clock_khz(sysClock, true);
   // EEPROM.begin(512);
   bench_init_core();  // SysTick is per core; core 1 arms its own in setup1()
+  init_usb();
   init_serial();
   init_midi();
 
@@ -185,9 +186,6 @@ void setup() {
 
   pinMode(24, OUTPUT);  // Fix pin on DCO BOARD
   digitalWrite(24, HIGH);
-
-  USBDevice.setManufacturerDescriptor("FELA         ");
-  USBDevice.setProductDescriptor("DCO3-MONO   ");
 
   pinMode(DCO_calibration_pin, INPUT_PULLUP);
 

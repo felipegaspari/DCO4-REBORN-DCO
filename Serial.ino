@@ -13,8 +13,27 @@ void init_serial() {
   Serial2.setRX(21);
   Serial2.setTX(20);
   Serial2.begin(2500000);
+}
+
+// USB composite: CDC serial + MIDI. Descriptors first, then detach/attach so the
+// host re-enumerates after flash/soft reset (avoids missing /dev/ttyACM* on Linux).
+void init_usb() {
+  USBDevice.setManufacturerDescriptor("FELA         ");
+  USBDevice.setProductDescriptor("DCO3-MONO   ");
+
+  if (!TinyUSBDevice.isInitialized()) {
+    TinyUSBDevice.begin(0);
+  }
 
   Serial.begin(2000000);
+  usb_midi.setStringDescriptor("DCO3-MONO MIDI");
+  MIDI_USB.begin(MIDI_CHANNEL_OMNI);
+
+  if (TinyUSBDevice.mounted()) {
+    TinyUSBDevice.detach();
+    delay(10);
+    TinyUSBDevice.attach();
+  }
 }
 
 /// -------------------------------
@@ -24,28 +43,67 @@ void init_serial() {
 // EnvVCA times ('a')
 static void input_handle_adsr1(char, const uint8_t* payload, uint8_t len) {
   if (len != INPUT_SERIAL_LEN_ADSR_BLOCK) return;
-  ADSR_VCA_attack  = word(payload[0], payload[1]);
-  ADSR_VCA_decay   = word(payload[2], payload[3]);
-  ADSR_VCA_sustain = word(payload[4], payload[5]);
-  ADSR_VCA_release = word(payload[6], payload[7]);
+
+  uint16_t dirty = 0;
+  uint16_t v;
+
+  v = word(payload[0], payload[1]);
+  if (v != ADSR_VCA_attack)  { ADSR_VCA_attack  = v; dirty |= ADSR_DIRTY_VCA_A; }
+
+  v = word(payload[2], payload[3]);
+  if (v != ADSR_VCA_decay)   { ADSR_VCA_decay   = v; dirty |= ADSR_DIRTY_VCA_D; }
+
+  v = word(payload[4], payload[5]);
+  if (v != ADSR_VCA_sustain) { ADSR_VCA_sustain = v; dirty |= ADSR_DIRTY_VCA_S; }
+
+  v = word(payload[6], payload[7]);
+  if (v != ADSR_VCA_release) { ADSR_VCA_release = v; dirty |= ADSR_DIRTY_VCA_R; }
+
+  if (dirty) mark_adsr_params_dirty(dirty);
 }
 
 // EnvVCF times ('b')
 static void input_handle_adsr2(char, const uint8_t* payload, uint8_t len) {
   if (len != INPUT_SERIAL_LEN_ADSR_BLOCK) return;
-  ADSR_VCF_attack  = word(payload[0], payload[1]);
-  ADSR_VCF_decay   = word(payload[2], payload[3]);
-  ADSR_VCF_sustain = word(payload[4], payload[5]);
-  ADSR_VCF_release = word(payload[6], payload[7]);
+
+  uint16_t dirty = 0;
+  uint16_t v;
+
+  v = word(payload[0], payload[1]);
+  if (v != ADSR_VCF_attack)  { ADSR_VCF_attack  = v; dirty |= ADSR_DIRTY_VCF_A; }
+
+  v = word(payload[2], payload[3]);
+  if (v != ADSR_VCF_decay)   { ADSR_VCF_decay   = v; dirty |= ADSR_DIRTY_VCF_D; }
+
+  v = word(payload[4], payload[5]);
+  if (v != ADSR_VCF_sustain) { ADSR_VCF_sustain = v; dirty |= ADSR_DIRTY_VCF_S; }
+
+  v = word(payload[6], payload[7]);
+  if (v != ADSR_VCF_release) { ADSR_VCF_release = v; dirty |= ADSR_DIRTY_VCF_R; }
+
+  if (dirty) mark_adsr_params_dirty(dirty);
 }
 
 // EnvDCO times ('c') → existing ADSR1_* engine (pitch/PW)
 static void input_handle_adsr3(char, const uint8_t* payload, uint8_t len) {
   if (len != INPUT_SERIAL_LEN_ADSR_BLOCK) return;
-  ADSR1_attack  = word(payload[0], payload[1]);
-  ADSR1_decay   = word(payload[2], payload[3]);
-  ADSR1_sustain = word(payload[4], payload[5]);
-  ADSR1_release = word(payload[6], payload[7]);
+
+  uint16_t dirty = 0;
+  uint16_t v;
+
+  v = word(payload[0], payload[1]);
+  if (v != ADSR1_attack)  { ADSR1_attack  = v; dirty |= ADSR_DIRTY_DCO_A; }
+
+  v = word(payload[2], payload[3]);
+  if (v != ADSR1_decay)   { ADSR1_decay   = v; dirty |= ADSR_DIRTY_DCO_D; }
+
+  v = word(payload[4], payload[5]);
+  if (v != ADSR1_sustain) { ADSR1_sustain = v; dirty |= ADSR_DIRTY_DCO_S; }
+
+  v = word(payload[6], payload[7]);
+  if (v != ADSR1_release) { ADSR1_release = v; dirty |= ADSR_DIRTY_DCO_R; }
+
+  if (dirty) mark_adsr_params_dirty(dirty);
 }
 
 static void input_handle_filter_block(char, const uint8_t* payload, uint8_t len) {

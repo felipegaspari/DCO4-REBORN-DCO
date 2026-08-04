@@ -44,7 +44,7 @@ static void disable_all_oscillators_and_range_pwm() {
 
 // Helper: park shared PW PWM at max wrap (DIV_COUNTER_PW). Called from disable_all_oscillators_and_range_pwm().
 static void reset_pw_to_DIV_COUNTER_PW() {
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+  for (int i = 0; i < NUM_OSCILLATORS; i++) {
     pwm_set_chan_level(PW_PWM_SLICES[i], pwm_gpio_to_channel(PW_PINS[i]), DIV_COUNTER_PW);
   }
 }

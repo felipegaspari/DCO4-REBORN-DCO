@@ -6,7 +6,7 @@
 
 
 
-#define NUM_VOICES_TOTAL 1
+#define NUM_VOICES_TOTAL 3
 #define NUM_OSCILLATORS 3
 #ifndef NUM_FILTERS
 #define NUM_FILTERS 2
@@ -83,7 +83,7 @@ uint32_t loop1_micros;
 uint32_t loop0_microsLast;
 uint32_t loop1_microsLast;
 
-volatile uint8_t NUM_VOICES = NUM_VOICES_TOTAL;
+volatile uint8_t NUM_VOICES = 1;
 volatile uint8_t STACK_VOICES = 1;
 
 volatile uint8_t voiceMode = 1;

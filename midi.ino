@@ -1,7 +1,6 @@
 
-// Init USB + DIN MIDI ports and register note/CC/program/pitch-bend handlers. Called from setup().
+// Register note/CC/program/pitch-bend handlers on USB + DIN MIDI. USB begin is in init_usb().
 void init_midi() {
-  MIDI_USB.begin(MIDI_CHANNEL_OMNI);
   MIDI_USB.setHandleNoteOn(handleNoteOn);
   MIDI_USB.setHandleNoteOff(handleNoteOff);
   MIDI_USB.setHandleControlChange(handleControlChange);
@@ -64,20 +63,20 @@ void midi_cc_handle(uint8_t number, uint8_t value) {
 // Serial.ino writes them.
 void midi_cc_apply(uint8_t target, int16_t value) {
   switch (target) {
-    case CC_LOCAL_ADSR_VCA_ATTACK:      ADSR_VCA_attack  = (uint16_t)value; break;
-    case CC_LOCAL_ADSR_VCA_DECAY:       ADSR_VCA_decay   = (uint16_t)value; break;
-    case CC_LOCAL_ADSR_VCA_SUSTAIN:     ADSR_VCA_sustain = (uint16_t)value; break;
-    case CC_LOCAL_ADSR_VCA_RELEASE:     ADSR_VCA_release = (uint16_t)value; break;
+    case CC_LOCAL_ADSR_VCA_ATTACK:      ADSR_VCA_attack  = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCA_A); break;
+    case CC_LOCAL_ADSR_VCA_DECAY:       ADSR_VCA_decay   = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCA_D); break;
+    case CC_LOCAL_ADSR_VCA_SUSTAIN:     ADSR_VCA_sustain = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCA_S); break;
+    case CC_LOCAL_ADSR_VCA_RELEASE:     ADSR_VCA_release = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCA_R); break;
 
-    case CC_LOCAL_ADSR_VCF_ATTACK:      ADSR_VCF_attack  = (uint16_t)value; break;
-    case CC_LOCAL_ADSR_VCF_DECAY:       ADSR_VCF_decay   = (uint16_t)value; break;
-    case CC_LOCAL_ADSR_VCF_SUSTAIN:     ADSR_VCF_sustain = (uint16_t)value; break;
-    case CC_LOCAL_ADSR_VCF_RELEASE:     ADSR_VCF_release = (uint16_t)value; break;
+    case CC_LOCAL_ADSR_VCF_ATTACK:      ADSR_VCF_attack  = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_A); break;
+    case CC_LOCAL_ADSR_VCF_DECAY:       ADSR_VCF_decay   = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_D); break;
+    case CC_LOCAL_ADSR_VCF_SUSTAIN:     ADSR_VCF_sustain = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_S); break;
+    case CC_LOCAL_ADSR_VCF_RELEASE:     ADSR_VCF_release = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_R); break;
 
-    case CC_LOCAL_ADSR_DCO_ATTACK:      ADSR1_attack  = (uint16_t)value; break;
-    case CC_LOCAL_ADSR_DCO_DECAY:       ADSR1_decay   = (uint16_t)value; break;
-    case CC_LOCAL_ADSR_DCO_SUSTAIN:     ADSR1_sustain = (uint16_t)value; break;
-    case CC_LOCAL_ADSR_DCO_RELEASE:     ADSR1_release = (uint16_t)value; break;
+    case CC_LOCAL_ADSR_DCO_ATTACK:      ADSR1_attack  = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_A); break;
+    case CC_LOCAL_ADSR_DCO_DECAY:       ADSR1_decay   = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_D); break;
+    case CC_LOCAL_ADSR_DCO_SUSTAIN:     ADSR1_sustain = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_S); break;
+    case CC_LOCAL_ADSR_DCO_RELEASE:     ADSR1_release = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_R); break;
 
     case CC_LOCAL_ADSR1_TO_VCA_AMOUNT:  ADSR1toVCA = value; break;
 

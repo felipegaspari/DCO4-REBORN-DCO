@@ -67,7 +67,7 @@ void init_FS() {
   filePWCenterFS.read(PWCenterBankBuffer, FSPWBankSize);
   filePWCenterFS.close();
 
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+  for (int i = 0; i < NUM_OSCILLATORS; i++) {
     uint16_t uint16Data;
     for (int j = 0; j < FSPWDataSize; j++) {
       ((uint8_t *)&uint16Data)[j] = PWCenterBankBuffer[i * 2 + j];
@@ -88,7 +88,7 @@ void init_FS() {
   filePWHighLimitFS.read(PWHighLimitBankBuffer, FSPWBankSize);
   filePWHighLimitFS.close();
 
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+  for (int i = 0; i < NUM_OSCILLATORS; i++) {
     uint16_t uint16Data;
     for (int j = 0; j < FSPWDataSize; j++) {
       ((uint8_t *)&uint16Data)[j] = PWHighLimitBankBuffer[i * 2 + j];
@@ -108,7 +108,7 @@ void init_FS() {
   filePWLowLimitFS.read(PWLowLimitBankBuffer, FSPWBankSize);
   filePWLowLimitFS.close();
 
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+  for (int i = 0; i < NUM_OSCILLATORS; i++) {
     uint16_t uint16Data;
     for (int j = 0; j < FSPWDataSize; j++) {
       ((uint8_t *)&uint16Data)[j] = PWLowLimitBankBuffer[i * 2 + j];

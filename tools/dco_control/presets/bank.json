@@ -121,7 +121,7 @@
       }
     },
     {
-      "name": "TEST1",
+      "name": "TEST4",
       "params": {
         "13": 36,
         "14": 3,
@@ -207,22 +207,22 @@
       },
       "blocks": {
         "adsr_vca": {
-          "attack": 125,
-          "decay": 1158,
-          "sustain": 3966,
-          "release": 600
+          "attack": 4095,
+          "decay": 4095,
+          "sustain": 0,
+          "release": 4095
         },
         "adsr_vcf": {
-          "attack": 68,
-          "decay": 1200,
-          "sustain": 4024,
-          "release": 600
+          "attack": 4095,
+          "decay": 4095,
+          "sustain": 0,
+          "release": 4095
         },
         "adsr_dco": {
-          "attack": 0,
-          "decay": 1200,
-          "sustain": 4095,
-          "release": 600
+          "attack": 4095,
+          "decay": 4095,
+          "sustain": 0,
+          "release": 4095
         },
         "adsr1_to_vca": {
           "amount": 485

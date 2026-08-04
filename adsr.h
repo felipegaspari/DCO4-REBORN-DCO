@@ -12,16 +12,27 @@ uint16_t maxADSRControlValue = ADSR_1_DACSIZE;
 
 // ADSR Bezier library (provides curve tables and ADSR class)
 #ifndef ADSR_BEZIER_USE_FLOAT
-#define ADSR_BEZIER_USE_FLOAT 0   // RP2040: fixed-point envelope hot path (default)
+#if defined(PICO_RP2350)
+#define ADSR_BEZIER_USE_FLOAT 1
+#else
+#define ADSR_BEZIER_USE_FLOAT 0
 #endif
-#include <ADSR_Bezier.h>
+#endif
+
+#ifndef ADSR_BEZIER_USE_MICROS
+#define ADSR_BEZIER_USE_MICROS 0
+#endif
+
+#include "_build_libs/ADSR_Bezier/ADSR_Bezier.h"
+
 
 volatile byte noteStart[NUM_VOICES_TOTAL];
 volatile byte noteEnd[NUM_VOICES_TOTAL];
 
 uint16_t ADSR1Level[NUM_VOICES_TOTAL];
 uint16_t ADSR_VCA_Level[NUM_VOICES_TOTAL];
-uint16_t ADSR_VCF_Level[NUM_VOICES_TOTAL];
+uint16_t ADSR_VCF_Level;
+uint16_t ADSR_VCF2_Level;
 
 static constexpr uint16_t ADSR_1_CC = 4000;
 static constexpr uint16_t ADSR_CV_CC = 4095;  // EnvVCA/EnvVCF domain (Mainboard CV scale)
@@ -38,6 +49,29 @@ uint16_t ADSR1_decay;
 uint16_t ADSR1_sustain;
 uint16_t ADSR1_release;
 
+// Core 0 marks dirty on write; Core 1 applies to voices every ~5 ms.
+#define ADSR_DIRTY_DCO_A   (1u << 0)
+#define ADSR_DIRTY_DCO_D   (1u << 1)
+#define ADSR_DIRTY_DCO_S   (1u << 2)
+#define ADSR_DIRTY_DCO_R   (1u << 3)
+#define ADSR_DIRTY_VCA_A   (1u << 4)
+#define ADSR_DIRTY_VCA_D   (1u << 5)
+#define ADSR_DIRTY_VCA_S   (1u << 6)
+#define ADSR_DIRTY_VCA_R   (1u << 7)
+#define ADSR_DIRTY_VCF_A   (1u << 8)
+#define ADSR_DIRTY_VCF_D   (1u << 9)
+#define ADSR_DIRTY_VCF_S   (1u << 10)
+#define ADSR_DIRTY_VCF_R   (1u << 11)
+#define ADSR_DIRTY_DCO_ALL (ADSR_DIRTY_DCO_A | ADSR_DIRTY_DCO_D | ADSR_DIRTY_DCO_S | ADSR_DIRTY_DCO_R)
+#define ADSR_DIRTY_VCA_ALL (ADSR_DIRTY_VCA_A | ADSR_DIRTY_VCA_D | ADSR_DIRTY_VCA_S | ADSR_DIRTY_VCA_R)
+#define ADSR_DIRTY_VCF_ALL (ADSR_DIRTY_VCF_A | ADSR_DIRTY_VCF_D | ADSR_DIRTY_VCF_S | ADSR_DIRTY_VCF_R)
+
+volatile uint16_t adsr_params_dirty = 0;
+
+static inline void mark_adsr_params_dirty(uint16_t mask) {
+  adsr_params_dirty |= mask;
+}
+
 byte ADSR1_curve2Val = 0;
 
 float ADSR1_curve1 = 0.999;
@@ -46,9 +80,6 @@ float ADSR_VCA_curve1 = 0.9995f;
 float ADSR_VCA_curve2 = 0.9995f;
 float ADSR_VCF_curve1 = 0.997f;
 float ADSR_VCF_curve2 = 0.997f;
-
-unsigned long tADSR;
-unsigned long tADSR_params;
 
 bool ADSRRestart = true;
 
@@ -62,17 +93,26 @@ float ADSR1toPWM_formula;
 int32_t ADSR1toPWM_formula_q24;
 
 adsr adsr1_voice_0(ADSR_1_CC, ADSR1_curve1, ADSR1_curve2, false, 7, 7, 7);
+adsr adsr1_voice_1(ADSR_1_CC, ADSR1_curve1, ADSR1_curve2, false, 7, 7, 7);
+adsr adsr1_voice_2(ADSR_1_CC, ADSR1_curve1, ADSR1_curve2, false, 7, 7, 7);
+
 adsr adsr_vca_voice_0(ADSR_CV_CC, ADSR_VCA_curve1, ADSR_VCA_curve2, false, 1, 2, 1);
-adsr adsr_vcf_voice_0(ADSR_CV_CC, ADSR_VCF_curve1, ADSR_VCF_curve2, false, 4, 6, 1);
+adsr adsr_vca_voice_1(ADSR_CV_CC, ADSR_VCA_curve1, ADSR_VCA_curve2, false, 1, 2, 1);
+adsr adsr_vca_voice_2(ADSR_CV_CC, ADSR_VCA_curve1, ADSR_VCA_curve2, false, 1, 2, 1);
+
+// Shared filter envelopes (VCF1 + VCF2); not per voice.
+adsr adsr_vcf_voice(ADSR_CV_CC, ADSR_VCF_curve1, ADSR_VCF_curve2, false, 4, 6, 1);
+adsr adsr_vcf2_voice(ADSR_CV_CC, ADSR_VCF_curve1, ADSR_VCF_curve2, false, 4, 6, 1);
 
 struct ADSRStruct {
   adsr adsr1_voice;   // EnvDCO → pitch/PW
   adsr adsr_vca_voice;
-  adsr adsr_vcf_voice;
 };
 
 ADSRStruct ADSRVoices[] = {
-  { adsr1_voice_0, adsr_vca_voice_0, adsr_vcf_voice_0 },
+  { adsr1_voice_0, adsr_vca_voice_0 },
+  { adsr1_voice_1, adsr_vca_voice_1 },
+  { adsr1_voice_2, adsr_vca_voice_2 },
 };
 
 void init_ADSR();

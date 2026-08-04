@@ -1,0 +1,10 @@
+-I/home/felipe/.arduino15/packages/rp2040/hardware/rp2040/6.0.0/cores/rp2040
+-I/home/felipe/.arduino15/packages/rp2040/hardware/rp2040/6.0.0/variants/rpipico2
+-I/home/felipe/.arduino15/packages/rp2040/hardware/rp2040/6.0.0/include
+-I/home/felipe/.arduino15/packages/rp2040/hardware/rp2040/6.0.0/cores/rp2040/lwip/src/include
+-I/home/felipe/.arduino15/packages/rp2040/hardware/rp2040/6.0.0/libraries/Adafruit_TinyUSB_Arduino/src
+-std=gnu++23
+-DARDUINO=10607
+-DARDUINO_ARCH_RP2040
+-DARDUINO_RASPBERRY_PI_PICO_2
+-DUSE_TINYUSB

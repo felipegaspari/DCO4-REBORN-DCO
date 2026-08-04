@@ -10,7 +10,7 @@ void init_pwm()
     pwm_set_enabled(RANGE_PWM_SLICES[i], true);
   }
 
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++)
+  for (int i = 0; i < NUM_OSCILLATORS; i++)
   {
     gpio_set_function(PW_PINS[i], GPIO_FUNC_PWM);
     PW_PWM_SLICES[i] = pwm_gpio_to_slice_num(PW_PINS[i]);
@@ -77,7 +77,7 @@ static bool level_pwm_slice_shares_voice_wrap(uint8_t slice) {
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
     if (slice == RANGE_PWM_SLICES[i]) return true;
   }
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+  for (int i = 0; i < NUM_OSCILLATORS; i++) {
     if (slice == PW_PWM_SLICES[i]) return true;
   }
   return false;
@@ -101,7 +101,7 @@ static uint16_t scale_level_cv_to_wrap(uint16_t level_cv, uint8_t slice) {
       return (uint16_t)(((uint32_t)level_cv * DIV_COUNTER) / DIV_COUNTER_CV);
     }
   }
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+  for (int i = 0; i < NUM_OSCILLATORS; i++) {
     if (slice == PW_PWM_SLICES[i]) {
       return (uint16_t)(((uint32_t)level_cv * DIV_COUNTER_PW) / DIV_COUNTER_CV);
     }

@@ -48,24 +48,24 @@ void update_CV_outs() {
     }
 
     if (VCFKeytrack != 0) {
-      for (byte i = 0; i < NUM_VOICES_TOTAL; i++) {
+      for (byte i = 0; i < NUM_VOICES; i++) {
         VCFKeytrackPerVoice[i] =
           1.00f + (float)(VCFKeytrackModifier * map(VOICE_NOTES[i], 0, 150, -60, 90));
       }
     } else {
-      for (byte i = 0; i < NUM_VOICES_TOTAL; i++) {
+      for (byte i = 0; i < NUM_VOICES; i++) {
         VCFKeytrackPerVoice[i] = 1.0f;
       }
     }
 
     if (analogDrift != 0) {
-      for (byte i = 0; i < NUM_VOICES_TOTAL; i++) {
+      for (byte i = 0; i < NUM_VOICES; i++) {
         // Monosynth: use osc-0 drift LFO (Mainboard used per-voice drift).
         VCF_DRIFT[i] = (float)LFO_DRIFT_LEVEL[0] *
                        (0.002f * (CV_DRIFT_REF_CC / (float)LFO_DRIFT_CC)) * (float)analogDrift;
       }
     } else {
-      for (byte i = 0; i < NUM_VOICES_TOTAL; i++) {
+      for (byte i = 0; i < NUM_VOICES; i++) {
         VCF_DRIFT[i] = 0.0f;
       }
     }
@@ -73,8 +73,10 @@ void update_CV_outs() {
 
   const int16_t LFO1toVCA_calc = (int16_t)((float)LFO1Level * LFO1toVCA_formula);
   const float LFO2toVCF_mod = (float)LFO2Level * LFO2toVCF_formula;
+  const float ADSR2toVCFcalculated = (float)ADSR_VCF_Level * ADSR2toVCF_formula;
+  const float ADSR2toVCF2calculated = (float)ADSR_VCF2_Level * ADSR2toVCF_formula;
 
-  for (byte i = 0; i < NUM_VOICES_TOTAL; i++) {
+  for (byte i = 0; i < NUM_VOICES; i++) {
     float VCA_velocityFactor = 1.0f;
     if (velocityToVCAVal != 0) {
       VCA_velocityFactor = 1.0f - ((float)velocityToVCA * (127 - midi_velocity[i]));
@@ -90,10 +92,15 @@ void update_CV_outs() {
     if (velocityToVCFVal != 0) {
       VCF_velocityFactor = 1.0f - ((float)velocityToVCF * (127 - midi_velocity[i]));
     }
-    float ADSR2toVCFcalculated = (float)ADSR_VCF_Level[i] * ADSR2toVCF_formula;
-    float combinedValue = ADSR2toVCFcalculated + LFO2toVCF_mod + (float)CUTOFF + VCF_DRIFT[i];
-    float finalValue = combinedValue * VCF_velocityFactor * VCFKeytrackPerVoice[i];
-    VCF_PWM[i] = (uint16_t)(4095 - (int)constrain(finalValue, 0, 4095));
+    if (i == 0) {
+      float combinedValue = ADSR2toVCFcalculated + LFO2toVCF_mod + (float)CUTOFF + VCF_DRIFT[i];
+      float finalValue = combinedValue * VCF_velocityFactor * VCFKeytrackPerVoice[i];
+      VCF_PWM[0] = (uint16_t)(4095 - (int)constrain(finalValue, 0, 4095));
+
+      float combinedValue2 = ADSR2toVCF2calculated + LFO2toVCF_mod + (float)CUTOFF + VCF_DRIFT[i];
+      float finalValue2 = combinedValue2 * VCF_velocityFactor * VCFKeytrackPerVoice[i];
+      VCF_PWM[1] = (uint16_t)(4095 - (int)constrain(finalValue2, 0, 4095));
+    }
   }
 
   // Matrix sum → levels + dual reso (+ Dist Drive when DCO owns dist pins).

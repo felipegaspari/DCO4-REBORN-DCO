@@ -10,6 +10,7 @@
 // Screen has no DCO port: Input relays gap 154 to it on its own Screen port.
 
 void init_serial();
+void init_usb();
 void serial_panel_task();
 
 #ifdef ENABLE_USB_CONTROL
