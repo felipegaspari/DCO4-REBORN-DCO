@@ -40,6 +40,9 @@ static const uint32_t SERIAL_FRAME_TIMEOUT_US = 5000;  // 5 ms
 // monopolizing core 0 while core 1 keeps running voice_task on the same PIO hardware.
 static const uint8_t SERIAL_DRAIN_BYTE_BUDGET = 32;
 
+// Max MIDI bytes parsed per loop() call on each MIDI port (one read() ≈ one byte).
+static const uint8_t MIDI_DRAIN_BYTE_BUDGET = 32;
+
 // Parser states:
 //   SERIAL_WAIT_FOR_CMD : expecting the command byte.
 //   SERIAL_READ_PAYLOAD : accumulating payload bytes for the current command.

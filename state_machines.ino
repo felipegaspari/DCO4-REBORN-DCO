@@ -115,8 +115,9 @@ void pio_topology_report() {
   int slave = sync_slave_osc();
   int master = sync_master_osc();
 
-  Serial.printf("[pio topology] syncMode=%u softSyncChunks=%u slave=%d master=%d\n",
-                syncMode, softSyncChunks, slave, master);
+  bench_out_reset();
+  bench_out_printf("[pio topology] syncMode=%u softSyncChunks=%u slave=%d master=%d\n",
+                   syncMode, softSyncChunks, slave, master);
 
   bool allOnPio0 = true;
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
@@ -124,46 +125,35 @@ void pio_topology_report() {
     bool onPio0 = (fn == GPIO_FUNC_PIO0);
     if (!onPio0) allOnPio0 = false;
 
-    Serial.printf("  OSC%d reset=GP%-2u sm=%u program=%s funcsel=%d%s\n",
-                  i + 1, RESET_PINS[i], VOICE_TO_SM[i],
-                  osc_uses_sync_program[i] ? "poll" : "free",
-                  (int)fn, onPio0 ? "" : "  <-- NOT PIO0");
+    bench_out_printf("  OSC%d reset=GP%-2u sm=%u program=%s funcsel=%d%s\n",
+                     i + 1, RESET_PINS[i], VOICE_TO_SM[i],
+                     osc_uses_sync_program[i] ? "poll" : "free",
+                     (int)fn, onPio0 ? "" : "  <-- NOT PIO0");
   }
 
-  Serial.printf("  reset pin ownership: %s\n",
-                allOnPio0 ? "OK (all PIO0)" : "BROKEN (a pin was stolen by another block)");
+  bench_out_printf("  reset pin ownership: %s\n",
+                   allOnPio0 ? "OK (all PIO0)" : "BROKEN (a pin was stolen by another block)");
 
   if (master >= 0 && slave >= 0) {
-    Serial.printf("  master OSC%d is sm=%u, slave OSC%d is sm=%u -> tie-break %s\n",
-                  master + 1, VOICE_TO_SM[master], slave + 1, VOICE_TO_SM[slave],
-                  VOICE_TO_SM[master] > VOICE_TO_SM[slave] ? "OK (master outranks slave)"
-                                                           : "WRONG (master can lose edges)");
+    bench_out_printf("  master OSC%d is sm=%u, slave OSC%d is sm=%u -> tie-break %s\n",
+                     master + 1, VOICE_TO_SM[master], slave + 1, VOICE_TO_SM[slave],
+                     VOICE_TO_SM[master] > VOICE_TO_SM[slave] ? "OK (master outranks slave)"
+                                                              : "WRONG (master can lose edges)");
   }
+  bench_out_active = true;
 }
 
-// Bench helper: park one oscillator at a fixed clk_div and report what the period model
-// predicts, so a frequency counter on its RESET pin can be compared directly.
-//
-// PIO_PERIOD_OVERHEAD_FREE = 12 is derived by counting instructions (see globals.h); this
-// is how to confirm it on hardware. Run it at two widely separated clk_div values and
-// feed both readings to pio_solve_period_model().
-void pio_period_probe(uint8_t osc, uint32_t clk_div) {
+// Park one oscillator at clk_div (core 1 only — called from pio_defer_service).
+static void pio_period_probe_run(uint8_t osc, uint32_t clk_div) {
   uint8_t sm = VOICE_TO_SM[osc];
 
   pio_sm_set_enabled(pio[0], sm, false);
   osc_load_period_stopped(osc, pioPulseLength, clk_div);
   pio_sm_set_enabled(pio[0], sm, true);
+}
 
-  uint32_t w = osc_ramp_weight(osc);
-  uint32_t k = osc_period_overhead(osc);
-  uint32_t predicted = pioPulseLength + w * clk_div + k;
-
-  Serial.printf("[period probe] osc=%u sm=%u pin=%u\n", osc, sm, RESET_PINS[osc]);
-  Serial.printf("  Y=%lu clk_div=%lu weight=%lu overhead=%lu\n",
-                (unsigned long)pioPulseLength, (unsigned long)clk_div,
-                (unsigned long)w, (unsigned long)k);
-  Serial.printf("  predicted period = %lu cycles = %.4f Hz\n",
-                (unsigned long)predicted, (double)sysClock_Hz / (double)predicted);
+void pio_period_probe(uint8_t osc, uint32_t clk_div) {
+  pio_defer_request_period_probe(osc, clk_div);
 }
 
 // Solve period = Y + weight*clk_div + overhead from two frequency-counter readings taken
@@ -214,10 +204,21 @@ void set_subosc_divide(uint8_t divide) {
 
 static volatile uint8_t pio_defer_pending = 0;
 static volatile uint8_t pio_defer_subosc_value = 0;
+static volatile uint8_t pio_defer_probe_osc = 0;
+static volatile uint32_t pio_defer_probe_clk_div = 0;
+
+volatile bool pio_probe_report_pending = false;
+static volatile uint8_t pio_probe_report_osc = 0;
+static volatile uint8_t pio_probe_report_sm = 0;
+static volatile uint32_t pio_probe_report_clk_div = 0;
+static volatile uint32_t pio_probe_report_weight = 0;
+static volatile uint32_t pio_probe_report_overhead = 0;
+static volatile uint32_t pio_probe_report_predicted = 0;
 
 static constexpr uint8_t PIO_DEFER_SYNC   = 1u << 0;
 static constexpr uint8_t PIO_DEFER_RESET  = 1u << 1;
 static constexpr uint8_t PIO_DEFER_SUBOSC = 1u << 2;
+static constexpr uint8_t PIO_DEFER_PROBE  = 1u << 3;
 
 void setSyncMode();  // voices.ino — must run on core 1 only
 
@@ -233,6 +234,35 @@ void pio_defer_request_subosc(uint8_t divide) {
   pio_defer_subosc_value = divide;
   __dmb();
   __atomic_fetch_or(&pio_defer_pending, PIO_DEFER_SUBOSC, __ATOMIC_SEQ_CST);
+}
+
+void pio_defer_request_period_probe(uint8_t osc, uint32_t clk_div) {
+  pio_defer_probe_osc = osc;
+  pio_defer_probe_clk_div = clk_div;
+  __dmb();
+  __atomic_fetch_or(&pio_defer_pending, PIO_DEFER_PROBE, __ATOMIC_SEQ_CST);
+}
+
+void pio_probe_report_flush() {
+  if (!pio_probe_report_pending) {
+    return;
+  }
+  pio_probe_report_pending = false;
+
+  const uint8_t osc = pio_probe_report_osc;
+  bench_out_reset();
+  bench_out_printf("[period probe] osc=%u sm=%u pin=%u\n",
+                   (unsigned)osc, (unsigned)pio_probe_report_sm,
+                   (unsigned)RESET_PINS[osc]);
+  bench_out_printf("  Y=%lu clk_div=%lu weight=%lu overhead=%lu\n",
+                   (unsigned long)pioPulseLength,
+                   (unsigned long)pio_probe_report_clk_div,
+                   (unsigned long)pio_probe_report_weight,
+                   (unsigned long)pio_probe_report_overhead);
+  bench_out_printf("  predicted period = %lu cycles = %.4f Hz\n",
+                   (unsigned long)pio_probe_report_predicted,
+                   (double)sysClock_Hz / (double)pio_probe_report_predicted);
+  bench_out_active = true;
 }
 
 void pio_defer_service() {
@@ -255,5 +285,18 @@ void pio_defer_service() {
   }
   if (pending & PIO_DEFER_SUBOSC) {
     set_subosc_divide(pio_defer_subosc_value);
+  }
+  if (pending & PIO_DEFER_PROBE) {
+    const uint8_t osc = pio_defer_probe_osc;
+    const uint32_t clk_div = pio_defer_probe_clk_div;
+    pio_period_probe_run(osc, clk_div);
+    pio_probe_report_osc = osc;
+    pio_probe_report_sm = VOICE_TO_SM[osc];
+    pio_probe_report_clk_div = clk_div;
+    pio_probe_report_weight = osc_ramp_weight(osc);
+    pio_probe_report_overhead = osc_period_overhead(osc);
+    pio_probe_report_predicted =
+        pioPulseLength + pio_probe_report_weight * clk_div + pio_probe_report_overhead;
+    pio_probe_report_pending = true;
   }
 }

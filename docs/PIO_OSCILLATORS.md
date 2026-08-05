@@ -629,7 +629,7 @@ run period probes at a low and a high divider. See `apply_param_debug_command()`
 
 The easiest way to send that is the bench controller in
 [`tools/dco_control`](../tools/dco_control/README.md), which has a button for each on its
-Sync and PIO tab and shows the board's replies in a log pane. It also drives
+Oscillators tab (Sync section) and shows the board's replies in a log pane. It also drives
 `PARAM_SOFT_SYNC` and `PARAM_SUBOSC_DIVIDE`, which have no Input-board UI, so it is the only
 way to exercise soft sync and the sub-oscillator.
 

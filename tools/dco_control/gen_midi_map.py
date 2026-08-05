@@ -61,12 +61,10 @@ VALUE_HEIGHT = 20
 # One muted accent per tab, so a knob's colour says which section it belongs to.
 GROUP_ACCENT = {
     params.GROUP_OSC: "#dda44a",
-    params.GROUP_SYNC: "#7f9ec4",
     params.GROUP_ENV: "#6fbf8b",
     params.GROUP_FILTER: "#d1685f",
     params.GROUP_PWM: "#b98bd1",
     params.GROUP_LFO: "#4fb3c4",
-    params.GROUP_VOICE: "#c0a06a",
     params.GROUP_MOD: "#a67c52",
     params.GROUP_CAL: "#8d97a3",
 }

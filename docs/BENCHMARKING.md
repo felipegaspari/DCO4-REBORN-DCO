@@ -22,8 +22,9 @@ With `RUNNING_AVERAGE` off, every `BENCH_*` macro expands to nothing. There is n
 cost and no storage in the shipping build.
 
 **`RUNNING_AVERAGE_PERIOD`** (needs `RUNNING_AVERAGE`): stage `BENCH_BEGIN`/`END` compile
-out; only `BENCH_PERIOD` for `loop period` / `loop1 period` collects. Use this for a true
-loop-time baseline without intermediate probe tax. The dump banner says `period only`.
+out; only `BENCH_PERIOD` for `loop period` / `loop1 period` collects. Path counters
+(`amp:` / `ratio:` / `porta:`) are also disabled — no bumps and no dump block. Use this for
+a true loop-time baseline without intermediate probe tax. The dump banner says `period only`.
 Do not combine with FINE expecting stage rows — PERIOD wins and FINE is ignored.
 
 **Period-only vs full MAIN.** Same preset, same play: compare `loop` / `loop1` mean **and
@@ -272,13 +273,21 @@ Compare live amp-comp algorithms and check LUT accuracy against the float quadra
 
 | `PARAM_DEBUG_COMMAND` | Effect |
 |----------------------:|--------|
-| 20 | Live method → `FLOAT_QUAD` |
+| 20 | Live method → `FLOAT_QUAD` (cached walk) |
 | 21 | Live method → `LUT` (speed A/B) |
 | 22 | Live method → `FIXED` (RP2040 compile default) |
-| 24 | Speed bench all methods → `bench_out_*` paced TX |
+| 24 | Speed bench all three methods → `bench_out_*` paced TX |
 | 25 | Accuracy vs `FLOAT_QUAD` → same output path |
 
 Method select (20–22) works without `AMP_COMP_BENCHMARK`. With `RUNNING_AVERAGE`, each press **resets the profiler**, then acks in the Board pane as `amp_comp method=… (profiler reset)`. Play ~1 s with pitch motion, then dump (**10**). On **RP2350 (FPU)** expect **amp comp** mean / `%win` roughly **LUT ≪ FLOAT_QUAD ≲ FIXED** (FIXED can lose to FLOAT in the float-Hz speed bench because each call does `lrintf` → Q8 then integer window math). On **RP2040 soft-float** the old intuition **FLOAT_QUAD ≫ FIXED ≫ LUT** still holds. Confirm with speed bench; absolute `meanNs` moves with Core 1's `live_method=` (contention). Reports 24–25 no-op unless both `AMP_COMP_BENCHMARK` and `RUNNING_AVERAGE` are on (same rule as profiler 10–12 for paced output).
+
+Live **FLOAT_QUAD** window find uses a per-osc cache then walk (full scan only as rare fallback). Profiler dump **10** prints an `amp:` path line (`hit` / `miss_walk` / `miss_scan` / `clamp`, `find_steps`) — only bumped by live **FLOAT_QUAD** (cmd **20**). `find_steps` is walk length. LUT / FIXED leave those counters at zero. LUT fill / accuracy gold call the same `get_chan_level_float_quad` (precompute resets `ampWinCache` afterward).
+
+**Bench vs live (why cmd 24 ≫ “feel”)**
+
+Cmd **24** is a microscope: ~700k amp-only calls, so `pctVsFloat` gaps look large (LUT often ≪ 100; FIXED often ≫ 100 on float voice). Live `amp comp` is often only ~10–20 `%win` of the voice window — even a large amp speedup moves total loop1 modestly. Large instrumented `(unattributed)` under `voice_task` is probe bookkeeping; do not judge “synth got faster” from that. Subjective sameness is normal: pitch / PIO still dominate.
+
+Under float voice, **FIXED** is often slower than FLOAT_QUAD in the speed bench (each FIXED call does `lrintf` → Q8 then integer window math). Rank live methods by `amp comp` **mean / `%win`**, not by ear.
 
 **Synthetic calibration (cmds 24 / 25 only)**
 
@@ -294,13 +303,21 @@ Do not treat 24/25 as a check of your board’s stored calibration.
 **Live A/B with the hot-path profiler**
 
 1. Enable `RUNNING_AVERAGE` (optional `RUNNING_AVERAGE_FINE`). Same preset both sides.
-2. Send 21 (LUT) or 20 (float quad), etc. — Board acks and clears old probe averages.
+2. Send method (20–22) — Board acks `amp_comp method=… (profiler reset)`.
 3. Play with pitch modulation ~1 s; dump profiler (**10**).
-4. Compare `amp comp` mean / max / `%win`, `voice_task`, and instrumented `loop1 period`.
+4. Check `build: … amp_method=…`, the `amp:` path line, and `amp comp` **mean / `%win`** (not loop1 feel).
 5. Rebuild with `RUNNING_AVERAGE_PERIOD` and dump again — trust **period-only** `loop1`
    mean **and max** for whether the synth got faster (ignore instrumented loop means).
-6. Dump `build:` line includes `amp_method=…`. On RP2350 expect LUT cheapest; FLOAT_QUAD
-   competitive with (often faster than) FIXED.
+
+Expected signatures after a fresh dump (same play gesture each time):
+
+| Method | `amp:` path counters | `amp comp` vs FLOAT_QUAD |
+|--------|----------------------|--------------------------|
+| **20 FLOAT_QUAD** | mostly `hit`, some `miss_walk`, rare `miss_scan`; `find_steps` = walk length | baseline `%win` |
+| **21 LUT** | **all zeros** | clearly lower mean / `%win` |
+| **22 FIXED** | all zeros | often higher mean / `%win` on float voice |
+
+If after **21** a fresh window still shows non-zero amp path counters, the method did **not** apply (chase param/debug path).
 
 **Dense note-on retrigger A/B** (after flashing note-on MAIN children)
 
@@ -311,9 +328,9 @@ Do not treat 24/25 as a check of your board’s stored calibration.
 3. Switch mode **26** / **27**, reset, same dense play, dump again. EXACT_Y: SM apply =
    disable+load+jmp+enable; SYNC_JMP: SM apply = jmp only + `RANGE PWM`.
 
-**Speed report** (`=== AMP COMP BENCH ===`): fixed-width comparison table — method, calls, totalUs, meanNs, pctVsFloat (vs `FLOAT_QUAD`). Workload is the **same 0.01 Hz grid as accuracy** (`1.00…AMP_COMP_MAX_HZ`, **one osc** / `AMP_COMP_BENCH_OSCS` — synthetic cal is identical per osc; header `grid=… oscs=`). No vibrato / coarse step. ~700k calls per method; wait for paced Board pane output. Absolute `meanNs` depends on `live_method=` (Core 1 keeps running live amp-comp during the Core 0 one-shot); prefer `pctVsFloat` for ranking.
+**Speed report** (`=== AMP COMP BENCH ===`): fixed-width comparison table — method, calls, totalUs, meanNs, pctVsFloat (vs `FLOAT_QUAD`). Methods: `FLOAT_QUAD` (cached), `LUT`, `FIXED`. Workload is the **same 0.01 Hz grid as accuracy** (`1.00…AMP_COMP_MAX_HZ`, **one osc** / `AMP_COMP_BENCH_OSCS` — synthetic cal is identical per osc; header `grid=… oscs=`). No vibrato / coarse step. ~700k calls per method; wait for paced Board pane output. Absolute `meanNs` depends on `live_method=` (Core 1 keeps running live amp-comp during the Core 0 one-shot); prefer `pctVsFloat` for ranking (LUT cheapest).
 
-**Accuracy report** (`=== AMP COMP ACCURACY ===`): per-method plain-English summary of error vs `FLOAT_QUAD` for `LUT` / `FIXED`. Errors are in **RANGE PWM counts** (full scale = `DIV_COUNTER`), also shown as **% of full**. Grid is every **0.01 Hz** from **1.00 to `AMP_COMP_MAX_HZ`** on **one osc** (same as speed). Each method prints: typical (mean) PWM, worst in-band (freq below max Hz), tip outlier if exact max Hz disagrees by more than 1 PWM, rate of samples **worse than 1 PWM** (`|e| > 1`), and rate of samples **exactly 1 PWM** (`|e| == 1`). Plus `LUT integer-Hz sanity` over `0…AMP_COMP_MAX_HZ` (want 0). LUT indexes by **nearest** integer Hz (not trunc). One-shot is heavy — wait for paced Board pane output.
+**Accuracy report** (`=== AMP COMP ACCURACY ===`): per-method plain-English summary of error vs `FLOAT_QUAD` (gold) for `LUT` / `FIXED`. Errors are in **RANGE PWM counts** (full scale = `DIV_COUNTER`), also shown as **% of full**. Grid is every **0.01 Hz** from **1.00 to `AMP_COMP_MAX_HZ`** on **one osc** (same as speed). Each method prints: typical (mean) PWM, worst in-band (freq below max Hz), tip outlier if exact max Hz disagrees by more than 1 PWM, rate of samples **worse than 1 PWM** (`|e| > 1`), and rate of samples **exactly 1 PWM** (`|e| == 1`). Plus `LUT integer-Hz sanity` over `0…AMP_COMP_MAX_HZ` (want 0). LUT indexes by **nearest** integer Hz (not trunc). One-shot is heavy — wait for paced Board pane output.
 
 Implementation: [`../amp_comp_bench.ino`](../amp_comp_bench.ino), wired from `apply_param_debug_command` and `bench_poll_core0()`. dco_control Diagnostics exposes the buttons via `AMP_COMP_COMMANDS` in [`../tools/dco_control/params.py`](../tools/dco_control/params.py).
 

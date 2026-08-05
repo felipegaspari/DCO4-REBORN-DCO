@@ -96,7 +96,7 @@
 // #define CLKDIV_BENCHMARK
 
 // Amp-comp speed/accuracy reports (debug cmds 24–25); needs RUNNING_AVERAGE + USE_FLOAT_AMP_COMP.
-#define AMP_COMP_BENCHMARK
+// #define AMP_COMP_BENCHMARK
 
 // =============================================================================
 // BOARD / IO
@@ -235,15 +235,21 @@ void setup1() {
   }
 }
 
-// Core 0 forever loop: MIDI read, Serial2 parser, LFO1; ~100 µs LFO2 + drift + FIFO push of detune.
+// Core 0 forever loop: MIDI read, Serial2 parser; ~50 µs LFO1 + LFO2 + drift.
 void loop() {
   BENCH_PERIOD(loop0_period);
   loop0_micros = micros();
 
   {
     BENCH_BEGIN(loop0_midi);
-    while (MIDI_USB.read()) {}
-    while (MIDI_SERIAL.read()) {}
+    uint8_t midi_budget = MIDI_DRAIN_BYTE_BUDGET;
+    while (midi_budget > 0 && MIDI_USB.read()) {
+      midi_budget--;
+    }
+    midi_budget = MIDI_DRAIN_BYTE_BUDGET;
+    while (midi_budget > 0 && MIDI_SERIAL.read()) {
+      midi_budget--;
+    }
     BENCH_END(loop0_midi);
   }
 
@@ -256,13 +262,13 @@ void loop() {
     BENCH_END(loop0_serial);
   }
 
-  {
-    BENCH_BEGIN(loop0_lfo1);
-    LFO1();
-    BENCH_END(loop0_lfo1);
-  }
+  if ((loop0_micros - loop0_microsLast) > 50) {
+    {
+      BENCH_BEGIN(loop0_lfo1);
+      LFO1();
+      BENCH_END(loop0_lfo1);
+    }
 
-  if ((loop0_micros - loop0_microsLast) > 100) {
     {
       BENCH_BEGIN(loop0_lfo2);
       LFO2();
@@ -275,13 +281,6 @@ void loop() {
       BENCH_END(loop0_drift);
     }
 
-    {
-      // Transfer LFO1 detune modulation as a raw Q24 fixed-point integer via FIFO.
-      BENCH_BEGIN(loop0_fifo_push);
-      rp2040.fifo.push_nb((uint32_t)DETUNE_INTERNAL_q24);
-      BENCH_END(loop0_fifo_push);
-    }
-
     loop0_microsLast = loop0_micros;
   }
 
@@ -290,7 +289,7 @@ void loop() {
   bench_poll_core0();
 }
 
-// Core 1 forever loop: soft timers; auto/manual calibration OR ADSR + FIFO pop + voice_task_main.
+// Core 1 forever loop: soft timers; auto/manual calibration OR ADSR + voice_task_main.
 void loop1() {
   BENCH_PERIOD(loop1_period);
 
@@ -333,14 +332,6 @@ void loop1() {
         BENCH_END(loop1_cv_outs);
       }
       loop1_microsLast = loop1_micros;
-    }
-
-    {
-      // Receive Q24 detune value from core 0; reinterpret raw bits back to signed.
-      BENCH_BEGIN(loop1_fifo_pop);
-      rp2040.fifo.pop_nb(detune_fifo_variable);
-      DETUNE_INTERNAL_FIFO_q24 = (int32_t)DETUNE_INTERNAL_FIFO;
-      BENCH_END(loop1_fifo_pop);
     }
 
     {

@@ -41,29 +41,24 @@ void init_LFO2() {
   LFO2_class.setMode0Freq(5);   // set LFO to 30 Hz
 }
 
-// Update LFO1 and write DETUNE_INTERNAL_q24 for Core1 FIFO. Called every loop() iter.
+// Update LFO1 per-osc pitch mods (LFO1toDCO + per-osc extra, one product each). ~50 µs.
 inline void LFO1() {
-  //tLFO1 = micros();                                     // take timestamp
-  //LFO1Level = LFO1_CC_HALF - LFO1_class.getWave(micros());
   LFO1Level = LFO1_class.getWave(micros()) - LFO1_CC_HALF;
-  // Produce detune modulation directly in Q24 fixed-point:
-  // detune_q24 = (LFO1Level * LFO1toDCO) * 2^24
-  DETUNE_INTERNAL_q24 = (int32_t)LFO1Level * LFO1toDCO_q24;
+  const int32_t lfo1 = LFO1Level;
+  lfo1_pitch_mod_q24[LFO1_PITCH_OSC1] = lfo1 * (LFO1toDCO_q24 + LFO1toOSC1_q24);
+  lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] = lfo1 * (LFO1toDCO_q24 + LFO1toOSC2_q24);
+  lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] = lfo1 * (LFO1toDCO_q24 + LFO1toOSC3_q24);
 }
 
-// Update LFO2 levels and DETUNE_INTERNAL2_q24. Called from loop() ~every 100 µs.
+// Update LFO2 pitch mods for OSC2/3 (fine + coarse folded). ~50 µs.
 inline void LFO2() {
-  //tLFO1 = micros();                                     // take timestamp
-  //LFO1Level = LFO1_CC_HALF - LFO1_class.getWave(micros());
   LFO2Level = LFO2_class.getWave(micros()) - LFO2_CC_HALF;
-  //PW_MOD = (float)((float)LFO2Level * LFO2toPW);
-  // Produce OSC2/OSC3 detune modulation in Q24 fixed-point:
-  // detuneN_q24 = (LFO2Level * LFO2toDETUNEN) * 2^24
-  DETUNE_INTERNAL2_q24 = (int32_t)LFO2Level * LFO2toDETUNE2_q24;
-  DETUNE_INTERNAL3_q24 = (int32_t)LFO2Level * LFO2toDETUNE3_q24;
+  const int32_t lfo2 = LFO2Level;
+  lfo2_pitch_mod_q24[LFO2_PITCH_OSC2] = lfo2 * (LFO2toOSC2_q24 + LFO2toOSC2_coarse_q24);
+  lfo2_pitch_mod_q24[LFO2_PITCH_OSC3] = lfo2 * (LFO2toOSC3_q24 + LFO2toOSC3_coarse_q24);
 }
 
-// Update per-oscillator drift LFO levels into LFO_DRIFT_LEVEL[]. Called with LFO2 ~every 100 µs.
+// Update per-oscillator drift LFO levels into LFO_DRIFT_LEVEL[]. Called with LFO2 ~every 50 µs.
 inline void DRIFT_LFOs() {
   unsigned long currentMicros = micros();
   for (int i = 0; i < NUM_OSCILLATORS; i++) {

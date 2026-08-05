@@ -76,6 +76,12 @@ void update_CV_outs() {
   const float ADSR2toVCFcalculated = (float)ADSR_VCF_Level * ADSR2toVCF_formula;
   const float ADSR2toVCF2calculated = (float)ADSR_VCF2_Level * ADSR2toVCF_formula;
 
+  int32_t mod_sums[MOD_DEST_COUNT] = { 0 };
+  if (!manualCalibrationFlag) {
+    mod_matrix_accumulate(mod_sums);
+  }
+  const float matrix_cutoff = (float)mod_sums[MOD_DEST_VCF_CUTOFF];
+
   for (byte i = 0; i < NUM_VOICES; i++) {
     float VCA_velocityFactor = 1.0f;
     if (velocityToVCAVal != 0) {
@@ -93,11 +99,13 @@ void update_CV_outs() {
       VCF_velocityFactor = 1.0f - ((float)velocityToVCF * (127 - midi_velocity[i]));
     }
     if (i == 0) {
-      float combinedValue = ADSR2toVCFcalculated + LFO2toVCF_mod + (float)CUTOFF + VCF_DRIFT[i];
+      float combinedValue =
+        ADSR2toVCFcalculated + LFO2toVCF_mod + (float)CUTOFF + VCF_DRIFT[i] + matrix_cutoff;
       float finalValue = combinedValue * VCF_velocityFactor * VCFKeytrackPerVoice[i];
       VCF_PWM[0] = (uint16_t)(4095 - (int)constrain(finalValue, 0, 4095));
 
-      float combinedValue2 = ADSR2toVCF2calculated + LFO2toVCF_mod + (float)CUTOFF + VCF_DRIFT[i];
+      float combinedValue2 =
+        ADSR2toVCF2calculated + LFO2toVCF_mod + (float)CUTOFF + VCF_DRIFT[i] + matrix_cutoff;
       float finalValue2 = combinedValue2 * VCF_velocityFactor * VCFKeytrackPerVoice[i];
       VCF_PWM[1] = (uint16_t)(4095 - (int)constrain(finalValue2, 0, 4095));
     }
@@ -106,15 +114,16 @@ void update_CV_outs() {
   // Matrix sum → levels + dual reso (+ Dist Drive when DCO owns dist pins).
   // Skipped under manual cal (that path calls update_CV_outs_manual_calibration instead).
   uint16_t dist_out = DIST_DRIVE;
+  uint16_t dist_mix_out = DIST_MIX;
   if (!manualCalibrationFlag) {
-    dist_out = mod_matrix_apply_cv();
+    mod_matrix_apply_cv(mod_sums, &dist_out, &dist_mix_out);
   } else {
     RESONANCE_PWM[0] = RESONANCE;
     RESONANCE_PWM[1] = RESONANCE;
   }
 
 #ifdef ENABLE_CV_OUTS
-  write_cv_pwm_raw(VCF_PWM[0], RESONANCE_PWM, VCA_PWM[0], dist_out, DIST_MIX);
+  write_cv_pwm_raw(VCF_PWM[0], RESONANCE_PWM, VCA_PWM[0], dist_out, dist_mix_out);
 #endif
 }
 

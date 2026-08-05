@@ -88,18 +88,16 @@ are empty until you save into them. Calibration and Diagnostics pulse commands a
 
 ## 4. Layout
 
-Eight parameter tabs from the tables in [`params.py`](params.py), plus a ninth for
+Six parameter tabs from the tables in [`params.py`](params.py), plus a seventh for
 bench-only buttons:
 
 | Tab | Contents |
 |-----|----------|
-| Oscillators | Intervals, detune, SQR and sub levels, wave enables |
-| Sync and PIO | Hard sync topology, soft sync, sub-osc divide, note-on sync and phase align |
-| Envelopes | The three envelope time blocks, curves, ADSR3 routing |
+| Oscillators | Pitch/Sync left, Voice & drift right; levels and wave matrix full-width at the bottom |
+| Envelopes | Three vertical ADSR time columns side by side; curve params as spinboxes; routing and rest below |
 | Filter | Cutoff, resonance, envelope and LFO amounts, keytrack, distortion Drive/Mix |
 | PWM | Pulse width, LFO2 and envelope to PW |
 | LFOs | Waveforms, speeds, and the LFO routing depths |
-| Voice and Drift | Voice mode, unison, portamento, analog drift, VCA |
 | Calibration | Autotune trigger, manual calibration stage and offsets |
 | Diagnostics | PIO topology / period probes and hot-path profiler buttons |
 
@@ -130,7 +128,7 @@ style so the same code works under either backend.
 
 ## 5. Testing the PIO sync work
 
-The **Sync and PIO** tab is the reason this tool exists. `PARAM_SOFT_SYNC` (36) and
+The **Oscillators** tab (Sync section) is the reason this tool exists. `PARAM_SOFT_SYNC` (36) and
 `PARAM_SUBOSC_DIVIDE` (37) have no Input-board UI at all, so the panel cannot reach them;
 this is the only way to exercise them. See
 [`DCO/docs/PIO_OSCILLATORS.md`](../../docs/PIO_OSCILLATORS.md) for what they do.
@@ -158,7 +156,7 @@ On the same tab, the **Hot-path profiler** buttons drive `PARAM_DEBUG_COMMAND` v
 - **Toggle ~1 Hz dump** turns the automatic report on or off; the board immediately prints
   `bench periodic on` or `off`.
 
-Two controls on that tab are easy to mistake for each other, because they are different
+Two controls on the Oscillators tab (Sync section) are easy to mistake for each other, because they are different
 parameters doing different jobs:
 
 - **Hard sync topology** (31) routes one oscillator's sideset onto another's reset pin, so

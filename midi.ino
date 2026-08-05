@@ -30,6 +30,11 @@ void handleNoteOff(byte channel, byte pitch, byte velocity) {
 // MIDI CC handler: CC 42 sets pitch-bend range in semitones and updates the Q24
 // multiplier, everything else goes through the generated map in midi_cc_map.h.
 void handleControlChange(byte channel, byte number, byte value) {
+  // CC 1 (mod wheel) → mod matrix source 11.
+  if (number == 1) {
+    mod_matrix_set_mod_wheel(value);
+    return;
+  }
   // CC #42 is used to set the pitch bend range in semitones.
   if (number == MIDI_CC_PITCH_BEND_RANGE) {
     pitchBendRange = value;

@@ -64,6 +64,8 @@ float    ampCompFrequencyHz[NUM_OSCILLATORS][ampCompTableSize + 1];
 // LUT at integer Hz matches float quadratic exactly; lookup uses nearest Hz.
 // Selectable for speed A/B; live default is FIXED.
 uint16_t ampCompLut[NUM_OSCILLATORS][AMP_COMP_MAX_HZ + 1];
+// Last quadratic window per osc for get_chan_level_float_quad (-1 = cold).
+int16_t  ampWinCache[NUM_OSCILLATORS];
 #endif
 
 // ---------------------------------------------------------------------------
@@ -73,7 +75,7 @@ uint16_t ampCompLut[NUM_OSCILLATORS][AMP_COMP_MAX_HZ + 1];
 // (RP2350 → FLOAT_QUAD, RP2040 → FIXED; overridable in ENGINE — overrides).
 // Runtime: PARAM_DEBUG_COMMAND 20–22 via amp_comp_set_method().
 enum AmpCompMethod : uint8_t {
-  AMP_COMP_FLOAT_QUAD = 0, // window scan + y=(a*x+b)*x+c — accuracy reference
+  AMP_COMP_FLOAT_QUAD = 0, // cached walk + y=(a*x+b)*x+c — live default on RP2350
   AMP_COMP_LUT        = 1, // nearest Hz → ampCompLut index (speed A/B)
   AMP_COMP_FIXED      = 2, // get_chan_level_lookup_fast (Q8 tables)
 };
@@ -361,7 +363,7 @@ uint16_t get_chan_level_lut(float freqHz, uint8_t voiceN);
 #endif
 
 #ifdef USE_FLOAT_AMP_COMP
-// Fill dense LUT from the float quadratic reference (integer Hz exact match).
+// Fill dense LUT from float quadratic (ampWinCache reset after fill in precompute).
 static inline void fill_amp_comp_lut_from_quad() {
   for (uint8_t o = 0; o < NUM_OSCILLATORS; ++o) {
     for (int32_t hz = 0; hz <= AMP_COMP_MAX_HZ; ++hz) {
@@ -429,6 +431,7 @@ static inline void precompute_amp_comp_for_engine() {
   memcpy(plateauStartFreqQ, plateauQSave, sizeof(plateauQSave));
 
   fill_amp_comp_lut_from_quad();
+  for (int o = 0; o < NUM_OSCILLATORS; ++o) ampWinCache[o] = -1;
 #else
   precomputeCoefficients(/*rewritePlateaus=*/true);
 #endif

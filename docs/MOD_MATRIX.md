@@ -1,8 +1,10 @@
-# Modulation matrix (v1)
+# Modulation matrix (v2)
 
 Sparse control-rate mod matrix for DCO3. Panel bases stay on ParamIds / `'d'` blocks; each tick sums active slots onto hardware CVs.
 
-**Never matrix destinations:** main **VCA** and **VCF1 cutoff** — those keep fixed buses in [`cv_out.ino`](../cv_out.ino).
+**Never a matrix destination:** main **VCA** — fixed EnvVCA + LFO1 + velocity bus in [`cv_out.ino`](../cv_out.ino).
+
+**Dual-bus policy:** LFO1 and LFO2 remain on their fixed depth params (`PARAM_LFO1_TO_DCO`, `PARAM_LFO2_TO_PW`, etc.) *and* are available as matrix sources (IDs 8–9). Matrix routing is independent.
 
 Related: [`DUAL_MCU.md`](DUAL_MCU.md), [`PINOUT.md`](PINOUT.md).
 
@@ -13,7 +15,7 @@ Related: [`DUAL_MCU.md`](DUAL_MCU.md), [`PINOUT.md`](PINOUT.md).
 ```text
 slot: source × dest × depth
 contribution = source_norm * depth
-hw[d] = clamp(panel_base[d] ± sum)   // − for level attenuators, + for reso / Dist Drive
+hw[d] = clamp(panel_base[d] ± sum)   // − for level attenuators, + for reso / cutoff / dist
 ```
 
 Eight slots (`MOD_SLOT_COUNT`). Empty when `source` or `dest` is `0xFF` (or out-of-range ParamId value).
@@ -34,8 +36,12 @@ Depth is bipolar `int16` (typically ±4095 for full-scale swing).
 | 5 | Keytrack | `-1..1` | Note vs pivot 60, independent of `VCFKeytrack` |
 | 6 | Random | `-1..1` | DCO: S&H on note-on; aux: ~5 Hz free-run |
 | 7 | Aftertouch | `0..1` | Channel AT / 127 |
+| 8 | LFO1 | `-1..1` | `LFO1Level / LFO1_CC_HALF`; fixed `LFO1toDCO` / `LFO1toVCA` unchanged |
+| 9 | LFO2 | `-1..1` | `LFO2Level / LFO2_CC_HALF`; fixed detune/PW/VCF depths unchanged |
+| 10 | Pitch bend | `-1..1` | `(midi_pitch_bend − 8192) / 8192`; fixed pitch path in voice engine unchanged |
+| 11 | Mod wheel | `0..1` | MIDI CC 1 / 127 |
 
-Legacy ADSR1/2 and LFO1/2 stay on fixed buses only.
+EnvVCA (ADSR1) and EnvVCF (ADSR2) stay on fixed buses only.
 
 ---
 
@@ -50,8 +56,8 @@ Legacy ADSR1/2 and LFO1/2 stay on fixed buses only.
 | 4 | VCF1 resonance | RP2350 | Add to panel `RESONANCE` → `RESONANCE_PWM[0]` |
 | 5 | VCF2 resonance | RP2350 | → `RESONANCE_PWM[1]` |
 | 6 | Dist Drive | RP2040 aux / solo DCO | Add to panel `DIST_DRIVE` |
-
-VCF cutoff S&H is a future fixed path, not a matrix dest.
+| 7 | VCF cutoff | RP2350 | Add to shared `CUTOFF` sum → both filter cutoff paths |
+| 8 | Dist Mix | RP2040 aux / solo DCO | Add to panel `DIST_MIX` |
 
 ---
 
@@ -71,8 +77,8 @@ Mirrored in DCO / Input / Screen / VOICE-AUX `params_def.h`. Names: `PARAM_MOD_S
 
 ## Runtime
 
-- **DCO:** [`mod_matrix.ino`](../mod_matrix.ino) — `mod_matrix_apply_cv()` from `update_CV_outs()` (~10 kHz with ADSR). Skipped under manual calibration (cal forces absolute level PWMs).
-- **VOICE-AUX:** same ParamIds; only dest 6 applied in `mod_matrix_apply_dist()` each `loop()`. Vel/keytrack/AT/ADSR/LFO stubbed until performance broadcast.
+- **DCO:** [`mod_matrix.ino`](../mod_matrix.ino) — `mod_matrix_accumulate()` then `mod_matrix_apply_cv()` from `update_CV_outs()` (~10 kHz with ADSR). Cutoff sum applied before VCF PWM math. Skipped under manual calibration.
+- **VOICE-AUX:** same ParamIds; dest 6 (Dist Drive) and dest 8 (Dist Mix) in `mod_matrix_apply_dist()` each `loop()`.
 - Level panel applies update **bases only**; PWM is written after the matrix sum.
 
 ---
@@ -81,7 +87,8 @@ Mirrored in DCO / Input / Screen / VOICE-AUX `params_def.h`. Names: `PARAM_MOD_S
 
 | File | Role |
 |------|------|
-| [`mod_matrix.h`](../mod_matrix.h) / [`mod_matrix.ino`](../mod_matrix.ino) | Slots, sources, sum |
-| [`cv_out.ino`](../cv_out.ino) | Calls apply; VCA / cutoff untouched |
+| [`mod_matrix.h`](../mod_matrix.h) / [`mod_matrix.ino`](../mod_matrix.ino) | Slots, sources, sum, apply |
+| [`cv_out.ino`](../cv_out.ino) | Accumulate cutoff; VCA untouched |
 | [`PWM.ino`](../PWM.ino) | `write_level_pwm_raw`, per-filter `RESONANCE_PWM[]` |
-| [`VOICE-AUX/mod_matrix.*`](../../VOICE-AUX/mod_matrix.h) | Dist Drive re-sum |
+| [`midi.ino`](../midi.ino) | CC 1 → mod wheel; note-on random; aftertouch |
+| [`VOICE-AUX/mod_matrix.*`](../../VOICE-AUX/mod_matrix.h) | Dist Drive + Dist Mix re-sum |

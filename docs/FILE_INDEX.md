@@ -172,8 +172,8 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `get_chan_level_lookup_fast()` — Q8 Hz → range PWM (always compiled; live FIXED / fixed `voice_task_fixed_point`).
   - **Called from:** `voice_task_fixed_point()` directly; `get_chan_level_for_engine()` / method FIXED.
   - **When:** Fixed hot path; float-engine FIXED method / benches.
-- `get_chan_level_float_quad()` — Float quadratic reference (Hz).
-  - **Called from:** LUT fill; accuracy bench; method FLOAT_QUAD.
+- `get_chan_level_float_quad()` — Float quadratic cached walk (Hz); live FLOAT_QUAD / LUT fill / accuracy gold.
+  - **Called from:** method FLOAT_QUAD; LUT fill; speed/accuracy benches.
   - **When:** `USE_FLOAT_AMP_COMP`.
 - `get_chan_level_lut()` — Dense 1 Hz LUT (nearest Hz index).
   - **Called from:** `get_chan_level_for_engine` when method LUT.
@@ -326,7 +326,7 @@ Sparse mod matrix (8 slots). Docs: [`MOD_MATRIX.md`](MOD_MATRIX.md).
   - **Called from:** `params.ino` apply handlers.
 - `mod_matrix_on_note_on()` / `mod_matrix_set_aftertouch()` — Random S&H + AT source.
   - **Called from:** `note_on()` / MIDI AT callback.
-- `mod_matrix_accumulate()` / `mod_matrix_apply_cv()` — Sum → level PWM + `RESONANCE_PWM[]` + Dist Drive out.
+- `mod_matrix_accumulate()` / `mod_matrix_apply_cv()` — Sum → level PWM + `RESONANCE_PWM[]` + Dist Drive / Dist Mix; cutoff sum in `update_CV_outs()`.
   - **Called from:** `update_CV_outs()`.
 
 ### `amp_comp.h`
@@ -421,14 +421,14 @@ Prototypes / instances. **No function definitions.**
 - `init_DRIFT_LFO()` — Init one drift LFO (uses `expConverterFloat`).
   - **Called from:** `init_DRIFT_LFOs()`; also re-speed from param applies.
   - **When:** Boot; Serial2 drift params.
-- `LFO1()` — Update LFO1 → `DETUNE_INTERNAL_q24`.
-  - **Called from:** `loop()` every iteration.
+- `LFO1()` — Update LFO1 → `lfo1_pitch_mod_q24[]`.
+  - **Called from:** `loop()` when ~50 µs elapsed (with LFO2 + drift).
   - **When:** Realtime Core0.
-- `LFO2()` — Update LFO2 depths.
-  - **Called from:** `loop()` when ~100 µs elapsed.
+- `LFO2()` — Update LFO2 → `lfo2_pitch_mod_q24[]`.
+  - **Called from:** `loop()` when ~50 µs elapsed.
   - **When:** Realtime Core0.
 - `DRIFT_LFOs()` — Update `LFO_DRIFT_LEVEL[]`.
-  - **Called from:** `loop()` when ~100 µs elapsed (with LFO2).
+  - **Called from:** `loop()` when ~50 µs elapsed (with LFO1 + LFO2).
   - **When:** Realtime Core0.
 
 ---
@@ -747,7 +747,9 @@ Prototype. **No function definitions.**
 - `apply_param_octave_shift()` — global `octave_shift` (wire id `PARAM_OSC1_INTERVAL`).
 - `apply_param_osc2_interval()` — OSC2 interval.
 - `apply_param_osc2_detune_val()` — OSC2 detune.
-- `apply_param_lfo2_to_detune2()` — LFO2→OSC2 detune depth (uses `expConverterFloat`).
+- `apply_param_lfo2_to_osc2()` — LFO2→OSC2 fine pitch depth (0..255, `expConverterFloat`).
+- `apply_param_lfo2_to_osc3()` — LFO2→OSC3 fine pitch depth (0..255).
+- `apply_param_lfo2_to_osc2/3_coarse()` — LFO2 coarse pitch (0..511; LFO1 curve + amp scale at apply time).
 - `apply_param_osc_sync_mode()` — Osc sync / phase-align related.
 - `apply_param_portamento_time()` — Porta time (uses `expConverter`).
 - `apply_param_portamento_mode()` — Time vs slew porta.
@@ -761,6 +763,7 @@ Prototype. **No function definitions.**
 - `apply_param_soft_sync()` — Hard (sideset) vs soft (polled `jmp pin`) sync → `setSyncMode()`.
 - `apply_param_subosc_divide()` — Sub-osc off / ÷2 / ÷4 → `set_subosc_divide()`.
 - `apply_param_lfo1_to_dco()` — LFO1→DCO depth (`expConverterFloat`).
+- `apply_param_lfo1_to_osc1/2/3()` — additive LFO1 pitch depth per osc (stacks on global FIFO bus).
 - `apply_param_lfo1_speed()` — LFO1 rate.
 - `apply_param_lfo2_speed()` — LFO2 rate.
 - `apply_param_lfo2_to_pw()` — LFO2→PW depth.

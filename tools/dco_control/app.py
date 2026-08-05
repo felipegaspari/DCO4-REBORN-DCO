@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import queue
-import re
 import sys
 import threading
 import tkinter as tk
@@ -33,8 +32,61 @@ except ImportError:
 # Coalesce slider drags into one write per interval, so dragging cannot flood the link.
 SEND_INTERVAL_MS = 20
 
-# Ranges at or below this width get a spinbox instead of a slider, where one step matters.
-SPINBOX_MAX_RANGE = 24
+PARAM_BY_PID = {p.pid: p for p in params.PARAMS}
+
+# Oscillators tab layout (see _build_osc_tab).
+OSC_PITCH_PIDS = (13, 14, 33, 15, 34)
+OSC_SYNC_PIDS = (31, 36, 37, 17)
+OSC_VOICE_PIDS = (26, 27, 18, 32, 28, 29, 30, 43, 21)
+OSC_LEVEL_PIDS = (22, 23, 38, 24)
+OSC_WAVE_MATRIX = (
+    ("OSC1", (1, 2, 3)),
+    ("OSC2", (84, 85, 86)),
+    ("OSC3", (87, 88, 89)),
+)
+OSC_WAVE_COLS = ("Saw", "Pulse", "Tri")
+
+# Reflow Oscillators tab: stack Pitch|Sync over Voice below this width (px).
+OSC_SPLIT_STACK_WIDTH = 720
+
+# Diagnostics tab compact layout (see _build_diag_tab).
+DIAG_SPLIT_STACK_WIDTH = 720
+DIAG_FRAME_PAD = 4
+DIAG_SECTION_PADY = 4
+
+# Envelopes tab layout (see _build_env_tab).
+ENV_ADSR_BLOCKS = ("adsr_vca", "adsr_vcf", "adsr_dco")
+ENV_CURVE_RESTART_PIDS = (8, 9, 48, 49, 50, 51)
+ENV_CURVE_COLUMNS = (
+    ("EnvVCA curves", 48, 49, 8),
+    ("EnvVCF curves", 50, 51, 9),
+    ("EnvDCO curves", None, None, None),
+)
+ENV_ADSR_VFADER_MIN = 80
+ENV_ADSR_VFADER_MAX = 280
+ENV_ADSR_VIEWPORT_FRAC = 0.35
+
+
+def _bind_scale_jump(scale: ttk.Scale, on_change) -> None:
+    """Button-1 on trough jumps to click position (clam default only steps)."""
+
+    def on_press(event):
+        part = scale.identify(event.x, event.y)
+        if part and ("trough" in str(part) or "track" in str(part)):
+            scale.set(scale.get(event.x, event.y))
+            on_change(str(scale.get()))
+            return "break"
+
+    scale.bind("<Button-1>", on_press, add="+")
+
+
+def _make_scale(parent, *, lo, hi, var, command, orient="horizontal", length=None) -> ttk.Scale:
+    kwargs: dict = dict(from_=lo, to=hi, variable=var, orient=orient, command=command)
+    if length is not None:
+        kwargs["length"] = length
+    scale = ttk.Scale(parent, **kwargs)
+    _bind_scale_jump(scale, command)
+    return scale
 
 
 def ivar(var: tk.Variable) -> int:
@@ -118,8 +170,9 @@ class App:
         self.bank = presets.empty_bank()
         self._clean_fp = ""
         self._preset_loading = False
-        self.amp_method_var = tk.StringVar(value="(unknown — press a method button)")
-        self._amp_method_re = re.compile(r"(?:amp_comp method|live_method)=(\w+)")
+        self._tab_canvases: list[tk.Canvas] = []
+        self._wheel_canvas: tk.Canvas | None = None
+        self.notebook: ttk.Notebook | None = None
 
         root.title("DCO bench controller")
         # Wide enough that the toolbar's right-hand side is never squeezed out by pack().
@@ -410,27 +463,38 @@ class App:
 
     def _build_tabs(self) -> None:
         notebook = ttk.Notebook(self.paned)
+        self.notebook = notebook
         self.paned.add(notebook, weight=5)
+        self._tab_canvases = []
 
         for group in params.GROUP_ORDER:
             page = ttk.Frame(notebook, padding=8)
             notebook.add(page, text=group)
             inner = self._scrollable(page)
-            row = 0
-            for block in [b for b in params.BLOCKS if b.group == group]:
-                row = self._add_block(inner, block, row)
-            for param in [p for p in params.PARAMS if p.group == group]:
-                row = self._add_param(inner, param, row)
-            inner.columnconfigure(1, weight=1)
+            if group == params.GROUP_OSC:
+                self._build_osc_tab(inner)
+            elif group == params.GROUP_ENV:
+                self._build_env_tab(inner)
+            else:
+                row = 0
+                for block in [b for b in params.BLOCKS if b.group == group]:
+                    row = self._add_block(inner, block, row)
+                for param in [p for p in params.PARAMS if p.group == group]:
+                    row = self._add_param(inner, param, row)
+                inner.columnconfigure(1, weight=1)
 
         diag = ttk.Frame(notebook, padding=8)
         notebook.add(diag, text=params.GROUP_DIAG)
         diag_inner = self._scrollable(diag)
-        row = self._add_diagnostics(diag_inner, 0)
-        row = self._add_bench_controls(diag_inner, row)
-        row = self._add_amp_comp_controls(diag_inner, row)
-        self._add_pitch_interp_controls(diag_inner, row)
-        diag_inner.columnconfigure(1, weight=1)
+        self._build_diag_tab(diag_inner)
+
+        notebook.bind("<<NotebookTabChanged>>", self._on_notebook_tab_changed)
+        for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+            notebook.bind(seq, self._on_tab_wheel)
+        self.root.bind_all("<Button-4>", self._on_tab_wheel, add="+")
+        self.root.bind_all("<Button-5>", self._on_tab_wheel, add="+")
+        self.root.bind_all("<MouseWheel>", self._on_tab_wheel, add="+")
+        self._on_notebook_tab_changed()
 
     def _scrollable(self, parent: ttk.Frame) -> ttk.Frame:
         canvas = tk.Canvas(parent, highlightthickness=0)
@@ -448,22 +512,320 @@ class App:
         inner.bind("<Configure>", on_configure)
         canvas.bind("<Configure>", on_configure)
 
-        # Bind the wheel only while the pointer is over this page. Using bind_all
-        # unconditionally would make every tab scroll whichever canvas was built last.
-        def scroll(event):
-            canvas.yview_scroll(-2 if event.num == 4 else 2, "units")
-
-        def grab(_e):
-            canvas.bind_all("<Button-4>", scroll)
-            canvas.bind_all("<Button-5>", scroll)
-
-        def release(_e):
-            canvas.unbind_all("<Button-4>")
-            canvas.unbind_all("<Button-5>")
-
-        parent.bind("<Enter>", grab)
-        parent.bind("<Leave>", release)
+        self._tab_canvases.append(canvas)
+        for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+            canvas.bind(seq, self._on_tab_wheel)
+            inner.bind(seq, self._on_tab_wheel)
         return inner
+
+    def _on_notebook_tab_changed(self, _event=None) -> None:
+        if self.notebook is None or not self._tab_canvases:
+            self._wheel_canvas = None
+            return
+        try:
+            idx = self.notebook.index(self.notebook.select())
+            self._wheel_canvas = self._tab_canvases[idx]
+        except (tk.TclError, IndexError):
+            self._wheel_canvas = self._tab_canvases[0]
+
+    def _widget_is_descendant(self, widget: tk.Misc | None, ancestor: tk.Misc) -> bool:
+        w = widget
+        while w is not None:
+            if w == ancestor:
+                return True
+            w = w.master
+        return False
+
+    def _wheel_over_log(self, widget: tk.Misc) -> bool:
+        log = getattr(self, "log_text", None)
+        return log is not None and self._widget_is_descendant(widget, log)
+
+    def _on_tab_wheel(self, event) -> str | None:
+        if self._wheel_over_log(event.widget):
+            return None
+        if self.notebook is not None:
+            x, y = self.root.winfo_pointerxy()
+            under = self.root.winfo_containing(x, y)
+            if under is None or not self._widget_is_descendant(under, self.notebook):
+                return None
+        canvas = self._wheel_canvas
+        if canvas is None:
+            return None
+        if event.num == 4:
+            canvas.yview_scroll(-2, "units")
+        elif event.num == 5:
+            canvas.yview_scroll(2, "units")
+        elif event.delta:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
+
+    def _build_osc_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+
+        self._osc_split = ttk.Frame(parent)
+        self._osc_split.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        self._osc_col_left = ttk.Frame(self._osc_split)
+        self._osc_col_right = ttk.Frame(self._osc_split)
+
+        row = 0
+        row = self._add_osc_section(self._osc_col_left, row, "Pitch", OSC_PITCH_PIDS, columnspan=1)
+        row = self._add_osc_section(self._osc_col_left, row, "Sync", OSC_SYNC_PIDS, columnspan=1)
+        self._add_osc_section(self._osc_col_right, 0, "Voice & drift", OSC_VOICE_PIDS, columnspan=1)
+
+        row = self._add_osc_levels_row(parent, 1, OSC_LEVEL_PIDS)
+        self._add_osc_wave_matrix(parent, row)
+
+        self._osc_reflow_width = -1
+        parent.bind("<Configure>", self._osc_layout_reflow, add="+")
+        parent.after_idle(self._osc_layout_reflow)
+
+    def _osc_layout_reflow(self, event=None) -> None:
+        split = getattr(self, "_osc_split", None)
+        if split is None:
+            return
+        width = split.winfo_width()
+        if width < 8:
+            return
+        if width == self._osc_reflow_width:
+            return
+        self._osc_reflow_width = width
+
+        stacked = width < OSC_SPLIT_STACK_WIDTH
+        left = self._osc_col_left
+        right = self._osc_col_right
+
+        if stacked:
+            left.grid(row=0, column=0, sticky="ew")
+            right.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+            split.columnconfigure(0, weight=1)
+            split.columnconfigure(1, weight=0)
+        else:
+            left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+            right.grid(row=0, column=1, sticky="nsew")
+            split.columnconfigure(0, weight=1)
+            split.columnconfigure(1, weight=1)
+
+        left.columnconfigure(0, weight=1)
+        right.columnconfigure(0, weight=1)
+
+        cells = getattr(self, "_osc_level_cells", ())
+        levels_frame = getattr(self, "_osc_levels_frame", None)
+        if levels_frame is not None and cells:
+            compact = stacked or width < OSC_SPLIT_STACK_WIDTH + 120
+            for c in range(4):
+                levels_frame.columnconfigure(c, weight=0)
+            for r in range(2):
+                levels_frame.rowconfigure(r, weight=0)
+            if compact:
+                levels_frame.columnconfigure(0, weight=1)
+                levels_frame.columnconfigure(1, weight=1)
+                for i, cell in enumerate(cells):
+                    cell.grid(row=i // 2, column=i % 2, sticky="ew", padx=4, pady=4)
+            else:
+                for i, cell in enumerate(cells):
+                    levels_frame.columnconfigure(i, weight=1)
+                    cell.grid(row=0, column=i, sticky="ew", padx=4, pady=0)
+
+    def _build_env_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(1, weight=1)
+        self._env_scales = []
+        self._env_fader_length = -1
+        self._env_inner = parent
+
+        times = ttk.Frame(parent)
+        times.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+        self._env_times = times
+        for col, key in enumerate(ENV_ADSR_BLOCKS):
+            self._add_adsr_block_vertical(times, self.blocks_by_key[key], col)
+        for c in range(len(ENV_ADSR_BLOCKS)):
+            self._env_times.columnconfigure(c, weight=1, uniform="env")
+        self._build_env_curves_row(times)
+
+        row = self._add_block(parent, self.blocks_by_key["adsr1_to_vca"], 1, columnspan=3)
+        for p in params.PARAMS:
+            if p.group == params.GROUP_ENV and p.pid not in ENV_CURVE_RESTART_PIDS:
+                row = self._add_param(parent, p, row)
+
+        parent.bind("<Configure>", self._env_fader_reflow, add="+")
+        parent.after_idle(self._env_fader_reflow)
+
+    def _env_fader_reflow(self, _event=None) -> None:
+        scales = getattr(self, "_env_scales", None)
+        inner = getattr(self, "_env_inner", None)
+        if not scales or inner is None:
+            return
+        canvas = inner.master
+        if not isinstance(canvas, tk.Canvas):
+            return
+        viewport_h = canvas.winfo_height()
+        if viewport_h < 2:
+            return
+        length = int(max(
+            ENV_ADSR_VFADER_MIN,
+            min(ENV_ADSR_VFADER_MAX, viewport_h * ENV_ADSR_VIEWPORT_FRAC),
+        ))
+        if length == self._env_fader_length:
+            return
+        self._env_fader_length = length
+        for scale in scales:
+            scale.configure(length=length)
+
+    def _add_adsr_block_vertical(self, parent: ttk.Frame, block: params.Block, column: int) -> None:
+        frame = ttk.LabelFrame(parent, text=block.label, padding=8)
+        frame.grid(row=0, column=column, sticky="ew", padx=(0, 8 if column < 2 else 0))
+        parent.columnconfigure(column, weight=1, uniform="env")
+
+        self.block_vars[block.key] = {}
+        for i, f in enumerate(block.fields):
+            cell = ttk.Frame(frame)
+            cell.grid(row=0, column=i, padx=4, sticky="new")
+            cell.columnconfigure(0, weight=1)
+            frame.columnconfigure(i, weight=1)
+            ttk.Label(cell, text=f.label).grid(row=0, column=0)
+            var = tk.DoubleVar(value=f.default)
+            self.block_vars[block.key][f.key] = var
+            readout = ttk.Label(cell, text=str(f.default), style="Readout.TLabel")
+
+            def on_slide(_v, key=block.key, var=var, rd=readout):
+                rd.config(text=str(ivar(var)))
+                if self._preset_loading:
+                    return
+                self.queue_block(key)
+
+            scale = _make_scale(
+                cell, lo=f.lo, hi=f.hi, var=var, command=on_slide,
+                orient="vertical", length=ENV_ADSR_VFADER_MIN,
+            )
+            scale.grid(row=1, column=0, pady=4)
+            readout.grid(row=2, column=0)
+            self._env_scales.append(scale)
+            self._readouts[("b", block.key, f.key)] = readout
+
+    def _add_env_curve_spin(self, cell: ttk.Frame, p: params.Param, short_label: str) -> None:
+        cell.columnconfigure(0, weight=1)
+        ttk.Label(cell, text=short_label).grid(row=0, column=0)
+        var = tk.DoubleVar(value=p.default)
+        self.param_vars[p.pid] = var
+
+        def on_spin(pid=p.pid, var=var):
+            if self._preset_loading:
+                return
+            self.queue_param(pid, ivar(var))
+
+        spin = ttk.Spinbox(cell, from_=p.lo, to=p.hi, textvariable=var, width=4,
+                           command=on_spin)
+        spin.grid(row=1, column=0, pady=4)
+        tip = f"{p.label}  [{p.pid}]"
+        if p.note:
+            tip += f"\n{p.note}"
+        self._tooltip(spin, tip)
+
+    def _add_env_curve_column(self, parent: ttk.Frame, column: int, title: str,
+                              attack_pid: int | None, decay_pid: int | None,
+                              restart_pid: int | None, *, row: int = 1) -> None:
+        frame = ttk.LabelFrame(parent, text=title, padding=8)
+        frame.grid(row=row, column=column, sticky="ew", padx=(0, 8 if column < 2 else 0),
+                   pady=(8, 0) if row else 0)
+        parent.columnconfigure(column, weight=1, uniform="env")
+
+        if attack_pid is not None and decay_pid is not None:
+            for i, (pid, label) in enumerate(((attack_pid, "Attack"), (decay_pid, "Decay"))):
+                cell = ttk.Frame(frame)
+                cell.grid(row=0, column=i, padx=4, sticky="new")
+                frame.columnconfigure(i, weight=1)
+                self._add_env_curve_spin(cell, PARAM_BY_PID[pid], label)
+
+        if restart_pid is not None:
+            rp = PARAM_BY_PID[restart_pid]
+            restart_cell = ttk.Frame(frame)
+            restart_cell.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            ttk.Label(restart_cell, text="Restart").grid(row=0, column=0, padx=(0, 4))
+            var = tk.IntVar(value=rp.default)
+            self.param_vars[rp.pid] = var
+
+            def on_check(pid=rp.pid, var=var):
+                if self._preset_loading:
+                    return
+                self.queue_param(pid, ivar(var))
+
+            btn = ttk.Checkbutton(restart_cell, variable=var, command=on_check,
+                                  style=theme.check_style())
+            btn.grid(row=0, column=1)
+            tip = f"{rp.label}  [{rp.pid}]"
+            if rp.note:
+                tip += f"\n{rp.note}"
+            self._tooltip(btn, tip)
+
+    def _build_env_curves_row(self, times: ttk.Frame, row: int = 1) -> None:
+        for col, (title, attack_pid, decay_pid, restart_pid) in enumerate(ENV_CURVE_COLUMNS):
+            self._add_env_curve_column(times, col, title, attack_pid, decay_pid, restart_pid, row=row)
+
+    def _add_osc_section(self, parent: ttk.Frame, row: int, title: str,
+                         pids: tuple[int, ...], *, columnspan: int = 3) -> int:
+        frame = ttk.LabelFrame(parent, text=title, padding=8)
+        frame.grid(row=row, column=0, columnspan=columnspan, sticky="ew", pady=(4, 10))
+        frame.columnconfigure(1, weight=1)
+        subrow = 0
+        for pid in pids:
+            subrow = self._add_param(frame, PARAM_BY_PID[pid], subrow)
+        return row + 1
+
+    def _add_osc_levels_row(self, parent: ttk.Frame, row: int, pids: tuple[int, ...]) -> int:
+        frame = ttk.LabelFrame(parent, text="Levels", padding=8)
+        frame.grid(row=row, column=0, sticky="ew", pady=(4, 10))
+        self._osc_levels_frame = frame
+        self._osc_level_cells = []
+        for pid in pids:
+            cell = ttk.Frame(frame)
+            self._osc_level_cells.append(cell)
+            self._add_osc_level_cell(cell, PARAM_BY_PID[pid])
+        return row + 1
+
+    def _add_osc_level_cell(self, cell: ttk.Frame, p: params.Param) -> None:
+        ttk.Label(cell, text=p.label).grid(row=0, column=0, columnspan=2, sticky="w")
+        var = tk.DoubleVar(value=p.default)
+        self.param_vars[p.pid] = var
+        readout = ttk.Label(cell, width=4, text=str(p.default), anchor="e",
+                            style="Readout.TLabel")
+
+        def on_slide(_v, pid=p.pid, var=var, rd=readout):
+            rd.config(text=str(ivar(var)))
+            if self._preset_loading:
+                return
+            self.queue_param(pid, ivar(var))
+
+        _make_scale(cell, lo=p.lo, hi=p.hi, var=var, command=on_slide).grid(
+            row=1, column=0, sticky="ew", pady=4)
+        readout.grid(row=1, column=1, sticky="e", padx=(4, 0))
+        cell.columnconfigure(0, weight=1)
+        self._readouts[("p", p.pid)] = readout
+
+    def _add_osc_wave_matrix(self, parent: ttk.Frame, row: int) -> None:
+        frame = ttk.LabelFrame(parent, text="Waveforms", padding=8)
+        frame.grid(row=row, column=0, sticky="ew", pady=(4, 10))
+        for col, title in enumerate(OSC_WAVE_COLS, start=1):
+            ttk.Label(frame, text=title).grid(row=0, column=col, padx=12, pady=(0, 4))
+        for r, (osc_label, pids) in enumerate(OSC_WAVE_MATRIX, start=1):
+            ttk.Label(frame, text=osc_label).grid(row=r, column=0, sticky="e", padx=(0, 12))
+            for c, pid in enumerate(pids, start=1):
+                self._wire_check(frame, PARAM_BY_PID[pid], row=r, column=c)
+
+    def _wire_check(self, parent: ttk.Frame, p: params.Param, *, row: int, column: int) -> None:
+        var = tk.IntVar(value=p.default)
+        self.param_vars[p.pid] = var
+
+        def on_check(pid=p.pid, var=var):
+            if self._preset_loading:
+                return
+            self.queue_param(pid, ivar(var))
+
+        btn = ttk.Checkbutton(parent, variable=var, command=on_check,
+                              style=theme.check_style())
+        btn.grid(row=row, column=column, padx=12, pady=2)
+        tip = f"{p.label}  [{p.pid}]"
+        if p.note:
+            tip += f"\n{p.note}"
+        self._tooltip(btn, tip)
 
     def _add_param(self, parent: ttk.Frame, p: params.Param, row: int) -> int:
         row_pad = 8
@@ -478,27 +840,16 @@ class App:
             readout = ttk.Label(parent, width=6, text=str(p.default), anchor="e",
                                 style="Readout.TLabel")
 
-            if p.hi - p.lo <= SPINBOX_MAX_RANGE:
-                def on_spin(pid=p.pid, var=var, rd=readout):
-                    rd.config(text=str(ivar(var)))
-                    if self._preset_loading:
-                        return
-                    self.queue_param(pid, ivar(var))
+            def on_slide(_v, pid=p.pid, var=var, rd=readout):
+                rd.config(text=str(ivar(var)))
+                if self._preset_loading:
+                    return
+                self.queue_param(pid, ivar(var))
 
-                ttk.Spinbox(parent, from_=p.lo, to=p.hi, textvariable=var, width=8,
-                            command=on_spin).grid(row=row, column=1, sticky="w", pady=row_pad)
-                readout.grid_forget()
-            else:
-                def on_slide(_v, pid=p.pid, var=var, rd=readout):
-                    rd.config(text=str(ivar(var)))
-                    if self._preset_loading:
-                        return
-                    self.queue_param(pid, ivar(var))
-
-                ttk.Scale(parent, from_=p.lo, to=p.hi, variable=var, orient="horizontal",
-                          command=on_slide).grid(row=row, column=1, sticky="ew", pady=row_pad)
-                readout.grid(row=row, column=2, sticky="e", padx=(8, 0))
-                self._readouts[("p", p.pid)] = readout
+            _make_scale(parent, lo=p.lo, hi=p.hi, var=var, command=on_slide).grid(
+                row=row, column=1, sticky="ew", pady=row_pad)
+            readout.grid(row=row, column=2, sticky="e", padx=(8, 0))
+            self._readouts[("p", p.pid)] = readout
 
         elif p.kind == "combo":
             labels = [c[0] for c in p.choices]
@@ -516,17 +867,7 @@ class App:
             combo.bind("<<ComboboxSelected>>", on_pick)
 
         elif p.kind == "check":
-            var = tk.IntVar(value=p.default)
-            self.param_vars[p.pid] = var
-
-            def on_check(pid=p.pid, var=var):
-                if self._preset_loading:
-                    return
-                self.queue_param(pid, ivar(var))
-
-            ttk.Checkbutton(parent, variable=var, command=on_check,
-                            style=theme.check_style()).grid(
-                row=row, column=1, sticky="w", pady=row_pad)
+            self._wire_check(parent, p, row=row, column=1)
 
         elif p.kind == "pulse":
             def on_pulse(pid=p.pid, value=p.pulse_value, label=p.label):
@@ -538,9 +879,10 @@ class App:
 
         return row + 1
 
-    def _add_block(self, parent: ttk.Frame, block: params.Block, row: int) -> int:
+    def _add_block(self, parent: ttk.Frame, block: params.Block, row: int,
+                   *, columnspan: int = 3) -> int:
         frame = ttk.LabelFrame(parent, text=block.label, padding=8)
-        frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(4, 10))
+        frame.grid(row=row, column=0, columnspan=columnspan, sticky="ew", pady=(4, 10))
         frame.columnconfigure(1, weight=1)
 
         self.block_vars[block.key] = {}
@@ -557,8 +899,8 @@ class App:
                     return
                 self.queue_block(key)
 
-            ttk.Scale(frame, from_=f.lo, to=f.hi, variable=var, orient="horizontal",
-                      command=on_slide).grid(row=i, column=1, sticky="ew", pady=6)
+            _make_scale(frame, lo=f.lo, hi=f.hi, var=var, command=on_slide).grid(
+                row=i, column=1, sticky="ew", pady=6)
             readout.grid(row=i, column=2, sticky="e", padx=(8, 0))
             self._readouts[("b", block.key, f.key)] = readout
 
@@ -567,91 +909,103 @@ class App:
                 row=len(block.fields), column=0, columnspan=3, sticky="w", pady=(6, 0))
         return row + 1
 
-    def _add_diagnostics(self, parent: ttk.Frame, row: int) -> int:
-        frame = ttk.LabelFrame(parent, text="Diagnostics", padding=8)
-        frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 4))
-        for i, (label, value) in enumerate(params.DEBUG_COMMANDS):
+    def _add_diag_panel(self, parent: ttk.Frame, *, row: int, column: int, title: str,
+                        commands: tuple[tuple[str, int], ...], note: str) -> ttk.LabelFrame:
+        frame = ttk.LabelFrame(parent, text=title, padding=DIAG_FRAME_PAD)
+        frame.grid(row=row, column=column, sticky="ew", pady=DIAG_SECTION_PADY)
+        buttons: list[ttk.Button] = []
+        for label, value in commands:
             def on_click(value=value, label=label):
                 self.send_now(protocol.param16(params.DEBUG_PARAM_ID, value))
                 self.log(f"[send] {label}\n")
 
-            ttk.Button(frame, text=label, command=on_click).grid(
-                row=i // 3, column=i % 3, padx=4, pady=2, sticky="w")
-        ttk.Label(
-            frame,
-            text="Output appears in the log below. Period probes only hold while no note "
-                 "is playing. Note retrig 26/27 A/B EXACT_Y vs SYNC_JMP (needs oscSync ≥ 1); "
-                 "Board ack note_retrig=… when RUNNING_AVERAGE.",
-            wraplength=760,
-            style="Muted.TLabel",
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        return row + 1
+            buttons.append(ttk.Button(frame, text=label, command=on_click))
+        frame._diag_buttons = buttons  # type: ignore[attr-defined]
+        note_label = ttk.Label(frame, text=note, wraplength=340, style="Muted.TLabel")
+        frame._diag_note_label = note_label  # type: ignore[attr-defined]
+        return frame
 
-    def _add_bench_controls(self, parent: ttk.Frame, row: int) -> int:
-        frame = ttk.LabelFrame(parent, text="Hot-path profiler", padding=8)
-        frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 4))
-        for i, (label, value) in enumerate(params.BENCH_COMMANDS):
-            def on_click(value=value, label=label):
-                self.send_now(protocol.param16(params.DEBUG_PARAM_ID, value))
-                self.log(f"[send] {label}\n")
+    def _diag_panel_ncol(self, panel_w: int, n_buttons: int, stacked: bool) -> int:
+        if n_buttons <= 1:
+            return 1
+        ncol = 2
+        if stacked and panel_w >= 640:
+            ncol = 3
+        elif not stacked and panel_w >= 400:
+            ncol = 3
+        return min(ncol, n_buttons)
 
-            ttk.Button(frame, text=label, command=on_click).grid(row=0, column=i, padx=4)
-        ttk.Label(
-            frame,
-            text="Needs RUNNING_AVERAGE in the firmware (otherwise these are no-ops). "
-                 "Dump is asynchronous: core 0 prints after both cores snapshot. "
-                 "Toggle prints 'bench periodic on/off' immediately; the tables land "
-                 "in the Board output pane (drag the sash to enlarge it).",
-            wraplength=760,
-            style="Muted.TLabel",
-        ).grid(row=1, column=0, columnspan=len(params.BENCH_COMMANDS), sticky="w", pady=(6, 0))
-        return row + 1
+    def _diag_reflow_panel(self, frame: ttk.LabelFrame, panel_w: int, stacked: bool,
+                           wrap: int) -> None:
+        buttons: list[ttk.Button] = frame._diag_buttons  # type: ignore[attr-defined]
+        ncol = self._diag_panel_ncol(panel_w, len(buttons), stacked)
+        for c in range(max(ncol, 1)):
+            frame.columnconfigure(c, weight=1)
+        for i, btn in enumerate(buttons):
+            btn.grid(row=i // ncol, column=i % ncol, padx=2, pady=1, sticky="ew")
+        btn_rows = (len(buttons) - 1) // ncol + 1 if buttons else 0
+        note_label: ttk.Label = frame._diag_note_label  # type: ignore[attr-defined]
+        note_label.config(wraplength=wrap)
+        note_label.grid(row=btn_rows, column=0, columnspan=ncol, sticky="ew", pady=(4, 0))
 
-    def _add_amp_comp_controls(self, parent: ttk.Frame, row: int) -> int:
-        frame = ttk.LabelFrame(parent, text="Amp-comp method / bench", padding=8)
-        frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 4))
-        for i, (label, value) in enumerate(params.AMP_COMP_COMMANDS):
-            def on_click(value=value, label=label):
-                self.send_now(protocol.param16(params.DEBUG_PARAM_ID, value))
-                self.log(f"[send] {label}\n")
+    def _build_diag_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=1)
+        self._diag_grid = parent
+        self._diag_reflow_width = -1
 
-            ttk.Button(frame, text=label, command=on_click).grid(
-                row=i // 4, column=i % 4, padx=4, pady=2, sticky="w")
-        ttk.Label(
-            frame,
-            textvariable=self.amp_method_var,
-            style="Status.TLabel",
-        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        ttk.Label(
-            frame,
-            text="Method buttons (20–22) switch the live lookup for profiler / speed A/B "
-                 "(PWM difference is tiny — expect Board ack amp_comp method=…). "
-                 "Default FIXED. Speed/accuracy (24–25) need AMP_COMP_BENCHMARK + "
-                 "RUNNING_AVERAGE; confirm live_method= on the speed report.",
-            wraplength=760,
-            style="Muted.TLabel",
-        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(4, 0))
-        return row + 1
+        panel_specs = (
+            ("Diagnostics", params.DEBUG_COMMANDS,
+             "Output appears in the log below. Period probes only hold while no note "
+             "is playing. Note retrig 26/27 A/B EXACT_Y vs SYNC_JMP (needs oscSync ≥ 1); "
+             "Board ack note_retrig=… when RUNNING_AVERAGE.", 0, 0),
+            ("Hot-path profiler", params.BENCH_COMMANDS,
+             "Needs RUNNING_AVERAGE in the firmware (otherwise these are no-ops). "
+             "Dump is asynchronous: core 0 prints after both cores snapshot. "
+             "Toggle prints 'bench periodic on/off' immediately; the tables land "
+             "in the Board output pane (drag the sash to enlarge it).", 0, 1),
+            ("Amp-comp method / bench", params.AMP_COMP_COMMANDS,
+             "Method buttons (20–22) switch the live lookup for profiler / speed A/B "
+             "(PWM difference is tiny — expect Board ack amp_comp method=…). "
+             "FLOAT_QUAD=cached walk. "
+             "Speed/accuracy (24–25) need AMP_COMP_BENCHMARK + "
+             "RUNNING_AVERAGE; confirm live_method= on the speed report.",
+             1, 0),
+            ("Pitch-interp bench", params.PITCH_INTERP_COMMANDS,
+             "Speed/accuracy (28–29) need RUNNING_AVERAGE (paced Board output). "
+             "Compares FLOAT / RATIO_Q16 / Q12 (private tables; Q20 slope is inside RATIO). "
+             "Profiler dump (10) prints build: … pitch=… flags.", 1, 1),
+        )
+        self._diag_panels = []
+        for title, commands, note, grid_row, grid_col in panel_specs:
+            frame = self._add_diag_panel(
+                parent, row=grid_row, column=grid_col, title=title,
+                commands=commands, note=note,
+            )
+            self._diag_panels.append((frame, grid_row, grid_col))
 
-    def _add_pitch_interp_controls(self, parent: ttk.Frame, row: int) -> int:
-        frame = ttk.LabelFrame(parent, text="Pitch-interp bench", padding=8)
-        frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 4))
-        for i, (label, value) in enumerate(params.PITCH_INTERP_COMMANDS):
-            def on_click(value=value, label=label):
-                self.send_now(protocol.param16(params.DEBUG_PARAM_ID, value))
-                self.log(f"[send] {label}\n")
+        parent.bind("<Configure>", self._diag_layout_reflow, add="+")
+        parent.after_idle(self._diag_layout_reflow)
 
-            ttk.Button(frame, text=label, command=on_click).grid(
-                row=0, column=i, padx=4, pady=2, sticky="w")
-        ttk.Label(
-            frame,
-            text="Speed/accuracy (28–29) need RUNNING_AVERAGE (paced Board output). "
-                 "Compares FLOAT / RATIO_Q16 / Q12 (private tables; Q20 slope is inside RATIO). "
-                 "Profiler dump (10) prints build: … pitch=… flags.",
-            wraplength=760,
-            style="Muted.TLabel",
-        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        return row + 1
+    def _diag_layout_reflow(self, _event=None) -> None:
+        grid = getattr(self, "_diag_grid", None)
+        panels = getattr(self, "_diag_panels", None)
+        if grid is None or not panels:
+            return
+        width = grid.winfo_width()
+        if width < 2 or width == self._diag_reflow_width:
+            return
+        self._diag_reflow_width = width
+        stacked = width < DIAG_SPLIT_STACK_WIDTH
+        panel_w = width if stacked else max(200, width // 2 - 16)
+        wrap = 700 if stacked else max(280, width // 2 - 24)
+        for i, (frame, wide_row, wide_col) in enumerate(panels):
+            if stacked:
+                frame.grid(row=i, column=0, columnspan=2, sticky="ew", pady=DIAG_SECTION_PADY)
+            else:
+                frame.grid(row=wide_row, column=wide_col, columnspan=1, sticky="ew",
+                           padx=(0, 4 if wide_col == 0 else 0), pady=DIAG_SECTION_PADY)
+            self._diag_reflow_panel(frame, panel_w, stacked, wrap)
 
     def _tooltip(self, widget: tk.Widget, text: str) -> None:
         state: dict[str, tk.Toplevel | None] = {"win": None}
@@ -695,6 +1049,18 @@ class App:
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
 
+        def on_log_wheel(event):
+            if event.num == 4:
+                self.log_text.yview_scroll(-2, "units")
+            elif event.num == 5:
+                self.log_text.yview_scroll(2, "units")
+            elif event.delta:
+                self.log_text.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"
+
+        for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+            self.log_text.bind(seq, on_log_wheel)
+
     def _style_log_tags(self) -> None:
         p = theme.palette()
         self.log_text.tag_configure("link", foreground=p["accent"])
@@ -708,9 +1074,6 @@ class App:
             if text.startswith(f"[{name}]"):
                 tag = name
                 break
-        m = self._amp_method_re.search(text)
-        if m:
-            self.amp_method_var.set(f"Current: {m.group(1)}")
         self.log_text.insert("end", text, tag or ())
         # Keep the buffer bounded; DCO_DEBUG_REPORT is chatty.
         if int(self.log_text.index("end-1c").split(".")[0]) > 2000:

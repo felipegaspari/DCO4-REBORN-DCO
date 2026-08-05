@@ -119,16 +119,34 @@ static void apply_param_osc3_detune_val(int16_t v) {
   OSC3DetuneVal = 512 - v;
 }
 
-// PARAM_LFO2_TO_DETUNE2: LFO2 → OSC2 detune depth (Q24).
-static void apply_param_lfo2_to_detune2(int16_t v) {
-  float lfo2_amt = (float)expConverterFloat((uint8_t)v, 500) / 275000.0f;
-  LFO2toDETUNE2_q24 = (int32_t)(lfo2_amt * (float)(1 << 24) + 0.5f);
+static void apply_param_lfo2_to_osc_depth(int16_t v, int32_t& depth_q24) {
+  float amt = (float)expConverterFloat((uint8_t)v, 500) / 275000.0f;
+  depth_q24 = (int32_t)(amt * (float)(1 << 24) + 0.5f);
 }
 
-// PARAM_LFO2_TO_DETUNE3: LFO2 → OSC3 detune depth (Q24).
-static void apply_param_lfo2_to_detune3(int16_t v) {
-  float lfo2_amt = (float)expConverterFloat((uint8_t)v, 500) / 275000.0f;
-  LFO2toDETUNE3_q24 = (int32_t)(lfo2_amt * (float)(1 << 24) + 0.5f);
+// PARAM_LFO2_TO_OSC2: LFO2 → OSC2 pitch depth (Q24).
+static void apply_param_lfo2_to_osc2(int16_t v) {
+  apply_param_lfo2_to_osc_depth(v, LFO2toOSC2_q24);
+}
+
+// PARAM_LFO2_TO_OSC3: LFO2 → OSC3 pitch depth (Q24).
+static void apply_param_lfo2_to_osc3(int16_t v) {
+  apply_param_lfo2_to_osc_depth(v, LFO2toOSC3_q24);
+}
+
+// LFO2 coarse pitch depth (0..511, LFO1 curve; amp scale baked in at apply time).
+static void apply_param_lfo2_to_osc_coarse_depth(int16_t v, int32_t& depth_q24) {
+  const float amp_scale = (float)LFO1_CC_HALF / (float)LFO2_CC_HALF;
+  float amt = (float)expConverterFloat((uint16_t)v, 500) / 275000.0f * amp_scale;
+  depth_q24 = (int32_t)(amt * (float)(1 << 24) + 0.5f);
+}
+
+static void apply_param_lfo2_to_osc2_coarse(int16_t v) {
+  apply_param_lfo2_to_osc_coarse_depth(v, LFO2toOSC2_coarse_q24);
+}
+
+static void apply_param_lfo2_to_osc3_coarse(int16_t v) {
+  apply_param_lfo2_to_osc_coarse_depth(v, LFO2toOSC3_coarse_q24);
 }
 
 // PARAM_OSC_SYNC_MODE: osc sync / phase-align (updates phaseAlignOSC2, retriggers notes).
@@ -340,6 +358,23 @@ static void apply_param_lfo1_to_dco(int16_t v) {
   LFO1toDCO_q24 = (int32_t)(lfo1_amt * (float)(1 << 24) + 0.5f);
 }
 
+static void apply_param_lfo1_to_osc_depth(int16_t v, int32_t& depth_q24) {
+  float amt = (float)expConverterFloat((uint8_t)v, 500) / 275000.0f;
+  depth_q24 = (int32_t)(amt * (float)(1 << 24) + 0.5f);
+}
+
+static void apply_param_lfo1_to_osc1(int16_t v) {
+  apply_param_lfo1_to_osc_depth(v, LFO1toOSC1_q24);
+}
+
+static void apply_param_lfo1_to_osc2(int16_t v) {
+  apply_param_lfo1_to_osc_depth(v, LFO1toOSC2_q24);
+}
+
+static void apply_param_lfo1_to_osc3(int16_t v) {
+  apply_param_lfo1_to_osc_depth(v, LFO1toOSC3_q24);
+}
+
 // PARAM_LFO1_SPEED: LFO1 rate in Hz (via expConverterFloat).
 static void apply_param_lfo1_speed(int16_t v) {
   LFO1SpeedVal = v;
@@ -535,8 +570,9 @@ static void apply_param_debug_command(int16_t v) {
       break;
     case 12:
       bench_periodic = !bench_periodic;
-      Serial.print("bench periodic ");
-      Serial.println(bench_periodic ? "on" : "off");
+      bench_out_reset();
+      bench_out_printf("bench periodic %s\n", bench_periodic ? "on" : "off");
+      bench_out_active = true;
       break;
 #endif
     // Amp-comp live method (USE_FLOAT_AMP_COMP). Ack via paced Board pane when
@@ -636,8 +672,10 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_OSC3_INTERVAL,             apply_param_osc3_interval },
   { PARAM_OSC2_DETUNE_VAL,           apply_param_osc2_detune_val },
   { PARAM_OSC3_DETUNE_VAL,           apply_param_osc3_detune_val },
-  { PARAM_LFO2_TO_DETUNE2,           apply_param_lfo2_to_detune2 },
-  { PARAM_LFO2_TO_DETUNE3,           apply_param_lfo2_to_detune3 },
+  { PARAM_LFO2_TO_OSC2,              apply_param_lfo2_to_osc2 },
+  { PARAM_LFO2_TO_OSC3,              apply_param_lfo2_to_osc3 },
+  { PARAM_LFO2_TO_OSC2_COARSE,       apply_param_lfo2_to_osc2_coarse },
+  { PARAM_LFO2_TO_OSC3_COARSE,       apply_param_lfo2_to_osc3_coarse },
   { PARAM_OSC_SYNC_MODE,             apply_param_osc_sync_mode },
   { PARAM_PORTAMENTO_TIME,           apply_param_portamento_time },
   { PARAM_PORTAMENTO_MODE,           apply_param_portamento_mode },
@@ -658,6 +696,9 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_SOFT_SYNC,                 apply_param_soft_sync },
   { PARAM_SUBOSC_DIVIDE,             apply_param_subosc_divide },
   { PARAM_LFO1_TO_DCO,               apply_param_lfo1_to_dco },
+  { PARAM_LFO1_TO_OSC1,              apply_param_lfo1_to_osc1 },
+  { PARAM_LFO1_TO_OSC2,              apply_param_lfo1_to_osc2 },
+  { PARAM_LFO1_TO_OSC3,              apply_param_lfo1_to_osc3 },
   { PARAM_LFO1_SPEED,                apply_param_lfo1_speed },
   { PARAM_LFO2_SPEED,                apply_param_lfo2_speed },
   { PARAM_VCA_LEVEL,                 apply_param_vca_level },

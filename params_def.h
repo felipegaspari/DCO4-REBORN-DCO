@@ -34,7 +34,7 @@ enum ParamId : uint16_t {
   PARAM_OSC2_INTERVAL            = 14,
 
   PARAM_OSC2_DETUNE_VAL          = 15,
-  PARAM_LFO2_TO_DETUNE2          = 16,
+  PARAM_LFO2_TO_OSC2              = 16,
 
   PARAM_OSC_SYNC_MODE            = 17,
 
@@ -68,7 +68,7 @@ enum ParamId : uint16_t {
   // DCO3 monosynth OSC3 (new IDs — wire on Mainboard/Input/Screen later)
   PARAM_OSC3_INTERVAL            = 33,
   PARAM_OSC3_DETUNE_VAL          = 34,
-  PARAM_LFO2_TO_DETUNE3          = 35,
+  PARAM_LFO2_TO_OSC3              = 35,
 
   // 36: sync flavour. 0 = hard sync (master sidesets onto the slave's reset pin),
   // 1 = soft sync (slave polls the master and ignores edges early in its own cycle).
@@ -109,7 +109,7 @@ enum ParamId : uint16_t {
   // PARAM_FX_MIX                 = 56,
 
   // Mod matrix: 8 slots × (source, dest, depth). See docs/MOD_MATRIX.md.
-  // Source 0..7 (0xFF/out-of-range = empty); dest 0..6; depth bipolar int16.
+  // Source 0..11 (0xFF/out-of-range = empty); dest 0..8; depth bipolar int16.
   PARAM_MOD_SLOT0_SOURCE         = 60,
   PARAM_MOD_SLOT0_DEST           = 61,
   PARAM_MOD_SLOT0_DEPTH          = 62,
@@ -172,6 +172,14 @@ enum ParamId : uint16_t {
   PARAM_LFO3_WAVEFORM            = 212,
   PARAM_ADSR3_RESTART            = 214,
   PARAM_VCA_LEVEL_ALT            = 215,
+
+  // Additive LFO1 pitch depth per osc (stacks on PARAM_LFO1_TO_DCO global bus).
+  PARAM_LFO1_TO_OSC1             = 216,
+  PARAM_LFO1_TO_OSC2             = 217,
+  PARAM_LFO1_TO_OSC3             = 218,
+  // LFO2 coarse pitch per osc (0..511; LFO1 curve + amp scale baked into depth at apply).
+  PARAM_LFO2_TO_OSC2_COARSE      = 219,
+  PARAM_LFO2_TO_OSC3_COARSE      = 220,
 
   // --- Calibration flags (shared) ------------------------------------
   PARAM_CALIBRATION_FLAG         = 150,

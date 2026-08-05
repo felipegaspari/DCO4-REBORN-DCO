@@ -87,7 +87,11 @@ void pio_solve_period_model(uint32_t clk_div_a, double measured_hz_a,
 void pio_defer_request_sync_mode();
 void pio_defer_request_reset_pulse_all();
 void pio_defer_request_subosc(uint8_t divide);
+void pio_defer_request_period_probe(uint8_t osc, uint32_t clk_div);
 void pio_defer_service();
+
+extern volatile bool pio_probe_report_pending;
+void pio_probe_report_flush();
 
 // The period model itself (PioPeriod, pio_period_split, pio_clk_div_for_y) and the PIO
 // jump-target helpers live in globals.h, next to the state they read.

@@ -203,20 +203,12 @@ void serial_usb_task() {
 #endif  // ENABLE_USB_CONTROL
 
 // TX 'x' to Input: gap (154) and cal offsets (155). Input relays 154 on to the Screen.
-// availableForWrite() on a hardware UART reports 0/1, not free bytes — never spin forever.
-static constexpr uint32_t SERIAL2_TX_TIMEOUT_US = 5000;
-
+// Drop the frame if Serial2 TX is not ready (USB-only bench with no Input board).
 void serialSendParam32(byte paramNumber, uint32_t paramValue) {
+  if (Serial2.availableForWrite() < 1) {
+    return;
+  }
   uint8_t *b = (uint8_t *)&paramValue;
   byte bytesArray[7] = { (uint8_t)'x', paramNumber, b[0], b[1], b[2], b[3], 1 };
-
-  if (Serial2.availableForWrite() < 1) {
-    const uint32_t deadline = micros() + SERIAL2_TX_TIMEOUT_US;
-    while (Serial2.availableForWrite() < 1) {
-      if ((int32_t)(micros() - deadline) >= 0) {
-        return;  // Input board absent or link stalled — drop frame
-      }
-    }
-  }
   Serial2.write(bytesArray, 7);
 }

@@ -241,6 +241,15 @@ def _style_clam(style: ttk.Style, root: tk.Misc, p: dict) -> None:
         lightcolor=[("active", p["select_bg"])],
         darkcolor=[("active", p["select_bg"])],
     )
+    style.configure("Vertical.TScale", background=p["accent"], troughcolor=p["trough"],
+                    bordercolor=p["border"], lightcolor=p["accent"], darkcolor=p["accent"],
+                    gripcount=0, arrowsize=30, sliderlength=48, troughrelief="flat")
+    style.map(
+        "Vertical.TScale",
+        background=[("active", p["select_bg"]), ("disabled", p["trough"])],
+        lightcolor=[("active", p["select_bg"])],
+        darkcolor=[("active", p["select_bg"])],
+    )
 
     # Default clam scrollbar is width=12 / arrowsize=12; double both so the trough
     # (not only the arrows) is easier to grab.

@@ -18,14 +18,14 @@ Related docs:
 - **`DCO.ino`**  
   - Main application for the RP2040 / RP2350.  
   - Runs on both cores using the Arduino dual-core API:
-    - `setup()` / `loop()` (core 0): USB/serial/MIDI I/O, LFO evaluation, cross‑core detune FIFO.
+    - `setup()` / `loop()` (core 0): USB/serial/MIDI I/O, LFO evaluation (~50 µs tick).
     - `setup1()` / `loop1()` (core 1): PID & FS init, ADSR init, DCO calibration/autotune, real‑time voice engine.  
   - **Engine build options** (top of file: **pitch ids** → **board defaults** → **overrides** → **guards** → profiling / board):
     - Board defaults are per-MCU branch: RP2350 → float voice + `PITCH_INTERP_FLOAT_FAST` + float amp + FLOAT_QUAD; RP2040 → `PITCH_INTERP_RATIO_Q16` + FIXED amp (no float flags). No `USE_FLOAT_ENGINE` umbrella.
     - Overrides can `#undef` / `#define` those flags (pitch A/B needs `#undef PITCH_INTERP_MODE` first).
     - See [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) for precision vs speed trade-offs.
   - Configures USB product strings in `setup()` (via Adafruit TinyUSB; product **DCO3-MONO**), toggles board pins (23/24) for hardware fixes, and selects DCO calibration mode.
-  - Core‑0 pushes `DETUNE_INTERNAL_q24` (LFO1 detune) through `rp2040.fifo`; core‑1 pops it and uses it inside the voice task (float path converts Q24 → float each frame).
+  - Core 0 writes LFO pitch mods into `lfo1_pitch_mod_q24[]` / `lfo2_pitch_mod_q24[]` every ~50 µs; core 1 reads them in the voice task (float path converts Q24 → float each frame).
   - `loop1()` calls `voice_task_main()` (dispatch to float or fixed), then `bench_service(1)` to hand its profiler counters to core 0.
   - **Profiling** (`RUNNING_AVERAGE`, optionally `RUNNING_AVERAGE_FINE`): both loops are bracketed by `BENCH_*` probes from [`bench.h`](../bench.h); core 0 does all the printing from `bench_poll_core0()`. See [`BENCHMARKING.md`](BENCHMARKING.md).
 
@@ -39,7 +39,7 @@ Related docs:
     - Clock and PIO timing constants (`sysClock` = 225000 kHz → `sysClock_Hz`, `pioPulseLength`, OSR chunk sizes, timing overheads).
     - **Period model** `period = Y + weight*clk_div + overhead`, with `PIO_RAMP_WEIGHT_FREE = 4` / `PIO_PERIOD_OVERHEAD_FREE = 12` and `PIO_RAMP_WEIGHT_SYNC = 5` / `PIO_PERIOD_OVERHEAD_SYNC = 13`. The overhead includes one fall-through cycle per `jmp x--` loop, which the old `T_LOW_OVERHEAD_CYCLES = 5` was missing (5 cycles short, roughly 0.27 cents of sharp error at 7 kHz).
     - Per-osc PIO state: `osc_uses_sync_program[]`, `osc_last_y[]`, `osc_last_clk_div[]`, `softSyncChunks`, `subOscDivide`.
-    - Fixed‑point detune and pitch‑bend multipliers (`DETUNE_INTERNAL_q24`, `DETUNE_INTERNAL2_q24`, `DETUNE_INTERNAL3_q24`, `pitchBendMultiplier_q24`).
+    - Fixed‑point pitch‑bend multipliers (`pitchBendMultiplier_q24`); LFO pitch mods live in `LFO.h` (`lfo1_pitch_mod_q24[]`, `lfo2_pitch_mod_q24[]`).
     - Global voice arrays (`VOICE_NOTES`, `VOICES`, `note_on_flag`, shared `PW[0]`, etc.).
     - Hardware pin mappings: RESET/RANGE for OSC1–3, single `PW_PINS[0]`, `SUBOSC_PIN = 8`.
     - `VOICE_TO_PIO = {0,0,0}` — **all three oscillators share pio0.** A GPIO's function select names exactly one PIO block, so oscillators on separate blocks cannot share a reset pin: `pio_gpio_init()` on the second block silently steals the pin from the first, which is what broke hard sync when the layout was `{0,1,2}`. `pio_topology_report()` asserts this.
@@ -69,7 +69,7 @@ Related docs:
         - Computes per‑voice portamento in either **time‑based frequency space** or **slew‑rate note space** (Q24 / Q16).
         - Combines fixed‑point modulators:
           - Pitch‑bend (`calcPitchbend_q24`).
-          - LFO1 detune (`DETUNE_INTERNAL_FIFO_q24` from the FIFO).
+          - LFO1 per‑osc pitch mod (`lfo1_pitch_mod_q24[LFO1_PITCH_OSCn]`, includes `LFO1toDCO` + extra) and LFO2 OSC2/3 mods.
           - Unison detune per osc (`OSC_UNISON_STEP` = `{0, +1, -1}`; optional poly voice-index term if `NUM_VOICES_TOTAL > 1`).
           - Per‑osc drift LFO (`LFO_DRIFT_LEVEL`) with analog drift amount.
           - ADSR‑to‑detune in Q24 using `ADSR1toDETUNE1_scale_q24` and `linToLogLookup` (select includes OSC3 / all).
@@ -97,7 +97,7 @@ Related docs:
       - `setSyncMode()` calls `assign_sm_mapping()` + `start_voice_sms()` to rebuild the whole sync topology (OSC1↔OSC2; OSC3 free-running), then forces a re-trigger. It no longer pokes sideset pins in place or calls `pio_sm_restart()` — that cleared the shift counters but left PC/X/Y, which could strand an SM mid-loop with a stale X for one glitched period.
     - Amplitude compensation helpers:
       - `get_chan_level_lookup_fast()` – optimized fixed‑point quadratic interpolation per DCO (always built; live FIXED method under float engine), using cached window indices and Q28 reciprocals.
-      - `get_chan_level_float_quad()` / `get_chan_level_lut()` – float quadratic reference and dense nearest-Hz LUT (speed A/B).
+      - `get_chan_level_float_quad()` – cached-walk float quadratic (live FLOAT_QUAD; also LUT fill / accuracy gold); `get_chan_level_lut()` – dense nearest-Hz LUT.
       - `get_chan_level_float()` / `get_chan_level_for_engine()` – dispatch on `amp_comp_method` (default FIXED).
       - `get_PW_level_interpolated()` – maps PW counts into calibrated limits and center values (shared by both engines).
     - Calibration front‑end:
@@ -179,14 +179,15 @@ Related docs:
       - `LFO2_class` – secondary LFO (e.g. PW modulation, OSC2 detune).
       - `LFO_DRIFT_CLASS[8]` – per‑oscillator drift LFOs.
     - Defines modulation ranges and scaling constants (`LFO1_CC`, `LFO2_CC`, `LFO_DRIFT_CC`, etc.).
-    - Exposes globals for UI and parameter mapping: `LFO1Level`, `LFO2Level`, waveforms, speeds, and modulation depths (`LFO1toDCO_q24`, `LFO2toDETUNE2_q24`, `LFO2toPW`, etc.).
+    - Exposes globals for UI and parameter mapping: `LFO1Level`, `LFO2Level`, waveforms, speeds, and modulation depths (`LFO1toDCO_q24`, `LFO1toOSC1/2/3_q24`, `LFO2toOSC2/3_q24`, `LFO2toOSC2/3_coarse_q24`, `LFO2toPW`, etc.).
+  - **LFO1 pitch routing:** `PARAM_LFO1_TO_DCO` (CC 65) is folded into each `lfo1_pitch_mod_q24[OSCn]` on Core 0 (`lfo1 × (LFO1toDCO + LFO1toOSCn)`). Per‑osc extras `PARAM_LFO1_TO_OSC1/2/3` (CC 14/15/19) add on top. LFO2 fine + coarse → `lfo2_pitch_mod_q24[]` on OSC2/3 (CC 67/68 fine 0..255, CC 119/120 coarse 0..511); depths stay separate at param apply, runtime folds like LFO1 (`lfo2 × (LFO2toOSCn_q24 + LFO2toOSCn_coarse_q24)`); coarse depth pre-scales LFO1-equivalent travel (`exp/275000 × LFO1_CC_HALF/LFO2_CC_HALF`).
   - `init_LFOs()` / `init_LFO1()` / `init_LFO2()`:
     - Configure waveforms, amplitudes, offsets and initial frequencies for the two main LFOs.
   - `init_DRIFT_LFOs()` / `init_DRIFT_LFO()`:
     - Initialize drift LFOs with per‑oscillator speed offsets (spread factor) using `expConverterFloat()`.
   - `LFO1()` / `LFO2()`:
-    - Called from `loop()` on core 0.
-    - Compute bipolar LFO outputs and convert detune modulation amounts directly to Q24 fixed‑point (`DETUNE_INTERNAL_q24`, `DETUNE_INTERNAL2_q24`).
+    - Called from `loop()` on core 0 every ~50 µs (with drift).
+    - Compute bipolar LFO outputs into `lfo1_pitch_mod_q24[]` / `lfo2_pitch_mod_q24[]` (Q24 log-frequency additive modifiers).
   - `DRIFT_LFOs()`:
     - Updates `LFO_DRIFT_LEVEL[i]` for every DCO using a shared timestamp, producing per‑oscillator slow drift signals.
 
@@ -199,7 +200,7 @@ Related docs:
     - Shared: `freq_to_amp_comp_array`, plateau metadata, float coeffs `aCoeff` / `bCoeff` / `cCoeff`, `AMP_COMP_MAX_HZ = 7000`.
     - Shared `ampCompArray` as `int32_t`. Fixed Q8 tables always present; under float also `ampCompFrequencyHz`, `ampCompLut[osc][0..7000]`, and selectable `amp_comp_method` (`FLOAT_QUAD` / `LUT` / `FIXED`; live default FIXED).
     - Fixed path: `ampCompFrequencyArray` in **Q8 Hz** (`FREQ_FRAC_BITS = 8`), per‑window `y(t) = a*t^2 + b*t + c` with `T_FRAC = 12`, `invDxWIN_q28`, `aQWIN_fast` / `bQWIN_fast`.
-    - Float quadratic: runtime `y = (a*x+b)*x+c` in Hz (`get_chan_level_float_quad`).
+    - Float quadratic: runtime `y = (a*x+b)*x+c` in Hz (`get_chan_level_float_quad` cached walk).
   - `precompute_amp_comp_for_engine()` — float precompute + LUT fill + fixed Q8 seed/precompute (or fixed-only) after FS load in `setup1()`.
   - `precomputeCoefficients_OLD()` — legacy precomputation path retained for reference and debugging.
   - Flag / format details: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) §7.
@@ -316,7 +317,7 @@ Related docs:
     - Calibration control flags (`calibrationFlag`, `manualCalibrationFlag`, stages, offsets).
   - Converts raw UI values into:
     - Exponential or logarithmic curves using `expConverter*()` helpers.
-    - Fixed‑point Q24 modulation depths (`LFO1toDCO_q24`, `LFO2toDETUNE2_q24`).
+    - Fixed‑point Q24 modulation depths (`LFO1toDCO_q24`, `LFO2toOSC2_q24`, `LFO2toOSC3_q24`, `LFO2toOSC2/3_coarse_q24`).
     - Per‑oscillator drift speed offsets and LFO frequency updates.
 
 ---

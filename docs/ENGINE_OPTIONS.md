@@ -193,14 +193,14 @@ Shared constants: `ampCompTableSize = 22`, `AMP_COMP_MAX_HZ = 7000`, plateau met
 
 | Id | Name | Behaviour |
 |----|------|-----------|
-| 0 | `FLOAT_QUAD` | Window scan + `y = (a*x+b)*x+c` (accuracy reference) |
+| 0 | `FLOAT_QUAD` | Cached walk + `y = (a*x+b)*x+c` (live default on RP2350) |
 | 1 | `LUT` | Nearest Hz → `ampCompLut` index (speed A/B only) |
 | 2 | `FIXED` | Q8 `get_chan_level_lookup_fast` (tables built alongside float) |
 
 - **Compile-time default:** board defaults in [`DCO.ino`](../DCO.ino) — **RP2350 → FLOAT_QUAD**, **RP2040 → FIXED**. Override with `#define AMP_COMP_METHOD_DEFAULT` in **ENGINE — overrides**.
 - **Runtime:** `PARAM_DEBUG_COMMAND` values **20–22** (`amp_comp_set_method`). Profiler dump (10) appends `amp_comp method=…`.
 - Facade: `get_chan_level_for_engine` / `get_chan_level_float` dispatch on `amp_comp_method`.
-- **Speed order:** on RP2350 (FPU) typically **LUT ≪ FLOAT_QUAD ≲ FIXED**; on RP2040 soft-float, FLOAT_QUAD is usually slowest. See [BENCHMARKING.md](BENCHMARKING.md) §8.
+- **Speed order:** on RP2350 (FPU) typically **LUT ≪ FLOAT_QUAD ≲ FIXED**. On RP2040 soft-float, FLOAT_QUAD is usually slowest. See [BENCHMARKING.md](BENCHMARKING.md) §8.
 
 Without `USE_FLOAT_AMP_COMP`, only FIXED exists; method selects collapse to FIXED.
 
@@ -232,7 +232,7 @@ System clock used by clkdiv: `sysClock = 225000` kHz → `sysClock_Hz = 225e6` (
 
 ## 9. Shared behaviour (both engines)
 
-- **Core 0 → core 1 FIFO:** LFO1 detune is always transferred as **Q24** (`DETUNE_INTERNAL_q24`). Float path converts each frame.
+- **LFO pitch mods:** Core 0 writes `lfo1_pitch_mod_q24[]` / `lfo2_pitch_mod_q24[]` every ~50 µs; core 1 reads volatiles in the voice task (float path converts each frame).
 - **PW PWM:** both engines end in `get_PW_level_interpolated` (integer map using calibrated center/limits).
 - **Autotune:** `voice_task_autotune()` uses float-style clkdiv math and `get_chan_level_for_engine`; it is compiled regardless of engine and is not the production note path.
 - **Legacy helpers:** `voice_task_simple()` / `voice_task_debug()` / gold reference are **removed** (see `_removed/` if needed).

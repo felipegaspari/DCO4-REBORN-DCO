@@ -18,12 +18,10 @@ import protocol
 
 # Tab names, in display order.
 GROUP_OSC = "Oscillators"
-GROUP_SYNC = "Sync and PIO"
 GROUP_ENV = "Envelopes"
 GROUP_FILTER = "Filter"
 GROUP_PWM = "PWM"
 GROUP_LFO = "LFOs"
-GROUP_VOICE = "Voice and Drift"
 GROUP_MOD = "Mod matrix"
 GROUP_CAL = "Calibration"
 # App-only tab (PIO reports + profiler). Not in GROUP_ORDER — no MIDI CC / OSC panel.
@@ -31,12 +29,10 @@ GROUP_DIAG = "Diagnostics"
 
 GROUP_ORDER = [
     GROUP_OSC,
-    GROUP_SYNC,
     GROUP_ENV,
     GROUP_FILTER,
     GROUP_PWM,
     GROUP_LFO,
-    GROUP_VOICE,
     GROUP_MOD,
     GROUP_CAL,
 ]
@@ -51,6 +47,10 @@ _MOD_SOURCES = (
     ("5 Keytrack", 5),
     ("6 Random", 6),
     ("7 Aftertouch", 7),
+    ("8 LFO1", 8),
+    ("9 LFO2", 9),
+    ("10 Pitch bend", 10),
+    ("11 Mod wheel", 11),
 )
 
 _MOD_DESTS = (
@@ -62,6 +62,8 @@ _MOD_DESTS = (
     ("4 VCF1 reso", 4),
     ("5 VCF2 reso", 5),
     ("6 Dist Drive", 6),
+    ("7 VCF cutoff", 7),
+    ("8 Dist Mix", 8),
 )
 
 
@@ -148,15 +150,42 @@ def _phase_choices() -> tuple:
 
 
 PARAMS: list[Param] = [
-    # --- Oscillators ---
+    # --- Oscillators (pitch, sync, voice, levels, wave enables) ---
     # Wire value is biased: table_index = midi - 36 + value (36 ⇒ unison).
-    Param(13, "Octave shift (semitones)", GROUP_OSC, "combo",
+    Param(13, "Octave shift", GROUP_OSC, "combo",
           choices=tuple((f"{(s - 36) // 12:+d}", s) for s in range(0, 73, 12)),
           default=24, cc=2),
     Param(14, "OSC2 interval (semitones)", GROUP_OSC, "slider", 0, 60, 36, cc=3),
     Param(33, "OSC3 interval (semitones)", GROUP_OSC, "slider", 0, 60, 36, cc=4),
     Param(15, "OSC2 detune", GROUP_OSC, "slider", 0, 512, 0, cc=5),
     Param(34, "OSC3 detune", GROUP_OSC, "slider", 0, 512, 0, cc=8),
+    Param(31, "Hard sync topology", GROUP_OSC, "combo", default=0,
+          choices=(("0 - all free running", 0), ("1 - OSC2 masters OSC1", 1), ("2 - OSC1 masters OSC2", 2)),
+          note="which oscillator's sideset drives which reset pin; not the note-on phase "
+               "reset, which is 'Osc sync / phase align OSC2' below",
+          cc=20),
+    Param(36, "Soft sync", GROUP_OSC, "check", default=0,
+          note="off = hard sync (cap discharge only), on = slave polls master", cc=21),
+    Param(37, "Sub-oscillator divide", GROUP_OSC, "combo", default=0,
+          choices=(("Off", 0), ("Divide by 2", 2), ("Divide by 4", 4)),
+          note="output on GP8, needs a mixer input on the carrier to be audible", cc=22),
+    Param(17, "Osc sync / phase align OSC2", GROUP_OSC, "combo", default=0,
+          choices=_phase_choices(),
+          note="Off leaves the oscillators running through note-on; every other setting "
+               "restarts OSC1 and OSC2 together there, the degree entries adding an OSC2 "
+               "offset on top. Changing this retriggers all notes.",
+          cc=23),
+    Param(26, "Voice mode", GROUP_OSC, "combo", default=0,
+          choices=(("0 - mono", 0), ("1 - poly", 1), ("2 - stack", 2)), cc=69),
+    Param(27, "Unison detune", GROUP_OSC, "slider", 0, 127, 0, cc=70),
+    Param(18, "Portamento time", GROUP_OSC, "slider", 0, 255, 0, cc=71),
+    Param(32, "Portamento mode", GROUP_OSC, "combo", default=0,
+          choices=(("0 - fixed time", 0), ("1 - slew rate", 1)), cc=72),
+    Param(28, "Analog drift amount", GROUP_OSC, "slider", 0, 127, 0, cc=73),
+    Param(29, "Analog drift speed", GROUP_OSC, "slider", 1, 255, 1, cc=74),
+    Param(30, "Analog drift spread", GROUP_OSC, "slider", 1, 127, 1, cc=75),
+    Param(43, "VCA level", GROUP_OSC, "slider", 0, 128, 128, cc=76),
+    Param(21, "Velocity to VCA", GROUP_OSC, "slider", 0, 20, 0, cc=77),
     Param(22, "OSC1 level", GROUP_OSC, "slider", 0, 127, 127, cc=9),
     Param(23, "OSC2 level", GROUP_OSC, "slider", 0, 127, 0, cc=12),
     Param(38, "OSC3 level", GROUP_OSC, "slider", 0, 127, 0, cc=83),
@@ -171,24 +200,6 @@ PARAMS: list[Param] = [
     Param(87, "OSC3 Saw enable", GROUP_OSC, "check", default=0, cc=115),
     Param(88, "OSC3 Pulse enable", GROUP_OSC, "check", default=0, cc=116),
     Param(89, "OSC3 Tri enable", GROUP_OSC, "check", default=0, cc=117),
-
-    # --- Sync and PIO ---
-    Param(31, "Hard sync topology", GROUP_SYNC, "combo", default=0,
-          choices=(("0 - all free running", 0), ("1 - OSC2 masters OSC1", 1), ("2 - OSC1 masters OSC2", 2)),
-          note="which oscillator's sideset drives which reset pin; not the note-on phase "
-               "reset, which is 'Osc sync / phase align OSC2' below",
-          cc=20),
-    Param(36, "Soft sync", GROUP_SYNC, "check", default=0,
-          note="off = hard sync (cap discharge only), on = slave polls master", cc=21),
-    Param(37, "Sub-oscillator divide", GROUP_SYNC, "combo", default=0,
-          choices=(("Off", 0), ("Divide by 2", 2), ("Divide by 4", 4)),
-          note="output on GP8, needs a mixer input on the carrier to be audible", cc=22),
-    Param(17, "Osc sync / phase align OSC2", GROUP_SYNC, "combo", default=0,
-          choices=_phase_choices(),
-          note="Off leaves the oscillators running through note-on; every other setting "
-               "restarts OSC1 and OSC2 together there, the degree entries adding an OSC2 "
-               "offset on top. Changing this retriggers all notes.",
-          cc=23),
 
     # --- Envelopes (curves and routing; times live in the a/b/c blocks) ---
     Param(126, "EnvDCO (ADSR3) enabled", GROUP_ENV, "check", default=1, cc=24),
@@ -232,22 +243,14 @@ PARAMS: list[Param] = [
     Param(41, "LFO1 speed", GROUP_LFO, "slider", 0, 4095, 0, cc=62),
     Param(42, "LFO2 speed", GROUP_LFO, "slider", 0, 4095, 0, cc=63),
     Param(40, "LFO1 to DCO", GROUP_LFO, "slider", 0, 511, 0, cc=65),
+    Param(216, "LFO1 to OSC1 extra", GROUP_LFO, "slider", 0, 255, 0, cc=14),
+    Param(217, "LFO1 to OSC2 extra", GROUP_LFO, "slider", 0, 255, 0, cc=15),
+    Param(218, "LFO1 to OSC3 extra", GROUP_LFO, "slider", 0, 255, 0, cc=19),
     Param(44, "LFO1 to VCA", GROUP_LFO, "slider", 0, 1023, 0, cc=66),
     Param(16, "LFO2 to OSC2 detune", GROUP_LFO, "slider", 0, 255, 0, cc=67),
     Param(35, "LFO2 to OSC3 detune", GROUP_LFO, "slider", 0, 255, 0, cc=68),
-
-    # --- Voice and Drift ---
-    Param(26, "Voice mode", GROUP_VOICE, "combo", default=0,
-          choices=(("0 - mono", 0), ("1 - poly", 1), ("2 - stack", 2)), cc=69),
-    Param(27, "Unison detune", GROUP_VOICE, "slider", 0, 127, 0, cc=70),
-    Param(18, "Portamento time", GROUP_VOICE, "slider", 0, 255, 0, cc=71),
-    Param(32, "Portamento mode", GROUP_VOICE, "combo", default=0,
-          choices=(("0 - fixed time", 0), ("1 - slew rate", 1)), cc=72),
-    Param(28, "Analog drift amount", GROUP_VOICE, "slider", 0, 127, 0, cc=73),
-    Param(29, "Analog drift speed", GROUP_VOICE, "slider", 1, 255, 1, cc=74),
-    Param(30, "Analog drift spread", GROUP_VOICE, "slider", 1, 127, 1, cc=75),
-    Param(43, "VCA level", GROUP_VOICE, "slider", 0, 128, 128, cc=76),
-    Param(21, "Velocity to VCA", GROUP_VOICE, "slider", 0, 20, 0, cc=77),
+    Param(219, "LFO2 to OSC2 coarse", GROUP_LFO, "slider", 0, 511, 0, cc=119),
+    Param(220, "LFO2 to OSC3 coarse", GROUP_LFO, "slider", 0, 511, 0, cc=120),
 
     # --- Mod matrix (ParamIds 60–83; see DCO/docs/MOD_MATRIX.md) ---
     # CCs skip reserved 98–101.

@@ -67,11 +67,11 @@ The `voice_task_fixed_point` function is the primary real-time processing loop f
   float unisonMODIFIER = (unisonDetune != 0) ? (0.00006f * unisonDetune * ((i & 0x01) == 0 ? -(i - 1) : -i)) : 0;
   float DETUNE_DRIFT_OSC1 = (analogDrift != 0) ? (LFO_DRIFT_LEVEL[DCO_A] * 0.0000005f * analogDrift) : 0;
   // ...
-  float modifiersAll = DETUNE_INTERNAL_FIFO_float + unisonMODIFIER + calcPitchbend + 1.00001f;
+  float modifiersAll = lfo1_osc1_float + unisonMODIFIER + calcPitchbend + 1.00001f;
   float freqModifiers = ADSRModifierOSC1 + DETUNE_DRIFT_OSC1 + modifiersAll;
   ```
 - **Operations:** `float * float`, `float * int`, `float + float`.
-- **Variables:** `ADSR1toDETUNE1_formula` and `DETUNE_INTERNAL_FIFO_float` are `float`.
+- **Variables:** `ADSR1toDETUNE1_formula` and `lfo1_pitch_mod_q24[LFO1_PITCH_OSC1]` (converted to float in voice task) are `float` at use site.
 
 ### 6. Final Frequency Calculation
 

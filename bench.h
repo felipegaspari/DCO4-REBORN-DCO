@@ -8,8 +8,8 @@
 // probes around the smallest stages (a few multiplies each) — useful for A/B-ing how much
 // the instrumentation itself distorts the totals, since every probe is an optimisation
 // barrier the compiler cannot move work across. RUNNING_AVERAGE_PERIOD keeps only
-// BENCH_PERIOD (loop / loop1); all BENCH_BEGIN/END stage probes compile out — use that for
-// a true loop baseline without intermediate probe tax. PERIOD overrides FINE.
+// BENCH_PERIOD (loop / loop1); all BENCH_BEGIN/END stage probes and path counters compile
+// out — use that for a true loop baseline without intermediate probe tax. PERIOD overrides FINE.
 //
 // Time source: SysTick, read as a free-running 24-bit down-counter clocked from clk_sys.
 // RP2040's Cortex-M0+ has no DWT cycle counter, so SysTick is the only single-cycle source
@@ -36,6 +36,9 @@ void print_amp_comp_bench();
 extern volatile bool pitch_interp_bench_speed_pending;
 extern volatile bool pitch_interp_bench_accuracy_pending;
 void print_pitch_interp_bench();
+
+extern volatile bool pio_probe_report_pending;
+void pio_probe_report_flush();
 
 static inline const char *bench_pitch_interp_mode_name() {
 #if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
@@ -75,13 +78,11 @@ static inline const char *bench_pitch_interp_mode_name() {
   X(loop0_lfo1,        0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "LFO1")                \
   X(loop0_lfo2,        0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "LFO2")                \
   X(loop0_drift,       0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "drift LFOs")          \
-  X(loop0_fifo_push,   0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "FIFO push")           \
   /* --- Core 1: loop1() --- */                                                               \
   X(loop1_period,      1, BENCH_US,  BENCH_T_MAIN, BENCH_NONE,          "loop1 period")        \
   X(loop1_millis,      1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "millisTimer")         \
   X(loop1_adsr,        1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "ADSR_update")         \
   X(loop1_cv_outs,     1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "update_CV_outs")      \
-  X(loop1_fifo_pop,    1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "FIFO pop")            \
   X(voice_task,        1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "voice_task TOTAL")    \
   /* --- Core 1: inside voice_task --- */                                                     \
   X(vt_pitchbend,      1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "pitch bend")          \
@@ -192,6 +193,82 @@ inline void bench_init_core() {
 #endif
 }
 
+// ---- Paced USB CDC output (core 0, non-blocking) ---------------------------
+// Shared by the profiler and PIO debug reports. Never blocks on Serial.write.
+
+volatile bool bench_out_active = false;
+
+#define BENCH_OUT_CAP   6144
+#define BENCH_OUT_CHUNK 64
+
+char bench_out_buf[BENCH_OUT_CAP];
+uint16_t bench_out_len = 0;
+uint16_t bench_out_pos = 0;
+
+inline void bench_out_reset() {
+  bench_out_len = 0;
+  bench_out_pos = 0;
+}
+
+inline void bench_out_puts(const char *s) {
+  while (*s != '\0' && bench_out_len + 1u < BENCH_OUT_CAP) {
+    bench_out_buf[bench_out_len++] = *s++;
+  }
+}
+
+inline void bench_out_printf(const char *fmt, ...) {
+  char tmp[192];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(tmp, sizeof(tmp), fmt, ap);
+  va_end(ap);
+  bench_out_puts(tmp);
+}
+
+inline void bench_out_println(const char *s) {
+  bench_out_puts(s);
+  bench_out_puts("\n");
+}
+
+// True when the host is still sending USB CDC frames (slider drag, etc.).
+inline bool bench_cdc_rx_pending() {
+#ifdef ENABLE_USB_CONTROL
+  return Serial.available() > 0;
+#else
+  return false;
+#endif
+}
+
+// Drain up to BENCH_OUT_CHUNK bytes without blocking. Returns true while more remains.
+inline bool bench_out_drain_chunk() {
+  if (!bench_out_active) return false;
+  if (bench_cdc_rx_pending()) return true;
+
+  const uint16_t remain = (uint16_t)(bench_out_len - bench_out_pos);
+  if (remain == 0u) {
+    bench_out_active = false;
+    bench_out_reset();
+    return false;
+  }
+
+  int avail = Serial.availableForWrite();
+  if (avail <= 0) return true;
+
+  uint16_t n = remain;
+  if (n > BENCH_OUT_CHUNK) n = (uint16_t)BENCH_OUT_CHUNK;
+  if ((uint16_t)avail < n) n = (uint16_t)avail;
+
+  Serial.write(reinterpret_cast<const uint8_t *>(bench_out_buf + bench_out_pos), n);
+  bench_out_pos = (uint16_t)(bench_out_pos + n);
+
+  if (bench_out_pos >= bench_out_len) {
+    bench_out_active = false;
+    bench_out_reset();
+    return false;
+  }
+  return true;
+}
+
 #ifdef RUNNING_AVERAGE
 
 struct BenchDesc {
@@ -231,6 +308,12 @@ struct BenchPathStat {
   uint32_t ratio_clamp;
   uint32_t ratio_walk_steps_sum;
   uint32_t ratio_walk_steps_max;
+  uint32_t amp_hit;
+  uint32_t amp_miss_walk;
+  uint32_t amp_miss_scan;
+  uint32_t amp_clamp;
+  uint32_t amp_walk_steps_sum;
+  uint32_t amp_walk_steps_max;
   uint32_t porta_off;
   uint32_t porta_note_on;
   uint32_t porta_retime;
@@ -240,6 +323,12 @@ struct BenchPathStat {
 BenchPathStat bench_path_live;
 BenchPathStat bench_path_snap;
 
+#ifdef RUNNING_AVERAGE_PERIOD
+// Period-only: no path bumps (same spirit as stage BENCH_BEGIN/END no-ops).
+#define BENCH_PATH_INC(field) ((void)0)
+static inline void bench_path_walk_steps(uint32_t) {}
+static inline void bench_path_amp_walk_steps(uint32_t) {}
+#else
 #define BENCH_PATH_INC(field) do { bench_path_live.field++; } while (0)
 static inline void bench_path_walk_steps(uint32_t steps) {
   bench_path_live.ratio_walk_steps_sum += steps;
@@ -247,48 +336,19 @@ static inline void bench_path_walk_steps(uint32_t steps) {
     bench_path_live.ratio_walk_steps_max = steps;
   }
 }
+static inline void bench_path_amp_walk_steps(uint32_t steps) {
+  bench_path_live.amp_walk_steps_sum += steps;
+  if (steps > bench_path_live.amp_walk_steps_max) {
+    bench_path_live.amp_walk_steps_max = steps;
+  }
+}
+#endif
 
 // Cross-core report handshake. Each core snapshots and clears its own probes, so no lock is
 // needed and neither core ever reads a counter the other is mid-update on.
 volatile bool bench_dump_request = false;
 volatile bool bench_core_ready[2] = { false, false };
 volatile bool bench_periodic = false;
-
-// Report is formatted into RAM then drained in small Serial.write slices so loop() is not
-// blocked for milliseconds. While active, BENCH_PERIOD on both cores skips samples.
-volatile bool bench_out_active = false;
-
-#define BENCH_OUT_CAP   6144
-#define BENCH_OUT_CHUNK 128
-
-char bench_out_buf[BENCH_OUT_CAP];
-uint16_t bench_out_len = 0;
-uint16_t bench_out_pos = 0;
-
-inline void bench_out_reset() {
-  bench_out_len = 0;
-  bench_out_pos = 0;
-}
-
-inline void bench_out_puts(const char *s) {
-  while (*s != '\0' && bench_out_len + 1u < BENCH_OUT_CAP) {
-    bench_out_buf[bench_out_len++] = *s++;
-  }
-}
-
-inline void bench_out_printf(const char *fmt, ...) {
-  char tmp[192];
-  va_list ap;
-  va_start(ap, fmt);
-  vsnprintf(tmp, sizeof(tmp), fmt, ap);
-  va_end(ap);
-  bench_out_puts(tmp);
-}
-
-inline void bench_out_println(const char *s) {
-  bench_out_puts(s);
-  bench_out_puts("\n");
-}
 
 static inline void bench_stat_add(BenchStat *s, uint32_t d) {
   s->sum += d;
@@ -509,14 +569,18 @@ inline void bench_print_core(uint8_t core) {
   }
 }
 
-// Ratio / portamento path breakdown for the same window as core 1 probes.
+// Ratio / amp-comp / portamento path breakdown for the same window as core 1 probes.
 inline void bench_print_path_counters() {
   const BenchPathStat &p = bench_path_snap;
   const uint32_t ratio_seg =
       p.ratio_hit + p.ratio_miss_direct + p.ratio_miss_bsearch;
+  const uint32_t amp_seg = p.amp_hit + p.amp_miss_walk + p.amp_miss_scan;
   const uint32_t porta_n = p.porta_off + p.porta_note_on + p.porta_retime +
                            p.porta_steady_time + p.porta_steady_slew;
-  if (ratio_seg == 0u && p.ratio_clamp == 0u && porta_n == 0u) return;
+  if (ratio_seg == 0u && p.ratio_clamp == 0u && amp_seg == 0u && p.amp_clamp == 0u &&
+      porta_n == 0u) {
+    return;
+  }
 
   bench_out_puts("\n");
   bench_out_println("-- Path counters (core 1, same window) --");
@@ -530,6 +594,18 @@ inline void bench_print_path_counters() {
     const uint32_t miss = p.ratio_miss_direct + p.ratio_miss_bsearch;
     const uint32_t miss_pm = (miss * 1000u) / ratio_seg;
     bench_out_printf("ratio miss rate: %lu.%lu%% of in-table calls\n",
+                     (unsigned long)(miss_pm / 10u), (unsigned long)(miss_pm % 10u));
+  }
+  bench_out_printf(
+      "amp: hit=%lu miss_walk=%lu miss_scan=%lu clamp=%lu  "
+      "find_steps max=%lu sum=%lu\n",
+      (unsigned long)p.amp_hit, (unsigned long)p.amp_miss_walk,
+      (unsigned long)p.amp_miss_scan, (unsigned long)p.amp_clamp,
+      (unsigned long)p.amp_walk_steps_max, (unsigned long)p.amp_walk_steps_sum);
+  if (amp_seg > 0u) {
+    const uint32_t miss = p.amp_miss_walk + p.amp_miss_scan;
+    const uint32_t miss_pm = (miss * 1000u) / amp_seg;
+    bench_out_printf("amp miss rate: %lu.%lu%% of in-band calls\n",
                      (unsigned long)(miss_pm / 10u), (unsigned long)(miss_pm % 10u));
   }
   bench_out_printf(
@@ -591,31 +667,29 @@ inline void bench_print_report() {
   bench_print_core(0);
   bench_out_puts("\n");
   bench_print_core(1);
+#ifndef RUNNING_AVERAGE_PERIOD
   bench_print_path_counters();
+#endif
   bench_out_println("=================================================");
   bench_out_puts("\n");
 }
 
-// Drain up to BENCH_OUT_CHUNK bytes. Returns true while more remains.
-inline bool bench_out_drain_chunk() {
-  if (!bench_out_active) return false;
-  const uint16_t remain = (uint16_t)(bench_out_len - bench_out_pos);
-  const uint16_t n = (remain > BENCH_OUT_CHUNK) ? (uint16_t)BENCH_OUT_CHUNK : remain;
-  if (n > 0u) {
-    Serial.write(reinterpret_cast<const uint8_t *>(bench_out_buf + bench_out_pos), n);
-    bench_out_pos = (uint16_t)(bench_out_pos + n);
-  }
-  if (bench_out_pos >= bench_out_len) {
-    bench_out_active = false;
-    bench_out_reset();
-    return false;
-  }
-  return true;
-}
+// Drain handled by shared bench_out_drain_chunk() above.
+
+// Forward declaration: period-probe report queued from core 1.
+extern volatile bool pio_probe_report_pending;
 
 // Core 0 side of the handshake: format into RAM when both cores are ready, then pace
 // Serial TX across loop iterations. Printing never happens on core 1.
 inline void bench_poll_core0() {
+  if (bench_cdc_rx_pending()) {
+    return;
+  }
+
+  if (pio_probe_report_pending && !bench_out_active) {
+    pio_probe_report_flush();
+  }
+
   if (bench_out_drain_chunk()) {
     return;
   }
@@ -631,7 +705,8 @@ inline void bench_poll_core0() {
 
   bench_service(0);
 
-  if (bench_dump_request && bench_core_ready[0] && bench_core_ready[1]) {
+  if (bench_dump_request && bench_core_ready[0] && bench_core_ready[1] &&
+      !bench_cdc_rx_pending()) {
     bench_out_reset();
     bench_print_report();
     print_clkdiv_bench();
@@ -689,10 +764,20 @@ inline void bench_poll_core0() {
 #define BENCH_FEND(id)   ((void)0)
 #define BENCH_PATH_INC(field) ((void)0)
 static inline void bench_path_walk_steps(uint32_t) {}
+static inline void bench_path_amp_walk_steps(uint32_t) {}
 
 inline void bench_service(uint8_t) {}
-inline void bench_poll_core0() {}
 inline void bench_reset_all() {}
+
+inline void bench_poll_core0() {
+  if (bench_cdc_rx_pending()) {
+    return;
+  }
+  if (pio_probe_report_pending && !bench_out_active) {
+    pio_probe_report_flush();
+  }
+  bench_out_drain_chunk();
+}
 
 #endif  // RUNNING_AVERAGE
 
