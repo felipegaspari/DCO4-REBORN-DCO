@@ -56,7 +56,8 @@ static const int multiplierTableSize = 200;
 const int32_t multiplierTableScale = 10000;
 
 // Pitch-multiplier storage: only the active PITCH_INTERP_MODE is allocated (see DCO.ino).
-#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
+#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT || \
+    PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
 float   xMultiplierTableF[multiplierTableSize]; // modifier [-1,3]
 float   yMultiplierTableF[multiplierTableSize]; // frequency ratio
 float   slopeF[multiplierTableSize - 1];

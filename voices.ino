@@ -164,7 +164,7 @@ static inline float noteIndex_to_freqFloat(float noteIndex) {
 #ifndef USE_FLOAT_VOICE_TASK
 // Fixed-point realtime voice engine (portamento, modifiers, clkdiv, amp, PIO/PWM/PW).
 // Selected by voice_task_main() when USE_FLOAT_VOICE_TASK is not defined.
-inline void voice_task() {
+inline void voice_task_fixed_point() {
   // Track portamento-time and mode changes between calls so we can smoothly
   // retime the glide without introducing pitch discontinuities.
   static uint32_t last_portamento_time = 0;
@@ -174,7 +174,7 @@ inline void voice_task() {
   bool portaTimeChanged = (portaTime != last_portamento_time);
   bool portaModeChanged = (portaMode != last_portamento_mode);
 
-  // Pre-calculate pitch bend as a Q24 value. This is done once per voice_task call.
+  // Pre-calculate pitch bend as a Q24 value. This is done once per voice_task_fixed_point call.
   int32_t calcPitchbend_q24;
 
   BENCH_BEGIN(vt_pitchbend);
@@ -192,7 +192,15 @@ inline void voice_task() {
   const int16_t local_ADSR1toPWM = ADSR1toPWM;
   const int16_t local_LFO2toPW = LFO2toPW;
 
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+  // Latch note-on edges for every voice slot (para may set flags on 1/2).
+  for (int k = 0; k < NUM_VOICES; k++) {
+    if (note_on_flag[k] == 1) {
+      note_on_flag_flag[k] = true;
+      note_on_flag[k] = 0;
+    }
+  }
+
+  for (int i = 0; i < NUM_VOICES_VOICE_TASK; i++) {
 
 #if DCO_DEBUG_REPORT
     // Debug: track OSC1 frequency at key stages of the pipeline for DCO report.
@@ -200,29 +208,48 @@ inline void voice_task() {
     float dbg_freq_after_mod_Hz = 0.0f;  // After all modifiers applied (freq_q24_A)
 #endif
 
-    if (note_on_flag[i] == 1) {
-      note_on_flag_flag[i] = true;
-      note_on_flag[i] = 0;
-    }
+    // Empty slot (note_off sets VOICE_NOTES to 0). Skip osc work for this voice.
+    // if (VOICE_NOTES[i] == 0) {
+    //   note_on_flag_flag[i] = false;
+    //   continue;
+    // }
 
-    if (VOICE_NOTES[i] >= 0) {
-      uint8_t note1 = VOICE_NOTES[i] - 36 + OSC1_interval;
+    // Note index convention: table_index = midi - 36 + offset (36 ⇒ unison).
+    //   Mono: octave_shift = global octave; OSC2/3 = relative to note1 (36 ⇒ unison with OSC1).
+    //   Poly/stack: every osc uses octave_shift only (shared octave); not OSC2/3.
+    uint8_t note1, note2, note3;
+    if (voiceMode == 0) {
+      note1 = VOICE_NOTES[i] - 36 + octave_shift;
       if (note1 > highestNote) {
         note1 -= ((uint8_t(note1 - highestNote) / 12) * 12);
       }
-      uint8_t note2 = note1 - 36 + OSC2_interval;
+      note2 = note1 - 36 + OSC2_interval;
       if (note2 > highestNote) {
         note2 -= ((uint8_t(note2 - highestNote) / 12) * 12);
       }
-      uint8_t note3 = note1 - 36 + OSC3_interval;
+      note3 = note1 - 36 + OSC3_interval;
       if (note3 > highestNote) {
         note3 -= ((uint8_t(note3 - highestNote) / 12) * 12);
       }
-      // Clamp note indexes to table (defensive)
-      const size_t NOTE_TABLE_LEN = sizeof(sNotePitches_q24) / sizeof(sNotePitches_q24[0]);
-      if (note1 >= NOTE_TABLE_LEN) note1 = (uint8_t)(NOTE_TABLE_LEN - 1);
-      if (note2 >= NOTE_TABLE_LEN) note2 = (uint8_t)(NOTE_TABLE_LEN - 1);
-      if (note3 >= NOTE_TABLE_LEN) note3 = (uint8_t)(NOTE_TABLE_LEN - 1);
+    } else {
+      note1 = VOICE_NOTES[0] - 36 + octave_shift;
+      if (note1 > highestNote) {
+        note1 -= ((uint8_t(note1 - highestNote) / 12) * 12);
+      }
+      note2 = VOICE_NOTES[1] - 36 + octave_shift;
+      if (note2 > highestNote) {
+        note2 -= ((uint8_t(note2 - highestNote) / 12) * 12);
+      }
+      note3 = VOICE_NOTES[2] - 36 + octave_shift;
+      if (note3 > highestNote) {
+        note3 -= ((uint8_t(note3 - highestNote) / 12) * 12);
+      }
+    }
+    // Clamp note indexes to table (defensive)
+    const size_t NOTE_TABLE_LEN = sizeof(sNotePitches_q24) / sizeof(sNotePitches_q24[0]);
+    if (note1 >= NOTE_TABLE_LEN) note1 = (uint8_t)(NOTE_TABLE_LEN - 1);
+    if (note2 >= NOTE_TABLE_LEN) note2 = (uint8_t)(NOTE_TABLE_LEN - 1);
+    if (note3 >= NOTE_TABLE_LEN) note3 = (uint8_t)(NOTE_TABLE_LEN - 1);
 
       BENCH_BEGIN(vt_osc_detune);
       // Optimized: Calculate OSC2/OSC3 detune in Q24 and keep it there.
@@ -250,8 +277,16 @@ inline void voice_task() {
       BENCH_BEGIN(vt_portamento);
       if (portaTime > 0 /*&& portamento_start != 0 && portamento_stop != 0*/) {
         uint32_t now_us = micros();
-        portamentoTimer[i] = now_us - portamentoStartMicros[i];
+        if (voiceMode == 0) {
+          portamentoTimer[i] = now_us - portamentoStartMicros[i];
+        } else {
+          for (int k = 0; k < NUM_VOICES; k++) {
+            portamentoTimer[k] = now_us - portamentoStartMicros[k];
+          }
+        }
 
+        // Mono: one edge restarts all three oscs. Para: each note_on_flag_flag[k] restarts osc k only.
+        if (voiceMode == 0) {
         if (note_on_flag_flag[i]) {
           // Serial.println("NOTE ON");
           portamentoStartMicros[i] = now_us;
@@ -348,24 +383,66 @@ inline void voice_task() {
             portamento_cur_freq_q24[DCO_C] = noteQ16_to_freqQ24(startNoteC_q16);
           }
         }
+        } else {
+          // Paraphonic: restart porta per voice slot → osc k (1:1).
+          int32_t T = (portaTime == 0) ? 1 : (int32_t)portaTime;
+          int64_t halfT = (int64_t)T >> 1;
+          const uint8_t targetNotes[3] = { note1, note2, note3 };
+          for (int k = 0; k < NUM_VOICES; k++) {
+            if (!note_on_flag_flag[k]) continue;
+            const uint8_t osc = (uint8_t)k;
+            portamentoStartMicros[k] = now_us;
+            portamentoTimer[k] = 0;
+            int64_t stop_q24 = sNotePitches_q24[targetNotes[k]];
+            portamento_stop_q24[osc] = stop_q24;
+            if (portaMode == PORTA_MODE_TIME) {
+              int64_t start_q24 = portamento_cur_freq_q24[osc];
+              portamento_start_q24[osc] = start_q24;
+              portamento_cur_freq_q24[osc] = start_q24;
+              int64_t d = stop_q24 - start_q24;
+              int64_t num = (d >= 0) ? (d + halfT) : (d - halfT);
+              freqPortaStep_q24[osc] = (num / (int64_t)T);
+            } else {
+              int32_t startNote_q16 = porta_note_cur_q16[osc];
+              int32_t targetNote_q16 = ((int32_t)targetNotes[k]) << 16;
+              if (startNote_q16 == 0) startNote_q16 = targetNote_q16;
+              porta_note_start_q16[osc] = startNote_q16;
+              porta_note_stop_q16[osc] = targetNote_q16;
+              int32_t dNote_q16 = targetNote_q16 - startNote_q16;
+              int64_t num = (dNote_q16 >= 0) ? ((int64_t)dNote_q16 + halfT) : ((int64_t)dNote_q16 - halfT);
+              porta_note_step_q16[osc] = (int32_t)(num / (int64_t)T);
+              if (dNote_q16 != 0 && porta_note_step_q16[osc] == 0) {
+                porta_note_step_q16[osc] = (dNote_q16 > 0) ? 1 : -1;
+              }
+              porta_note_cur_q16[osc] = startNote_q16;
+              portamento_cur_freq_q24[osc] = noteQ16_to_freqQ24(startNote_q16);
+            }
+          }
+        }
 
         // Compute current glide position using existing timing/slope
-        int32_t elapsed_us = (int32_t)portamentoTimer[i];
+        int32_t elapsedA = (voiceMode == 0) ? (int32_t)portamentoTimer[i] : (int32_t)portamentoTimer[0];
+        int32_t elapsedB = (voiceMode == 0) ? elapsedA : (int32_t)portamentoTimer[1];
+        int32_t elapsedC = (voiceMode == 0) ? elapsedA : (int32_t)portamentoTimer[2];
         int64_t curA;
         int64_t curB;
         int64_t curC;
 
         if (portaMode == PORTA_MODE_TIME) {
-          if ((uint32_t)elapsed_us > portaTime) {
-            // Snap to target once we have exceeded the (current) portamento time
+          if ((uint32_t)elapsedA > portaTime) {
             curA = portamento_stop_q24[DCO_A];
+          } else {
+            curA = portamento_start_q24[DCO_A] + freqPortaStep_q24[DCO_A] * (int64_t)elapsedA;
+          }
+          if ((uint32_t)elapsedB > portaTime) {
             curB = portamento_stop_q24[DCO_B];
+          } else {
+            curB = portamento_start_q24[DCO_B] + freqPortaStep_q24[DCO_B] * (int64_t)elapsedB;
+          }
+          if ((uint32_t)elapsedC > portaTime) {
             curC = portamento_stop_q24[DCO_C];
           } else {
-            // Absolute-time base in Q24
-            curA = portamento_start_q24[DCO_A] + freqPortaStep_q24[DCO_A] * (int64_t)elapsed_us;
-            curB = portamento_start_q24[DCO_B] + freqPortaStep_q24[DCO_B] * (int64_t)elapsed_us;
-            curC = portamento_start_q24[DCO_C] + freqPortaStep_q24[DCO_C] * (int64_t)elapsed_us;
+            curC = portamento_start_q24[DCO_C] + freqPortaStep_q24[DCO_C] * (int64_t)elapsedC;
           }
         } else {
           // Slew-rate (musical) mode: step is constant in note-space; stop when we reach the target.
@@ -373,9 +450,9 @@ inline void voice_task() {
           int32_t dNoteB_q16 = porta_note_stop_q16[DCO_B] - porta_note_start_q16[DCO_B];
           int32_t dNoteC_q16 = porta_note_stop_q16[DCO_C] - porta_note_start_q16[DCO_C];
 
-          int64_t curNoteA_q16 = (int64_t)porta_note_start_q16[DCO_A] + (int64_t)porta_note_step_q16[DCO_A] * (int64_t)elapsed_us;
-          int64_t curNoteB_q16 = (int64_t)porta_note_start_q16[DCO_B] + (int64_t)porta_note_step_q16[DCO_B] * (int64_t)elapsed_us;
-          int64_t curNoteC_q16 = (int64_t)porta_note_start_q16[DCO_C] + (int64_t)porta_note_step_q16[DCO_C] * (int64_t)elapsed_us;
+          int64_t curNoteA_q16 = (int64_t)porta_note_start_q16[DCO_A] + (int64_t)porta_note_step_q16[DCO_A] * (int64_t)elapsedA;
+          int64_t curNoteB_q16 = (int64_t)porta_note_start_q16[DCO_B] + (int64_t)porta_note_step_q16[DCO_B] * (int64_t)elapsedB;
+          int64_t curNoteC_q16 = (int64_t)porta_note_start_q16[DCO_C] + (int64_t)porta_note_step_q16[DCO_C] * (int64_t)elapsedC;
 
           // Clamp when passing the target
           if ((dNoteA_q16 >= 0 && curNoteA_q16 >= (int64_t)porta_note_stop_q16[DCO_A]) ||
@@ -487,6 +564,19 @@ inline void voice_task() {
         portamento_cur_freq_q24[DCO_C] = sNotePitches_q24[note3];
         portamento_start_q24[DCO_C] = portamento_cur_freq_q24[DCO_C];
         portamento_stop_q24[DCO_C] = portamento_cur_freq_q24[DCO_C];
+      }
+
+      // Exclusive path tag for jitter attribution (note_on > retime > steady > off).
+      if (portaTime == 0) {
+        BENCH_PATH_INC(porta_off);
+      } else if (note_on_flag_flag[i]) {
+        BENCH_PATH_INC(porta_note_on);
+      } else if (portaTimeChanged || portaModeChanged) {
+        BENCH_PATH_INC(porta_retime);
+      } else if (portaMode == PORTA_MODE_TIME) {
+        BENCH_PATH_INC(porta_steady_time);
+      } else {
+        BENCH_PATH_INC(porta_steady_slew);
       }
 
 #if DCO_DEBUG_REPORT
@@ -715,7 +805,8 @@ inline void voice_task() {
       // the reset pulse, so the held-reset distortion is capped at 25% of a period
       // instead of the old worst case of nearly a whole period at 180 degrees.
       uint8_t phaseQuarters = 0;
-      if (oscSync > 1 && phaseAlignOSC2 != 0) {
+      // Phase-align / oscSync offset is mono-only (para has no coupled A+B sync).
+      if (voiceMode == 0 && oscSync > 1 && phaseAlignOSC2 != 0) {
         uint16_t deg = (uint16_t)(phaseAlignOSC2 % 360u);
         phaseQuarters = (uint8_t)(deg / 90u);
         uint16_t residualDeg = (uint16_t)(deg - (uint16_t)phaseQuarters * 90u);
@@ -731,7 +822,8 @@ inline void voice_task() {
       PioPeriod retrig_p1{};
       PioPeriod retrig_p2{};
       uint32_t retrig_y2 = 0;
-      if (note_on_flag_flag[i] && oscSync >= 1 &&
+      // Mono EXACT_Y A+B stash only. Para splits inside its per-osc note-on loop.
+      if (voiceMode == 0 && note_on_flag_flag[i] && oscSync >= 1 &&
           note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
         BENCH_BEGIN(vt_retrig_split);
         retrig_p1 = pio_period_split(total_cycles1, wA, kA);
@@ -791,6 +883,8 @@ inline void voice_task() {
       osc_last_clk_div[DCO_C] = clk_div3;
       BENCH_END(vt_pio_write);
 
+      // Mono: A+B oscSync retrig + RANGE A/B/C. Para: osc k only, no oscSync.
+      if (voiceMode == 0) {
       if (note_on_flag_flag[i]) {
         BENCH_BEGIN(vt_note_retrig);
         // --- Reverse Calculation to find the expected output frequency ---
@@ -893,6 +987,23 @@ inline void voice_task() {
         BENCH_END(vt_note_retrig);
       }
 
+      } else {
+        // Paraphonic: edge k → RANGE osc k only (same as mono with oscSync off).
+        // No SM stop/restart — that phase-resets and clicks when porta keeps the amp open.
+        // Pitch continues via the per-frame put/pull above. No oscSync / phase-align.
+        const uint16_t chanLevels[3] = { chanLevel, chanLevel2, chanLevel3 };
+
+        for (int k = 0; k < NUM_VOICES; k++) {
+          if (!note_on_flag_flag[k]) continue;
+          BENCH_BEGIN(vt_note_retrig);
+          const uint8_t osc = (uint8_t)k;
+          BENCH_BEGIN(vt_retrig_pwm);
+          pwm_set_chan_level(RANGE_PWM_SLICES[osc], RANGE_PWM_CHANNELS[osc], chanLevels[k]);
+          BENCH_END(vt_retrig_pwm);
+          BENCH_END(vt_note_retrig);
+        }
+      }
+
       if (timer99microsFlag) {
         BENCH_BEGIN(vt_range_pwm);
         pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], RANGE_PWM_CHANNELS[DCO_A], chanLevel);
@@ -927,8 +1038,10 @@ inline void voice_task() {
           BENCH_END(vt_pw_update);
         }
       }
-    }
-    note_on_flag_flag[i] = false;
+  }
+
+  for (int k = 0; k < NUM_VOICES; k++) {
+    note_on_flag_flag[k] = false;
   }
 
   // Whole-task timing is taken by the BENCH_voice_task probe around voice_task_main() in
@@ -946,12 +1059,12 @@ inline void voice_task_main() {
 #ifdef USE_FLOAT_VOICE_TASK
   voice_task_float();
 #else
-  voice_task();
+  voice_task_fixed_point();
 #endif
 }
 
 #ifdef USE_FLOAT_VOICE_TASK
-// Float realtime voice engine (same stages as voice_task, in Hz). Board default on RP2350.
+// Float realtime voice engine (same stages as voice_task_fixed_point, in Hz). Board default on RP2350.
 inline void voice_task_float() {
     // --- Track portamento control changes exactly as in original ---
     static uint32_t last_portamento_time = 0;
@@ -981,39 +1094,62 @@ inline void voice_task_float() {
     // Cache PWM sources like original
     const int16_t local_ADSR1toPWM = ADSR1toPWM;
     const int16_t local_LFO2toPW   = LFO2toPW;
+
+    // Latch note-on edges for every voice slot (para may set flags on 1/2).
+    for (int k = 0; k < NUM_VOICES; k++) {
+      if (note_on_flag[k] == 1) {
+        note_on_flag_flag[k] = true;
+        note_on_flag[k] = 0;
+      }
+    }
   
     // --- 2. Per-voice loop (mirror original structure) ---
-    for (int i = 0; i < NUM_VOICES_TOTAL; ++i) {
+    for (int i = 0; i < NUM_VOICES_VOICE_TASK; ++i) {
   
   #if DCO_DEBUG_REPORT
       float dbg_freq_base_Hz      = 0.0f;
       float dbg_freq_after_mod_Hz = 0.0f;
   #endif
-  
-      if (note_on_flag[i] == 1) {
-        note_on_flag_flag[i] = true;
-        note_on_flag[i]      = 0;
+
+      // Empty slot (note_off sets VOICE_NOTES to 0). Skip osc work for this voice.
+      // if (VOICE_NOTES[i] == 0) {
+      //   note_on_flag_flag[i] = false;
+      //   continue;
+      // }
+
+      // --- 2.1 Note indices ---
+      // Note index convention: table_index = midi - 36 + offset (36 ⇒ unison).
+      //   Mono: octave_shift = global octave; OSC2/3 = relative to note1 (36 ⇒ unison with OSC1).
+      //   Poly/stack: every osc uses octave_shift only (shared octave); not OSC2/3.
+      uint8_t note1, note2, note3;
+      if (voiceMode == 0) {
+        note1 = VOICE_NOTES[i] - 36 + octave_shift;
+        if (note1 > highestNote) {
+          note1 -= ((uint8_t(note1 - highestNote) / 12) * 12);
+        }
+        note2 = note1 - 36 + OSC2_interval;
+        if (note2 > highestNote) {
+          note2 -= ((uint8_t(note2 - highestNote) / 12) * 12);
+        }
+        note3 = note1 - 36 + OSC3_interval;
+        if (note3 > highestNote) {
+          note3 -= ((uint8_t(note3 - highestNote) / 12) * 12);
+        }
+      } else {
+        note1 = VOICE_NOTES[0] - 36 + octave_shift;
+        if (note1 > highestNote) {
+          note1 -= ((uint8_t(note1 - highestNote) / 12) * 12);
+        }
+        note2 = VOICE_NOTES[1] - 36 + octave_shift;
+        if (note2 > highestNote) {
+          note2 -= ((uint8_t(note2 - highestNote) / 12) * 12);
+        }
+        note3 = VOICE_NOTES[2] - 36 + octave_shift;
+        if (note3 > highestNote) {
+          note3 -= ((uint8_t(note3 - highestNote) / 12) * 12);
+        }
       }
-  
-      if (VOICE_NOTES[i] < 0) {
-        note_on_flag_flag[i] = false;
-        continue;
-      }
-  
-      // --- 2.1 Note indices (unchanged logic) ---
-      uint8_t note1 = VOICE_NOTES[i] - 36 + OSC1_interval;
-      if (note1 > highestNote) {
-        note1 -= ((uint8_t(note1 - highestNote) / 12) * 12);
-      }
-      uint8_t note2 = note1 - 36 + OSC2_interval;
-      if (note2 > highestNote) {
-        note2 -= ((uint8_t(note2 - highestNote) / 12) * 12);
-      }
-      uint8_t note3 = note1 - 36 + OSC3_interval;
-      if (note3 > highestNote) {
-        note3 -= ((uint8_t(note3 - highestNote) / 12) * 12);
-      }
-  
+
       const size_t NOTE_TABLE_LEN = sizeof(sNotePitches) / sizeof(sNotePitches[0]);
       if (note1 >= NOTE_TABLE_LEN) note1 = (uint8_t)(NOTE_TABLE_LEN - 1);
       if (note2 >= NOTE_TABLE_LEN) note2 = (uint8_t)(NOTE_TABLE_LEN - 1);
@@ -1043,8 +1179,16 @@ inline void voice_task_float() {
 
       if (portaTime > 0) {
         uint32_t now_us = micros();
-        portamentoTimer[i] = now_us - portamentoStartMicros[i];
-  
+        if (voiceMode == 0) {
+          portamentoTimer[i] = now_us - portamentoStartMicros[i];
+        } else {
+          for (int k = 0; k < NUM_VOICES; k++) {
+            portamentoTimer[k] = now_us - portamentoStartMicros[k];
+          }
+        }
+
+        // Mono: one edge restarts all three oscs. Para: each note_on_flag_flag[k] restarts osc k only.
+        if (voiceMode == 0) {
         if (note_on_flag_flag[i]) {
           portamentoStartMicros[i] = now_us;
           portamentoTimer[i]       = 0;
@@ -1150,8 +1294,49 @@ inline void voice_task_float() {
             porta_freq_cur_f[DCO_C] = noteIndex_to_freqFloat(startNoteC);
           }
         }
+        } else {
+          // Paraphonic: restart porta per voice slot → osc k (1:1).
+          float T = (portaTime == 0) ? 1.0f : (float)portaTime;
+          const float SCALE = 65536.0f;
+          const float halfT = 0.5f * T;
+          const float targetFreqs[3] = { noteFreq1, noteFreq2, noteFreq3 };
+          const int targetNotes[3] = { note1, note2, note3 };
+          for (int k = 0; k < NUM_VOICES; k++) {
+            if (!note_on_flag_flag[k]) continue;
+            const uint8_t osc = (uint8_t)k;
+            portamentoStartMicros[k] = now_us;
+            portamentoTimer[k] = 0;
+            if (portaMode == PORTA_MODE_TIME) {
+              float stop = targetFreqs[k];
+              float start = porta_freq_cur_f[osc];
+              porta_freq_start_f[osc] = start;
+              porta_freq_stop_f[osc] = stop;
+              float d = stop - start;
+              float step = d / T;
+              if (d != 0.0f && step == 0.0f) step = (d > 0.0f) ? (1.0f / T) : (-1.0f / T);
+              porta_freq_step_f[osc] = step;
+            } else {
+              float startNote = porta_note_cur_f[osc];
+              float targetNote = (float)targetNotes[k];
+              if (startNote == 0.0f) startNote = targetNote;
+              porta_note_start_f[osc] = startNote;
+              porta_note_stop_f[osc] = targetNote;
+              float dNote = targetNote - startNote;
+              float d_q16 = dNote * SCALE;
+              float num = (d_q16 >= 0.0f) ? (d_q16 + halfT) : (d_q16 - halfT);
+              float stepNote = (num / T) / SCALE;
+              if (dNote != 0.0f && stepNote == 0.0f)
+                stepNote = (dNote > 0.0f) ? (1.0f / SCALE) : (-1.0f / SCALE);
+              porta_note_step_f[osc] = stepNote;
+              porta_note_cur_f[osc] = startNote;
+              porta_freq_cur_f[osc] = noteIndex_to_freqFloat(startNote);
+            }
+          }
+        }
   
-        int32_t elapsed_us = (int32_t)portamentoTimer[i];
+        int32_t elapsedA = (voiceMode == 0) ? (int32_t)portamentoTimer[i] : (int32_t)portamentoTimer[0];
+        int32_t elapsedB = (voiceMode == 0) ? elapsedA : (int32_t)portamentoTimer[1];
+        int32_t elapsedC = (voiceMode == 0) ? elapsedA : (int32_t)portamentoTimer[2];
   
         float curA, curB, curC;
         if (portaMode == PORTA_MODE_TIME) {
@@ -1162,14 +1347,20 @@ inline void voice_task_float() {
           float stopB  = porta_freq_stop_f [DCO_B];
           float stopC  = porta_freq_stop_f [DCO_C];
 
-          if ((uint32_t)elapsed_us > portaTime || portaTime == 0) {
+          if ((uint32_t)elapsedA > portaTime || portaTime == 0) {
             curA = stopA;
+          } else {
+            curA = startA + porta_freq_step_f[DCO_A] * (float)elapsedA;
+          }
+          if ((uint32_t)elapsedB > portaTime || portaTime == 0) {
             curB = stopB;
+          } else {
+            curB = startB + porta_freq_step_f[DCO_B] * (float)elapsedB;
+          }
+          if ((uint32_t)elapsedC > portaTime || portaTime == 0) {
             curC = stopC;
           } else {
-            curA = startA + porta_freq_step_f[DCO_A] * (float)elapsed_us;
-            curB = startB + porta_freq_step_f[DCO_B] * (float)elapsed_us;
-            curC = startC + porta_freq_step_f[DCO_C] * (float)elapsed_us;
+            curC = startC + porta_freq_step_f[DCO_C] * (float)elapsedC;
           }
 
           porta_freq_cur_f[DCO_A] = curA;
@@ -1187,9 +1378,9 @@ inline void voice_task_float() {
           float dNoteB = stopNoteB - startNoteB;
           float dNoteC = stopNoteC - startNoteC;
 
-          float curNoteA = startNoteA + porta_note_step_f[DCO_A] * (float)elapsed_us;
-          float curNoteB = startNoteB + porta_note_step_f[DCO_B] * (float)elapsed_us;
-          float curNoteC = startNoteC + porta_note_step_f[DCO_C] * (float)elapsed_us;
+          float curNoteA = startNoteA + porta_note_step_f[DCO_A] * (float)elapsedA;
+          float curNoteB = startNoteB + porta_note_step_f[DCO_B] * (float)elapsedB;
+          float curNoteC = startNoteC + porta_note_step_f[DCO_C] * (float)elapsedC;
 
           // Clamp to stop as original
           if ((dNoteA >= 0.0f && curNoteA >= stopNoteA) ||
@@ -1209,6 +1400,7 @@ inline void voice_task_float() {
           porta_note_cur_f[DCO_B] = curNoteB;
           porta_note_cur_f[DCO_C] = curNoteC;
 
+          // At stop: reuse target Hz (skip note→Hz). Else interpolate (integral notes hit table).
           curA = noteIndex_to_freqFloat(curNoteA);
           curB = noteIndex_to_freqFloat(curNoteB);
           curC = noteIndex_to_freqFloat(curNoteC);
@@ -1328,6 +1520,19 @@ inline void voice_task_float() {
         porta_note_cur_f[DCO_B] = (float)note2;
         porta_note_cur_f[DCO_C] = (float)note3;
       }
+
+      // Exclusive path tag for jitter attribution (note_on > retime > steady > off).
+      if (portaTime == 0) {
+        BENCH_PATH_INC(porta_off);
+      } else if (note_on_flag_flag[i]) {
+        BENCH_PATH_INC(porta_note_on);
+      } else if (portaTimeChanged || portaModeChanged) {
+        BENCH_PATH_INC(porta_retime);
+      } else if (portaMode == PORTA_MODE_TIME) {
+        BENCH_PATH_INC(porta_steady_time);
+      } else {
+        BENCH_PATH_INC(porta_steady_slew);
+      }
   
   #if DCO_DEBUG_REPORT
       dbg_freq_base_Hz = freqA;
@@ -1381,8 +1586,9 @@ inline void voice_task_float() {
 
       BENCH_BEGIN(vt_freq_scale_x);
       // --- 2.7 Multiplier table & ratio interpolation (float version) ---
-      // FLOAT uses natural modifiers; fixed A/B modes still need table-unit scale → Q16.
-#if PITCH_INTERP_MODE != PITCH_INTERP_FLOAT
+      // FLOAT / FLOAT_FAST use natural modifiers; fixed A/B modes need table-unit scale → Q16.
+#if PITCH_INTERP_MODE != PITCH_INTERP_FLOAT && \
+    PITCH_INTERP_MODE != PITCH_INTERP_FLOAT_FAST
       float x1 = freqModifiers1 * (float)multiplierTableScale;
       float x2 = freqModifiers2 * (float)multiplierTableScale;
       float x3 = freqModifiers3 * (float)multiplierTableScale;
@@ -1394,6 +1600,10 @@ inline void voice_task_float() {
       float ratio1 = interpolateRatioFloat_cached(freqModifiers1, DCO_A);
       float ratio2 = interpolateRatioFloat_cached(freqModifiers2, DCO_B);
       float ratio3 = interpolateRatioFloat_cached(freqModifiers3, DCO_C);
+#elif PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
+      float ratio1 = interpolateRatioFloat_cached_fast(freqModifiers1, DCO_A);
+      float ratio2 = interpolateRatioFloat_cached_fast(freqModifiers2, DCO_B);
+      float ratio3 = interpolateRatioFloat_cached_fast(freqModifiers3, DCO_C);
 #elif PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
       // A/B: fixed ratio interpolator inside float voice (float x → Q16 → float ratio).
       int32_t x1_Q16 = (int32_t)lroundf(x1 * 65536.0f);
@@ -1464,7 +1674,8 @@ inline void voice_task_float() {
       // note-on; only the sub-quarter residual widens the reset pulse.
       uint8_t phaseQuarters = 0;
       uint32_t phaseDelay = 0;
-      if (oscSync > 1 && phaseAlignOSC2 != 0) {
+      // Phase-align / oscSync offset is mono-only (para has no coupled A+B sync).
+      if (voiceMode == 0 && oscSync > 1 && phaseAlignOSC2 != 0) {
         uint16_t deg = (uint16_t)(phaseAlignOSC2 % 360u);
         phaseQuarters = (uint8_t)(deg / 90u);
         uint16_t residualDeg = (uint16_t)(deg - (uint16_t)phaseQuarters * 90u);
@@ -1477,7 +1688,8 @@ inline void voice_task_float() {
       PioPeriod retrig_p1{};
       PioPeriod retrig_p2{};
       uint32_t retrig_y2 = 0;
-      if (note_on_flag_flag[i] && oscSync >= 1 &&
+      // Mono EXACT_Y A+B stash only. Para splits inside its per-osc note-on loop.
+      if (voiceMode == 0 && note_on_flag_flag[i] && oscSync >= 1 &&
           note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
         BENCH_BEGIN(vt_retrig_split);
         retrig_p1 = pio_period_split(total_cycles1, wA, kA);
@@ -1538,9 +1750,11 @@ inline void voice_task_float() {
       osc_last_clk_div[DCO_C] = clk_div3;
       BENCH_END(vt_pio_write);
 
+      // Mono: A+B oscSync retrig + RANGE A/B/C. Para: osc k only, no oscSync.
+      if (voiceMode == 0) {
       if (note_on_flag_flag[i]) {
         BENCH_BEGIN(vt_note_retrig);
-        // Sync logic mirrored from fixed-point voice_task, using float-derived periods.
+        // Sync logic mirrored from fixed-point voice_task_fixed_point, using float-derived periods.
         if (oscSync >= 1) {
           // One probe for the whole SM apply path — fine MAIN slices mis-attribute cold XIP.
           BENCH_BEGIN(vt_retrig_sm_apply);
@@ -1590,6 +1804,23 @@ inline void voice_task_float() {
         BENCH_END(vt_retrig_pwm);
         BENCH_END(vt_note_retrig);
       }
+
+      } else {
+        // Paraphonic: edge k → RANGE osc k only (same as mono with oscSync off).
+        // No SM stop/restart — that phase-resets and clicks when porta keeps the amp open.
+        // Pitch continues via the per-frame put/pull above. No oscSync / phase-align.
+        const uint16_t chanLevels[3] = { chanLevel, chanLevel2, chanLevel3 };
+
+        for (int k = 0; k < NUM_VOICES; k++) {
+          if (!note_on_flag_flag[k]) continue;
+          BENCH_BEGIN(vt_note_retrig);
+          const uint8_t osc = (uint8_t)k;
+          BENCH_BEGIN(vt_retrig_pwm);
+          pwm_set_chan_level(RANGE_PWM_SLICES[osc], RANGE_PWM_CHANNELS[osc], chanLevels[k]);
+          BENCH_END(vt_retrig_pwm);
+          BENCH_END(vt_note_retrig);
+        }
+      }
   
       if (timer99microsFlag) {
         BENCH_BEGIN(vt_range_pwm);
@@ -1626,8 +1857,10 @@ inline void voice_task_float() {
           BENCH_END(vt_pw_update);
         }
       }
-  
-      note_on_flag_flag[i] = false;
+    }
+
+    for (int k = 0; k < NUM_VOICES; k++) {
+      note_on_flag_flag[k] = false;
     }
 
   // Whole-task timing is taken by the BENCH_voice_task probe around voice_task_main() in
@@ -1643,8 +1876,8 @@ inline uint8_t get_free_voice_sequential() {
   uint8_t nextVoice;
   uint8_t freeVoices = 0;
 
-  if (VOICES[VOICES_LAST_SEQUENCE[NUM_VOICES_TOTAL - 1]] == 1 || VOICES[VOICES_LAST_SEQUENCE[NUM_VOICES_TOTAL - 1]] == 0) {
-    for (int voiceIndex = NUM_VOICES_TOTAL - 1; voiceIndex > 0; voiceIndex--) {
+  if (VOICES[VOICES_LAST_SEQUENCE[NUM_VOICES - 1]] == 1 || VOICES[VOICES_LAST_SEQUENCE[NUM_VOICES - 1]] == 0) {
+    for (int voiceIndex = NUM_VOICES - 1; voiceIndex > 0; voiceIndex--) {
       if (VOICES[VOICES_LAST_SEQUENCE[voiceIndex]] == 0) {
         nextVoice = VOICES_LAST_SEQUENCE[voiceIndex];
         freeVoices = 1;
@@ -1656,10 +1889,10 @@ inline uint8_t get_free_voice_sequential() {
       }
     }
   } else {
-    if (VOICES[VOICES_LAST_SEQUENCE[NUM_VOICES_TOTAL - 1]] == 0) {
-      nextVoice = VOICES_LAST_SEQUENCE[NUM_VOICES_TOTAL - 1];
+    if (VOICES[VOICES_LAST_SEQUENCE[NUM_VOICES - 1]] == 0) {
+      nextVoice = VOICES_LAST_SEQUENCE[NUM_VOICES - 1];
 
-      for (int voiceIndex = NUM_VOICES_TOTAL - 1; voiceIndex > 0; voiceIndex--) {
+      for (int voiceIndex = NUM_VOICES - 1; voiceIndex > 0; voiceIndex--) {
         VOICES_LAST_SEQUENCE[voiceIndex] = VOICES_LAST_SEQUENCE[voiceIndex - 1];
       }
 
@@ -1669,9 +1902,9 @@ inline uint8_t get_free_voice_sequential() {
     }
   }
   if (freeVoices == 0) {
-    nextVoice = VOICES_LAST_SEQUENCE[NUM_VOICES_TOTAL - 1];
+    nextVoice = VOICES_LAST_SEQUENCE[NUM_VOICES - 1];
 
-    for (int voiceIndex = NUM_VOICES_TOTAL - 1; voiceIndex > 0; voiceIndex--) {
+    for (int voiceIndex = NUM_VOICES - 1; voiceIndex > 0; voiceIndex--) {
       VOICES_LAST_SEQUENCE[voiceIndex] = VOICES_LAST_SEQUENCE[voiceIndex - 1];
     }
 
@@ -1685,12 +1918,12 @@ inline uint8_t get_free_voice() {
   uint32_t oldest_time = millis();
   uint8_t oldest_voice = 0;
 
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++)  // REVISAR!!
+  for (int i = 0; i < NUM_VOICES; i++)  // REVISAR!!
   {
-    uint8_t n = (NEXT_VOICE + i) % NUM_VOICES_TOTAL;
+    uint8_t n = (NEXT_VOICE + i) % NUM_VOICES;
 
     if (VOICES[n] == 0) {
-      NEXT_VOICE = (n + 1) % NUM_VOICES_TOTAL;
+      NEXT_VOICE = (n + 1) % NUM_VOICES;
       return n;
     }
 
@@ -1700,11 +1933,14 @@ inline uint8_t get_free_voice() {
     }
   }
 
-  NEXT_VOICE = (oldest_voice + 1) % NUM_VOICES_TOTAL;
+  NEXT_VOICE = (oldest_voice + 1) % NUM_VOICES;
   return oldest_voice;
 }
 
 // Map voiceMode → NUM_VOICES / STACK_VOICES. Called from init_voices and apply_param_voice_mode.
+//   0 mono:       one MIDI voice → oscs 0..2 (engine still bound by NUM_VOICES_VOICE_TASK)
+//   1 paraphonic: up to TOTAL notes, voice i → osc i (ownership in voice_task not wired yet)
+//   2 stub:       DCO4 stack leftover — counts only; no new stack behavior
 inline void setVoiceMode() {
   switch (voiceMode) {
     case 0:
@@ -1862,8 +2098,8 @@ uint16_t get_chan_level_lut(float freqHz, uint8_t voiceN) {
 }
 #endif  // USE_FLOAT_AMP_COMP
 
-// Map raw PW counter into calibrated center/limits for a voice. Used on the 99 µs PW update path.
-inline uint16_t get_PW_level_interpolated(uint16_t PWval, uint8_t voiceN) {
+// Map raw PW counter into calibrated center/limits for one oscillator. Used on the 99 µs PW path.
+inline uint16_t get_PW_level_interpolated(uint16_t PWval, uint8_t oscN) {
 
   uint16_t chanLevel;
 
@@ -1872,10 +2108,10 @@ inline uint16_t get_PW_level_interpolated(uint16_t PWval, uint8_t voiceN) {
 
   if (PWval >= (DIV_COUNTER_PW - 1)) {
     // Above max PW, clamp to calibrated high limit.
-    return PW_HIGH_LIMIT[voiceN];
+    return PW_HIGH_LIMIT[oscN];
   } else if (PWval <= 0) {
     // Below min PW, clamp to calibrated low limit.
-    return PW_LOW_LIMIT[voiceN];
+    return PW_LOW_LIMIT[oscN];
   } else {
     uint16_t pwLowBreak  = PW_LOOKUP[0];  // usually 0
     uint16_t pwMidBreak  = PW_LOOKUP[1];  // mid-point
@@ -1885,12 +2121,12 @@ inline uint16_t get_PW_level_interpolated(uint16_t PWval, uint8_t voiceN) {
       // Upper half: interpolate from center to high limit.
       chanLevel = map(PWval,
                       pwMidBreak, pwHighBreak,
-                      PW_CENTER[voiceN], PW_HIGH_LIMIT[voiceN]);
+                      PW_CENTER[oscN], PW_HIGH_LIMIT[oscN]);
     } else {
       // Lower half: interpolate from low limit to center.
       chanLevel = map(PWval,
                       pwLowBreak, pwMidBreak,
-                      PW_LOW_LIMIT[voiceN], PW_CENTER[voiceN]);
+                      PW_LOW_LIMIT[oscN], PW_CENTER[oscN]);
     }
 
     return chanLevel;
@@ -2088,6 +2324,7 @@ inline int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex) {
 
 #if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
 // x = pitch modifier in ~[-1, 3]; returns frequency ratio directly (tables are unscaled).
+// Walk + bsearch find (A/B vs FLOAT_FAST).
 inline float interpolateRatioFloat_cached(float x, int dcoIndex) {
   if (x <= xMultiplierTableF[0]) {
     return yMultiplierTableF[0];
@@ -2131,6 +2368,52 @@ inline float interpolateRatioFloat_cached(float x, int dcoIndex) {
 }
 #endif // PITCH_INTERP_FLOAT
 
+#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
+// Trunc+clamp±1 find; same lerp as walk. Keep ±1 even when walk_steps≈0 (live ballast).
+// noinline: isolate codegen from voice_task_float.
+__attribute__((noinline))
+float interpolateRatioFloat_cached_fast(float x, int dcoIndex) {
+  // Endpoints match initMultiplierTables (-1 / 3).
+  if (x <= -1.0f) {
+    BENCH_PATH_INC(ratio_clamp);
+    return yMultiplierTableF[0];
+  }
+  if (x >= 3.0f) {
+    BENCH_PATH_INC(ratio_clamp);
+    return yMultiplierTableF[multiplierTableSize - 1];
+  }
+
+  static constexpr float kPitchX0 = -1.0f;
+  static constexpr float kPitchInvDx = (float)multiplierTableSize / 4.0f; // N/4 = 50
+  const int lastSeg = multiplierTableSize - 2;
+
+  int low = interpSegCache[dcoIndex];
+  if (low >= 0 && low <= lastSeg &&
+      xMultiplierTableF[low] <= x && x < xMultiplierTableF[low + 1]) {
+    BENCH_PATH_INC(ratio_hit);
+  } else {
+    int cand = (int)((x - kPitchX0) * kPitchInvDx);
+    if (cand < 0) cand = 0;
+    else if (cand > lastSeg) cand = lastSeg;
+    // Float rounding / live ballast: keep both ±1 compares even if steps stay 0.
+    uint32_t steps = 0;
+    if (cand < lastSeg && x >= xMultiplierTableF[cand + 1]) {
+      ++cand;
+      steps = 1;
+    } else if (cand > 0 && x < xMultiplierTableF[cand]) {
+      --cand;
+      steps = 1;
+    }
+    low = cand;
+    BENCH_PATH_INC(ratio_miss_direct);
+    bench_path_walk_steps(steps);
+    interpSegCache[dcoIndex] = (int16_t)low;
+  }
+
+  return yMultiplierTableF[low] + slopeF[low] * (x - xMultiplierTableF[low]);
+}
+#endif // PITCH_INTERP_FLOAT_FAST
+
 // Build integer/float pitch-multiplier tables and slopes (boot). Called from init_voices().
 void initMultiplierTables() {
 
@@ -2152,7 +2435,8 @@ void initMultiplierTables() {
       y_value = expInterpolationSolveY(x + 1.00d, 1.00d, 3.00d, 0.50d, 2.00d);
     }
 
-#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
+#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT || \
+    PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
     // Natural domain: x = modifier [-1,3], y = frequency ratio (no int-table scale).
     xMultiplierTableF[i] = (float)x;
     yMultiplierTableF[i] = y_value;
@@ -2179,7 +2463,8 @@ void initMultiplierTables() {
     int64_t numSlope12 = ((int64_t)dy << 12) + (dx > 0 ? dx / 2 : -dx / 2);
     slopeQ12[i] = (int32_t)(numSlope12 / (int64_t)dx);
   }
-#elif PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
+#elif PITCH_INTERP_MODE == PITCH_INTERP_FLOAT || \
+      PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
   for (int i = 0; i < multiplierTableSize - 1; ++i) {
     float dxF = xMultiplierTableF[i + 1] - xMultiplierTableF[i];
     if (dxF == 0.0f) dxF = 1.0f;

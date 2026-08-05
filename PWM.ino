@@ -1,4 +1,4 @@
-// Configure range PWM (per DCO, DIV_COUNTER) and PW PWM (per voice, DIV_COUNTER_PW). Called from setup1().
+// Configure range PWM (per DCO, DIV_COUNTER) and PW PWM (per osc, DIV_COUNTER_PW). Called from setup1().
 void init_pwm()
 {
   for (int i = 0; i < NUM_OSCILLATORS; i++)
@@ -12,6 +12,10 @@ void init_pwm()
 
   for (int i = 0; i < NUM_OSCILLATORS; i++)
   {
+    if (PW_PINS[i] == PW_PIN_UNASSIGNED) {
+      PW_PWM_SLICES[i] = 0xFF;  // not a real slice — level_pwm share checks must ignore
+      continue;
+    }
     gpio_set_function(PW_PINS[i], GPIO_FUNC_PWM);
     PW_PWM_SLICES[i] = pwm_gpio_to_slice_num(PW_PINS[i]);
     pwm_set_wrap(PW_PWM_SLICES[i], DIV_COUNTER_PW);
@@ -78,6 +82,7 @@ static bool level_pwm_slice_shares_voice_wrap(uint8_t slice) {
     if (slice == RANGE_PWM_SLICES[i]) return true;
   }
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
+    if (PW_PWM_SLICES[i] == 0xFF) continue;
     if (slice == PW_PWM_SLICES[i]) return true;
   }
   return false;
@@ -102,6 +107,7 @@ static uint16_t scale_level_cv_to_wrap(uint16_t level_cv, uint8_t slice) {
     }
   }
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
+    if (PW_PWM_SLICES[i] == 0xFF) continue;
     if (slice == PW_PWM_SLICES[i]) {
       return (uint16_t)(((uint32_t)level_cv * DIV_COUNTER_PW) / DIV_COUNTER_CV);
     }

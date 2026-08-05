@@ -21,7 +21,7 @@ Related docs:
     - `setup()` / `loop()` (core 0): USB/serial/MIDI I/O, LFO evaluation, cross‑core detune FIFO.
     - `setup1()` / `loop1()` (core 1): PID & FS init, ADSR init, DCO calibration/autotune, real‑time voice engine.  
   - **Engine build options** (top of file: **pitch ids** → **board defaults** → **overrides** → **guards** → profiling / board):
-    - Board defaults are per-MCU branch: RP2350 → float voice + `PITCH_INTERP_FLOAT` + float amp + FLOAT_QUAD; RP2040 → `PITCH_INTERP_RATIO_Q16` + FIXED amp (no float flags). No `USE_FLOAT_ENGINE` umbrella.
+    - Board defaults are per-MCU branch: RP2350 → float voice + `PITCH_INTERP_FLOAT_FAST` + float amp + FLOAT_QUAD; RP2040 → `PITCH_INTERP_RATIO_Q16` + FIXED amp (no float flags). No `USE_FLOAT_ENGINE` umbrella.
     - Overrides can `#undef` / `#define` those flags (pitch A/B needs `#undef PITCH_INTERP_MODE` first).
     - See [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) for precision vs speed trade-offs.
   - Configures USB product strings in `setup()` (via Adafruit TinyUSB; product **DCO3-MONO**), toggles board pins (23/24) for hardware fixes, and selects DCO calibration mode.
@@ -35,7 +35,7 @@ Related docs:
 
 - **`globals.h`**  
   - System‑wide constants and state:
-    - Voice/osc counts: `NUM_VOICES_TOTAL = 1`, `NUM_OSCILLATORS = 3` (monosynth; poly scaffolding kept).
+    - Voice/osc counts: `NUM_VOICES_TOTAL = 3`, `NUM_OSCILLATORS = 3`, `NUM_VOICES_VOICE_TASK = 1` (mono engine bound; PW per-osc; para planned via `setVoiceMode`).
     - Clock and PIO timing constants (`sysClock` = 225000 kHz → `sysClock_Hz`, `pioPulseLength`, OSR chunk sizes, timing overheads).
     - **Period model** `period = Y + weight*clk_div + overhead`, with `PIO_RAMP_WEIGHT_FREE = 4` / `PIO_PERIOD_OVERHEAD_FREE = 12` and `PIO_RAMP_WEIGHT_SYNC = 5` / `PIO_PERIOD_OVERHEAD_SYNC = 13`. The overhead includes one fall-through cycle per `jmp x--` loop, which the old `T_LOW_OVERHEAD_CYCLES = 5` was missing (5 cycles short, roughly 0.27 cents of sharp error at 7 kHz).
     - Per-osc PIO state: `osc_uses_sync_program[]`, `osc_last_y[]`, `osc_last_clk_div[]`, `softSyncChunks`, `subOscDivide`.
@@ -56,15 +56,15 @@ Related docs:
     - Portamento configuration and mode (`PORTA_MODE_TIME` / `PORTA_MODE_SLEW`).
     - Per‑DCO portamento state in **Q24 Hz** (`portamento_*_q24`) and in **Q16 semitone space** for slew‑rate mode.
     - When `USE_FLOAT_VOICE_TASK`: parallel float portamento state (`porta_*_f`) in Hz and semitone domains.
-    - Pitch multiplier storage gated by `PITCH_INTERP_MODE`: float tables + `slopeF`, or int tables + `slopeQ20` (RATIO) / `slopeQ12` (Q12); plus `interpSegCache`.
+    - Pitch multiplier storage gated by `PITCH_INTERP_MODE`: float tables + `slopeF` (`FLOAT` / `FLOAT_FAST`), or int tables + `slopeQ20` (RATIO) / `slopeQ12` (Q12); plus `interpSegCache`.
     - No profiler declarations. Probe storage is generated from the `BENCH_PROBES` table in [`bench.h`](../bench.h); the extern block that used to live here named probes that had been renamed or removed and compiled regardless, since an unused `extern` needs no definition.
 
 - **`voices.ino`**  
   - Central **voice engine** and DCO front‑end with a **compile-time dual implementation**:
     - `init_voices()` sets initial notes, builds pitch multiplier tables for the active `PITCH_INTERP_MODE` (`initMultiplierTables()`), sets voice mode and runs an initial `voice_task_main()`.
-    - `voice_task_main()` → `voice_task_float()` **or** `voice_task()` depending on `USE_FLOAT_VOICE_TASK`.
+    - `voice_task_main()` → `voice_task_float()` **or** `voice_task_fixed_point()` depending on `USE_FLOAT_VOICE_TASK`.
 
-    - **`voice_task()`** (fixed hot path, when `!USE_FLOAT_VOICE_TASK`):
+    - **`voice_task_fixed_point()`** (fixed hot path, when `!USE_FLOAT_VOICE_TASK`):
       - For each active MIDI voice (monosynth: one voice driving **OSC1/OSC2/OSC3**):
         - Computes per‑voice portamento in either **time‑based frequency space** or **slew‑rate note space** (Q24 / Q16).
         - Combines fixed‑point modulators:
@@ -85,7 +85,7 @@ Related docs:
     - **`voice_task_float()`** (float hot path, when `USE_FLOAT_VOICE_TASK` — **current default**):
       - Same overall structure (portamento → modifiers → ratio → clkdiv → amp → PIO/PWM/PW), but in **Hz / float**:
         - Float portamento state; pitch bend / LFO / ADSR / drift / OSC3 interval+detune converted from Q24 globals where needed.
-        - Pitch table: `interpolateRatioFloat_cached` by default (natural modifier→ratio); or fixed `RATIO_Q16` / IntQ16 via `PITCH_INTERP_MODE` (`×10000`→Q16 glue) for A/B.
+        - Pitch table: `interpolateRatioFloat_cached_fast` when `PITCH_INTERP_FLOAT_FAST` (RP2350 default); walk `interpolateRatioFloat_cached` when `PITCH_INTERP_FLOAT`; or fixed `RATIO_Q16` / IntQ16 via `PITCH_INTERP_MODE` (`×10000`→Q16 glue) for A/B.
         - Clkdiv always `sysClock_Hz / freqHz` in float (`HIGH_PRECISION_CLKDIV` ignored).
         - Amp via `get_chan_level_for_engine()` → float or fixed facade depending on `USE_FLOAT_AMP_COMP`.
       - Details: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) §6.

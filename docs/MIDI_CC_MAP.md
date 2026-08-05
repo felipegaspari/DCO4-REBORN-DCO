@@ -18,7 +18,7 @@ Menu-style parameters use a 0..127 range so the scaling is an identity and a men
 
 | CC | Control | Group | Target | CC 0 | CC 127 | Curve |
 | --- | --- | --- | --- | --- | --- | --- |
-| 2 | OSC1 interval (semitones) | Oscillators | `PARAM_OSC1_INTERVAL` | 0 | 127 | linear |
+| 2 | Octave shift (semitones) | Oscillators | `PARAM_OSC1_INTERVAL` | 0 | 127 | linear |
 | 3 | OSC2 interval (semitones) | Oscillators | `PARAM_OSC2_INTERVAL` | 0 | 60 | linear |
 | 4 | OSC3 interval (semitones) | Oscillators | `PARAM_OSC3_INTERVAL` | 0 | 60 | linear |
 | 5 | OSC2 detune | Oscillators | `PARAM_OSC2_DETUNE_VAL` | 0 | 512 | linear |
@@ -124,7 +124,7 @@ Menu-style parameters use a 0..127 range so the scaling is an identity and a men
 
 These parameters take discrete values; the CC number to send is the value itself.
 
-- **CC 2, OSC1 interval (semitones)**: +0 = 0, +12 = 12, +24 = 24, +36 = 36, +48 = 48, +60 = 60, +72 = 72
+- **CC 2, Octave shift (semitones)** (`PARAM_OSC1_INTERVAL` / `octave_shift`): wire = midi bias; `table_index = midi - 36 + value` (36 ⇒ unison). Labels as octaves: −3 = 0, −2 = 12, −1 = 24 (firmware default), 0 = 36, +1 = 48, +2 = 60, +3 = 72. OSC2/OSC3 intervals use the same bias (36 ⇒ unison with OSC1 in mono); firmware/UI defaults are 36.
 - **CC 20, Hard sync topology**: 0 - all free running = 0, 1 - OSC2 masters OSC1 = 1, 2 - OSC1 masters OSC2 = 2
 - **CC 22, Sub-oscillator divide**: Off = 0, Divide by 2 = 2, Divide by 4 = 4
 - **CC 23, Osc sync / phase align OSC2**: Off - free running (no note-on sync) = 0, Sync at note-on (0 deg) = 1, Sync + 30 deg = 15, Sync + 45 deg = 2, Sync + 60 deg = 30, Sync + 90 deg = 3, Sync + 120 deg = 60, Sync + 135 deg = 4, Sync + 150 deg = 75, Sync + 180 deg = 5, Sync + 210 deg = 105, Sync + 225 deg = 6, Sync + 240 deg = 120, Sync + 270 deg = 7, Sync + 315 deg = 8

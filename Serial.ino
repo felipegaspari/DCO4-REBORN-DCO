@@ -165,23 +165,13 @@ static SerialParserContext inputSerialParser = {
 };
 
 void serial_panel_task() {
-  if (inputSerialParser.state == SERIAL_READ_PAYLOAD) {
-    uint32_t now = micros();
-    serial_parser_check_timeout(inputSerialParser, now);
-  }
-  if (Serial2.available() > 0) {
-    uint32_t now = micros();
-    while (Serial2.available() > 0) {
-      uint8_t b = Serial2.read();
-      serial_parser_process_byte(
-        inputSerialParser,
-        inputSerialCommands,
-        sizeof(inputSerialCommands) / sizeof(inputSerialCommands[0]),
-        b,
-        now
-      );
-    }
-  }
+  serial_parser_drain(
+    inputSerialParser,
+    inputSerialCommands,
+    sizeof(inputSerialCommands) / sizeof(inputSerialCommands[0]),
+    Serial2,
+    SERIAL_DRAIN_BYTE_BUDGET
+  );
 }
 
 // -------------------------------
@@ -201,28 +191,32 @@ static SerialParserContext usbSerialParser = {
 
 // Drain the USB CDC RX buffer into the panel-protocol parser. Called from loop().
 void serial_usb_task() {
-  if (usbSerialParser.state == SERIAL_READ_PAYLOAD) {
-    serial_parser_check_timeout(usbSerialParser, micros());
-  }
-  while (Serial.available() > 0) {
-    uint8_t b = Serial.read();
-    serial_parser_process_byte(
-      usbSerialParser,
-      inputSerialCommands,
-      sizeof(inputSerialCommands) / sizeof(inputSerialCommands[0]),
-      b,
-      micros()
-    );
-  }
+  serial_parser_drain(
+    usbSerialParser,
+    inputSerialCommands,
+    sizeof(inputSerialCommands) / sizeof(inputSerialCommands[0]),
+    Serial,
+    SERIAL_DRAIN_BYTE_BUDGET
+  );
 }
 
 #endif  // ENABLE_USB_CONTROL
 
 // TX 'x' to Input: gap (154) and cal offsets (155). Input relays 154 on to the Screen.
-// availableForWrite() on a hardware UART reports 0/1, not free bytes — waiting for more hangs.
+// availableForWrite() on a hardware UART reports 0/1, not free bytes — never spin forever.
+static constexpr uint32_t SERIAL2_TX_TIMEOUT_US = 5000;
+
 void serialSendParam32(byte paramNumber, uint32_t paramValue) {
   uint8_t *b = (uint8_t *)&paramValue;
   byte bytesArray[7] = { (uint8_t)'x', paramNumber, b[0], b[1], b[2], b[3], 1 };
-  while (Serial2.availableForWrite() < 1) {}
+
+  if (Serial2.availableForWrite() < 1) {
+    const uint32_t deadline = micros() + SERIAL2_TX_TIMEOUT_US;
+    while (Serial2.availableForWrite() < 1) {
+      if ((int32_t)(micros() - deadline) >= 0) {
+        return;  // Input board absent or link stalled — drop frame
+      }
+    }
+  }
   Serial2.write(bytesArray, 7);
 }

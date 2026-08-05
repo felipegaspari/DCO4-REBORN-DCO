@@ -67,7 +67,7 @@ uint16_t ampCompLut[NUM_OSCILLATORS][AMP_COMP_MAX_HZ + 1];
 #endif
 
 // ---------------------------------------------------------------------------
-// Method selection (live voice_task dispatch under USE_FLOAT_AMP_COMP)
+// Method selection (live voice_task_main dispatch under USE_FLOAT_AMP_COMP)
 // ---------------------------------------------------------------------------
 // Compile-time default: AMP_COMP_METHOD_DEFAULT in DCO.ino board defaults
 // (RP2350 → FLOAT_QUAD, RP2040 → FIXED; overridable in ENGINE — overrides).
@@ -103,7 +103,7 @@ static inline void amp_comp_set_method(uint8_t m) {
   m = AMP_COMP_FIXED;
 #endif
   amp_comp_method = m;
-  __dmb();  // publish to Core 1 voice_task before continued audio / ack
+  __dmb();  // publish to Core 1 voice_task_main before continued audio / ack
 }
 
 /**

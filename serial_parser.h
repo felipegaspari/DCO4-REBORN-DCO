@@ -36,6 +36,10 @@ static const uint8_t SERIAL_MAX_PAYLOAD = 9;
 // so new commands can be received cleanly.
 static const uint32_t SERIAL_FRAME_TIMEOUT_US = 5000;  // 5 ms
 
+// Max bytes drained per loop() call on each serial link. Prevents a host burst from
+// monopolizing core 0 while core 1 keeps running voice_task on the same PIO hardware.
+static const uint8_t SERIAL_DRAIN_BYTE_BUDGET = 32;
+
 // Parser states:
 //   SERIAL_WAIT_FOR_CMD : expecting the command byte.
 //   SERIAL_READ_PAYLOAD : accumulating payload bytes for the current command.
@@ -172,6 +176,25 @@ static inline void serial_parser_process_byte(
       ctx.cmd_def->on_frame(ctx.command, ctx.payload, ctx.received_len);
     }
     serial_parser_reset(ctx);
+  }
+}
+
+// Drain up to byte_budget bytes from stream into the parser. Shared by Serial2 and USB CDC.
+template<typename StreamT>
+static inline void serial_parser_drain(
+    SerialParserContext& ctx,
+    const SerialCommandDef* commands,
+    size_t numCommands,
+    StreamT& stream,
+    uint8_t byte_budget)
+{
+  if (ctx.state == SERIAL_READ_PAYLOAD) {
+    serial_parser_check_timeout(ctx, micros());
+  }
+  while (byte_budget > 0 && stream.available() > 0) {
+    uint8_t b = stream.read();
+    serial_parser_process_byte(ctx, commands, numCommands, b, micros());
+    byte_budget--;
   }
 }
 

@@ -457,7 +457,7 @@ When `oscSync >= 1`, `note_retrig_mode` selects how that restart loads period st
 On EXACT_Y note-on frames, `pio_period_split` runs next to `phase align`, then the note-on
 block applies the stash. Load uses fused **noclear** (frame already did PIO put+pull so TX
 is empty); boot/topology still use `osc_load_period_stopped` with FJOIN clear. Profiler:
-`retrig period split` under `voice_task`; `retrig SM apply` + `retrig RANGE PWM` under
+`retrig period split` under `voice_task_fixed_point`; `retrig SM apply` + `retrig RANGE PWM` under
 `note-on retrigger` (one SM-apply probe — do not slice disable/load/jmp/enable). See
 [`BENCHMARKING.md`](BENCHMARKING.md).
 
@@ -660,7 +660,7 @@ Scoping the shared reset pin should show reset edges at both oscillators' rates.
 probe at two widely separated dividers with the same Y and back-solve.
 
 > **Run this with no note playing.** `pio_period_probe()` parks the oscillator at a fixed
-> `clk_div`, but `voice_task()` pushes a fresh divider every frame for a held note, so the
+> `clk_div`, but `voice_task_main()` pushes a fresh divider every frame for a held note, so the
 > probe's value survives only until the next control frame. With all voices released the
 > voice task skips the oscillator entirely and the probe holds.
 

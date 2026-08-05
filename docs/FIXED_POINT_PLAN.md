@@ -76,7 +76,7 @@ Note: These are design targets; the actual typedefs will be added near `globals.
   - Update type-converted parameters
   - Precompute reciprocals: `inv_8192`, `inv_porta_time`, `inv_freq` (tables per voice/note)
   - Update scaled constants (detune scales, ADSR multipliers)
-- Audio-rate (`voice_task`):
+- Audio-rate (`voice_task_fixed_point`):
   - Apply only adds/muls/shifts, table lookups, and PWM writes
 
 ## Risks & Mitigations
@@ -87,7 +87,7 @@ Note: These are design targets; the actual typedefs will be added near `globals.
 ## Next Steps
 - Add FixMath includes and project typedefs
 - Introduce constants via `UFixAuto` for common reciprocals and scales
-- Refactor `voice_task` in the following order:
+- Refactor `voice_task_fixed_point` in the following order:
   1) Pitch bend, OSC2 detune
   2) Portamento lerp
   3) Modulation sums/products

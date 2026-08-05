@@ -49,7 +49,7 @@ flowchart TD
 | Serial2 | Parser command on the Input link (DCO `Serial2`) |
 | Param table | Only via `paramTable[]` / `param_router_apply` |
 | Auto-cal / Manual-cal | `loop1` calibration branches |
-| Hot path | Inside `voice_task` / `voice_task_float` |
+| Hot path | Inside `voice_task_fixed_point` / `voice_task_float` |
 
 ---
 
@@ -73,7 +73,7 @@ Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine flags (
   - **Called from:** Arduino framework (Core 1).
   - **When:** Forever.
 
-**Key macros:** `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `PITCH_INTERP_MODE` (`FLOAT` / `RATIO_Q16` / `Q12`), `HIGH_PRECISION_CLKDIV`, `AMP_COMP_METHOD_DEFAULT`, `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`.
+**Key macros:** `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `PITCH_INTERP_MODE` (`FLOAT` / `FLOAT_FAST` / `RATIO_Q16` / `Q12`), `HIGH_PRECISION_CLKDIV`, `AMP_COMP_METHOD_DEFAULT`, `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`.
 
 ### `bench.h`
 
@@ -82,7 +82,7 @@ Hot-path profiler. All storage, ids, nesting and labels are generated from the s
 report. Time source is SysTick read as a 24-bit cycle counter (RP2040's M0+ has no DWT), with
 `BENCH_PERIOD()` falling back to the 1 µs timer for spans that can exceed the 24-bit wrap.
 Compiles to nothing without `RUNNING_AVERAGE`. Core0 IO is split into `MIDI read` vs
-`serial panel/USB`. Note-on: `retrig period split` under voice_task; under note-on,
+`serial panel/USB`. Note-on: `retrig period split` under voice_task_fixed_point; under note-on,
 `retrig SM apply` + `retrig RANGE PWM` (do not slice SM apply — cold XIP mis-ranks kids).
 
 **Subsystem reference:** [`BENCHMARKING.md`](BENCHMARKING.md).
@@ -138,7 +138,7 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
   - **Called from:** `setup1()`.
   - **When:** Boot Core1.
 - `noteQ16_to_freqQ24()` — Q16 semitone → Q24 Hz.
-  - **Called from:** `voice_task()` (slew portamento).
+  - **Called from:** `voice_task_fixed_point()` (slew portamento).
   - **When:** Fixed hot path.
 - `float_to_q24()` — Float → Q24.
   - **Called from:** **none (dead)** — defined but unused.
@@ -148,7 +148,7 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `voice_task_main()` — Dispatch to float or fixed voice task.
   - **Called from:** `loop1()` (play path); `init_voices()` (boot kick).
   - **When:** Every play-path `loop1` iter + once at boot.
-- `voice_task()` — Fixed-point hot path.
+- `voice_task_fixed_point()` — Fixed-point hot path.
   - **Called from:** `voice_task_main()` when `!USE_FLOAT_VOICE_TASK`.
   - **When:** Fixed-engine builds only.
 - `voice_task_float()` — Float hot path (current default).
@@ -169,8 +169,8 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `setSyncMode()` — Rebuild sync topology via `assign_sm_mapping()` + `start_voice_sms()`; retrigger.
   - **Called from:** `apply_param_sync_mode()`, `apply_param_soft_sync()`.
   - **When:** Serial2 param.
-- `get_chan_level_lookup_fast()` — Q8 Hz → range PWM (always compiled; live FIXED / fixed `voice_task`).
-  - **Called from:** `voice_task()` directly; `get_chan_level_for_engine()` / method FIXED.
+- `get_chan_level_lookup_fast()` — Q8 Hz → range PWM (always compiled; live FIXED / fixed `voice_task_fixed_point`).
+  - **Called from:** `voice_task_fixed_point()` directly; `get_chan_level_for_engine()` / method FIXED.
   - **When:** Fixed hot path; float-engine FIXED method / benches.
 - `get_chan_level_float_quad()` — Float quadratic reference (Hz).
   - **Called from:** LUT fill; accuracy bench; method FLOAT_QUAD.
@@ -179,17 +179,20 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
   - **Called from:** `get_chan_level_for_engine` when method LUT.
   - **When:** `USE_FLOAT_AMP_COMP` (speed A/B; live default = FIXED).
 - `get_PW_level_interpolated()` — Map PW counter into calibrated limits/center.
-  - **Called from:** `voice_task()` / `voice_task_float()` (99 µs PW update).
+  - **Called from:** `voice_task_fixed_point()` / `voice_task_float()` (99 µs PW update).
   - **When:** Hot path.
 - `interpolatePitchMultiplierIntQ16_cached()` — IntQ16 table interp (`PITCH_INTERP_Q12`).
-  - **Called from:** `voice_task()` or `voice_task_float()` (A/B glue) when mode is Q12.
+  - **Called from:** `voice_task_fixed_point()` or `voice_task_float()` (A/B glue) when mode is Q12.
   - **When:** Alternate pitch modes (fixed voice or float-voice A/B).
 - `interpolateRatioQ16_cached()` — Table → ratio Q16 (`slopeQ20`).
-  - **Called from:** `voice_task()` or `voice_task_float()` (A/B glue) when `PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16`.
+  - **Called from:** `voice_task_fixed_point()` or `voice_task_float()` (A/B glue) when `PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16`.
   - **When:** Default fixed pitch mode; optional float-voice A/B.
-- `interpolateRatioFloat_cached()` — Natural modifier `[-1,3]` → float ratio (`slopeF`; unscaled tables).
+- `interpolateRatioFloat_cached()` — Natural modifier `[-1,3]` → float ratio; walk+bsearch find.
   - **Called from:** `voice_task_float()` when `PITCH_INTERP_MODE == PITCH_INTERP_FLOAT`.
-  - **When:** Float hot path (board default on RP2350 / `USE_FLOAT_VOICE_TASK`).
+  - **When:** Float walk A/B (`USE_FLOAT_VOICE_TASK`).
+- `interpolateRatioFloat_cached_fast()` — Same lerp; trunc+clamp±1 find (`noinline`).
+  - **Called from:** `voice_task_float()` when `PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST`.
+  - **When:** RP2350 board-default float hot path.
 - `initMultiplierTables()` — Build tables/slopes for the active `PITCH_INTERP_MODE` only (uses `expInterpolationSolveY`).
   - **Called from:** `init_voices()`.
   - **When:** Boot Core1.
@@ -358,7 +361,7 @@ Amp-comp speed/accuracy one-shots (`AMP_COMP_BENCHMARK` + `RUNNING_AVERAGE`).
 
 ### `pitch_interp_bench.ino`
 
-Pitch-interpolator speed/accuracy one-shots (`RUNNING_AVERAGE`). Self-contained private tables + interpolators. Speed rows: FLOAT / RATIO_Q16 / Q12; accuracy keeps a private Q20 `y` reference (not a live mode).
+Pitch-interpolator speed/accuracy one-shots (`RUNNING_AVERAGE`). Self-contained private tables + interpolators. Speed rows: FLOAT / FLOAT_FAST / RATIO_Q16 / Q12; accuracy keeps a private Q20 `y` reference (not a live mode).
 
 **Functions**
 - `pitch_interp_bench_run_speed()` / `pitch_interp_bench_run_accuracy()` / `print_pitch_interp_bench()`
@@ -741,7 +744,7 @@ Prototype. **No function definitions.**
 - `apply_param_adsr3_to_osc_select()` — ADSR3 routing select.
 - `apply_param_lfo1_waveform()` — LFO1 waveform.
 - `apply_param_lfo2_waveform()` — LFO2 waveform.
-- `apply_param_osc1_interval()` — OSC1 interval.
+- `apply_param_octave_shift()` — global `octave_shift` (wire id `PARAM_OSC1_INTERVAL`).
 - `apply_param_osc2_interval()` — OSC2 interval.
 - `apply_param_osc2_detune_val()` — OSC2 detune.
 - `apply_param_lfo2_to_detune2()` — LFO2→OSC2 detune depth (uses `expConverterFloat`).

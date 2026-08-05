@@ -207,3 +207,53 @@ void set_subosc_divide(uint8_t divide) {
               RESET_PINS[0], SUBOSC_PIN, div4);
   pio_sm_set_enabled(p, 0, true);
 }
+
+// ---- Core-0 → core-1 deferred PIO requests -----------------------------------
+// Serial/MIDI handlers on core 0 must not touch PIO while voice_task_main on core 1
+// is driving the same state machines.
+
+static volatile uint8_t pio_defer_pending = 0;
+static volatile uint8_t pio_defer_subosc_value = 0;
+
+static constexpr uint8_t PIO_DEFER_SYNC   = 1u << 0;
+static constexpr uint8_t PIO_DEFER_RESET  = 1u << 1;
+static constexpr uint8_t PIO_DEFER_SUBOSC = 1u << 2;
+
+void setSyncMode();  // voices.ino — must run on core 1 only
+
+void pio_defer_request_sync_mode() {
+  __atomic_fetch_or(&pio_defer_pending, PIO_DEFER_SYNC, __ATOMIC_SEQ_CST);
+}
+
+void pio_defer_request_reset_pulse_all() {
+  __atomic_fetch_or(&pio_defer_pending, PIO_DEFER_RESET, __ATOMIC_SEQ_CST);
+}
+
+void pio_defer_request_subosc(uint8_t divide) {
+  pio_defer_subosc_value = divide;
+  __dmb();
+  __atomic_fetch_or(&pio_defer_pending, PIO_DEFER_SUBOSC, __ATOMIC_SEQ_CST);
+}
+
+void pio_defer_service() {
+  const uint8_t pending =
+      __atomic_exchange_n(&pio_defer_pending, 0, __ATOMIC_SEQ_CST);
+  if (pending == 0) {
+    return;
+  }
+
+  if (pending & PIO_DEFER_SYNC) {
+    setSyncMode();
+  }
+  if (pending & PIO_DEFER_RESET) {
+    for (int i = 0; i < NUM_OSCILLATORS; i++) {
+      osc_set_reset_pulse(i, pioPulseLength);
+    }
+    for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+      note_on_flag[i] = 1;
+    }
+  }
+  if (pending & PIO_DEFER_SUBOSC) {
+    set_subosc_divide(pio_defer_subosc_value);
+  }
+}

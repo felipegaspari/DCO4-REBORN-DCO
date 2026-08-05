@@ -40,6 +40,8 @@ void print_pitch_interp_bench();
 static inline const char *bench_pitch_interp_mode_name() {
 #if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
   return "FLOAT";
+#elif PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
+  return "FLOAT_FAST";
 #elif PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
   return "RATIO_Q16";
 #elif PITCH_INTERP_MODE == PITCH_INTERP_Q12
@@ -219,6 +221,33 @@ struct BenchStat {
 BenchStat bench_stats[BENCH_COUNT];
 BenchStat bench_snap[BENCH_COUNT];
 
+// Path counters (core 1 voice hot path). Cheap integer bumps — not time probes — so they
+// do not add SysTick barriers. Snapshotted with core 1's profiler window to attribute
+// ratio/portamento max spikes (algorithmic miss vs IRQ).
+struct BenchPathStat {
+  uint32_t ratio_hit;
+  uint32_t ratio_miss_direct;   // O(1) direct index + tiny fixup
+  uint32_t ratio_miss_bsearch;
+  uint32_t ratio_clamp;
+  uint32_t ratio_walk_steps_sum;
+  uint32_t ratio_walk_steps_max;
+  uint32_t porta_off;
+  uint32_t porta_note_on;
+  uint32_t porta_retime;
+  uint32_t porta_steady_time;
+  uint32_t porta_steady_slew;
+};
+BenchPathStat bench_path_live;
+BenchPathStat bench_path_snap;
+
+#define BENCH_PATH_INC(field) do { bench_path_live.field++; } while (0)
+static inline void bench_path_walk_steps(uint32_t steps) {
+  bench_path_live.ratio_walk_steps_sum += steps;
+  if (steps > bench_path_live.ratio_walk_steps_max) {
+    bench_path_live.ratio_walk_steps_max = steps;
+  }
+}
+
 // Cross-core report handshake. Each core snapshots and clears its own probes, so no lock is
 // needed and neither core ever reads a counter the other is mid-update on.
 volatile bool bench_dump_request = false;
@@ -327,6 +356,11 @@ inline void bench_service(uint8_t core) {
     bench_snap[i] = bench_stats[i];
     bench_stats[i] = BenchStat{};
   }
+  // Path counters live on core 1 only (voice_task).
+  if (core == 1u) {
+    bench_path_snap = bench_path_live;
+    bench_path_live = BenchPathStat{};
+  }
   bench_core_ready[core] = true;
 }
 
@@ -335,6 +369,8 @@ inline void bench_reset_all() {
     bench_stats[i] = BenchStat{};
     bench_snap[i] = BenchStat{};
   }
+  bench_path_live = BenchPathStat{};
+  bench_path_snap = BenchPathStat{};
   bench_window_start_us[0] = bench_window_start_us[1] = bench_us_now();
 }
 
@@ -473,6 +509,36 @@ inline void bench_print_core(uint8_t core) {
   }
 }
 
+// Ratio / portamento path breakdown for the same window as core 1 probes.
+inline void bench_print_path_counters() {
+  const BenchPathStat &p = bench_path_snap;
+  const uint32_t ratio_seg =
+      p.ratio_hit + p.ratio_miss_direct + p.ratio_miss_bsearch;
+  const uint32_t porta_n = p.porta_off + p.porta_note_on + p.porta_retime +
+                           p.porta_steady_time + p.porta_steady_slew;
+  if (ratio_seg == 0u && p.ratio_clamp == 0u && porta_n == 0u) return;
+
+  bench_out_puts("\n");
+  bench_out_println("-- Path counters (core 1, same window) --");
+  bench_out_printf(
+      "ratio: hit=%lu miss_direct=%lu miss_bsearch=%lu clamp=%lu  "
+      "walk_steps max=%lu sum=%lu\n",
+      (unsigned long)p.ratio_hit, (unsigned long)p.ratio_miss_direct,
+      (unsigned long)p.ratio_miss_bsearch, (unsigned long)p.ratio_clamp,
+      (unsigned long)p.ratio_walk_steps_max, (unsigned long)p.ratio_walk_steps_sum);
+  if (ratio_seg > 0u) {
+    const uint32_t miss = p.ratio_miss_direct + p.ratio_miss_bsearch;
+    const uint32_t miss_pm = (miss * 1000u) / ratio_seg;
+    bench_out_printf("ratio miss rate: %lu.%lu%% of in-table calls\n",
+                     (unsigned long)(miss_pm / 10u), (unsigned long)(miss_pm % 10u));
+  }
+  bench_out_printf(
+      "porta: off=%lu note_on=%lu retime=%lu steady_time=%lu steady_slew=%lu\n",
+      (unsigned long)p.porta_off, (unsigned long)p.porta_note_on,
+      (unsigned long)p.porta_retime, (unsigned long)p.porta_steady_time,
+      (unsigned long)p.porta_steady_slew);
+}
+
 // Format the report into bench_out_buf (no Serial I/O).
 inline void bench_print_report() {
 #ifdef RUNNING_AVERAGE_PERIOD
@@ -525,6 +591,7 @@ inline void bench_print_report() {
   bench_print_core(0);
   bench_out_puts("\n");
   bench_print_core(1);
+  bench_print_path_counters();
   bench_out_println("=================================================");
   bench_out_puts("\n");
 }
@@ -620,6 +687,8 @@ inline void bench_poll_core0() {
 #define BENCH_PERIOD(id) ((void)0)
 #define BENCH_FBEGIN(id) ((void)0)
 #define BENCH_FEND(id)   ((void)0)
+#define BENCH_PATH_INC(field) ((void)0)
+static inline void bench_path_walk_steps(uint32_t) {}
 
 inline void bench_service(uint8_t) {}
 inline void bench_poll_core0() {}

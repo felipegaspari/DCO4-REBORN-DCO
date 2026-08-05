@@ -6,7 +6,16 @@
 
 
 
+// Voice / oscillator counts (this board: 3 DCOs, up to 3 voice slots).
+//   NUM_OSCILLATORS     — physical DCOs (RANGE/RESET/PIO, amp-comp, drift, PW).
+//   NUM_VOICES_TOTAL    — voice-slot capacity (MIDI/ADSR/flags). Equals OSC for 1:1 para.
+//   NUM_VOICES_VOICE_TASK — legacy mono bind (=1); voice_task now loops NUM_VOICES_TOTAL.
+//   NUM_VOICES / STACK_VOICES (runtime below) — from setVoiceMode():
+//     0 mono: one MIDI voice → oscs 0..2
+//     1 paraphonic: voice i → osc i (planned)
+//     2 stub: DCO4 stack leftover (no new behavior yet)
 #define NUM_VOICES_TOTAL 3
+#define NUM_VOICES_VOICE_TASK 1
 #define NUM_OSCILLATORS 3
 #ifndef NUM_FILTERS
 #define NUM_FILTERS 2
@@ -25,8 +34,10 @@
 
 #define ENABLE_FS_CALIBRATION
 
-static constexpr uint32_t sysClock = 225000;
-static constexpr uint32_t sysClock_Hz = sysClock * 1000;
+// Live clk_sys from the clocks block (not a compile-time overclock target).
+// For set_sys_clock_khz(), pass an explicit kHz constant — not these macros.
+#define sysClock_Hz (clock_get_hz(clk_sys))
+#define sysClock    (sysClock_Hz / 1000u)
 
 static constexpr uint16_t DIV_COUNTER = 14000;
 static constexpr uint16_t DIV_COUNTER_PW = 1024;
@@ -71,9 +82,9 @@ static constexpr uint32_t PIO_PERIOD_OVERHEAD_SYNC = 13;
 // The total, real duration of the high pulse in cycles.
 static constexpr uint32_t T_HIGH_TOTAL_CYCLES = pioPulseLength + T_HIGH_OVERHEAD_CYCLES;
 
-static constexpr uint32_t halfSysClock_Hz = sysClock_Hz / 2;
-static constexpr uint32_t eightSysClock_Hz_u = sysClock_Hz / 8;
-static constexpr uint32_t eightSysClockMinusPulseLength_Hz_u = (sysClock_Hz - pioPulseLength - 8) / 8;
+#define halfSysClock_Hz (sysClock_Hz / 2u)
+#define eightSysClock_Hz_u (sysClock_Hz / 8u)
+#define eightSysClockMinusPulseLength_Hz_u ((sysClock_Hz - pioPulseLength - 8u) / 8u)
 // Q24-scaled clock constants to avoid per-loop shifts
 // (removed) Q24-scaled clock constants; direct shift used at call-site
 
@@ -128,8 +139,7 @@ float BASE_NOTE = 440.0f;
 // static constexpr uint8_t RESET_PINS[8] = { 28, 26, 19, 18, 15, 13, 12, 8 };
 // static constexpr uint8_t RANGE_PINS[8] = { 27, 22, 17, 16, 14, 11,  9,  7 };
 
-// Pico 2 provisional pinout: OSC1–3 taken from the legacy WEACT DCO4 map
-// (first three oscillators). Replace when the monosynth PCB pinout is final.
+// Temporary: OSC1–3 RESET/RANGE = DCO4 global OSC 3/4/5 (WEACT indices 2–4).
 // GPIO 24 is board fix-rail (see DCO.ino), not a DCO output.
 //
 // Hub + CV absorption (Mainboard retire) — provisional map:
@@ -168,8 +178,8 @@ static constexpr uint8_t SUB_LEVEL_PIN            = 33;  // RP2350B provisional
 static constexpr uint16_t DIV_COUNTER_CV          = 4095;
 #endif
 
-static constexpr uint8_t RESET_PINS[NUM_OSCILLATORS] = { 29, 27, 19 };
-static constexpr uint8_t RANGE_PINS[NUM_OSCILLATORS] = { 28, 22, 17 };
+static constexpr uint8_t RESET_PINS[NUM_OSCILLATORS] = { 19, 18, 15 };
+static constexpr uint8_t RANGE_PINS[NUM_OSCILLATORS] = { 17, 16, 14 };
 
 // Freq SMs all live on pio0 so that the sideset hard-sync path works: a GPIO's
 // function select can name only one PIO block, so oscillators spread across
@@ -187,7 +197,10 @@ uint8_t VOICE_TO_SM[NUM_OSCILLATORS] = { 0, 1, 2 };
 // pio1 is reserved for the sub-oscillator, pio2 for ENABLE_PIO_MIDI.
 static constexpr uint8_t SUBOSC_PIO = 1;
 
-static constexpr uint8_t PW_PINS[NUM_VOICES_TOTAL] = { 3 };
+// Pulse-width PWM: one pin per oscillator (new board; DCO4 had one PW per voice).
+// 0xFF = not wired yet — init_pwm / reset_pw skip those entries. Replace [1]/[2] when HW is known.
+static constexpr uint8_t PW_PIN_UNASSIGNED = 0xFF;
+static constexpr uint8_t PW_PINS[NUM_OSCILLATORS] = { 3, PW_PIN_UNASSIGNED, PW_PIN_UNASSIGNED };
 
 // Sub-oscillator square output. GP8 was freed when the SerialPIO screen UART was
 // removed; needs a mixer input on the carrier before it does anything audible.
@@ -198,7 +211,7 @@ static constexpr int DCO_calibration_pin = 10;
 uint8_t RANGE_PWM_SLICES[NUM_OSCILLATORS];
 uint8_t RANGE_PWM_CHANNELS[NUM_OSCILLATORS];
 uint8_t VCO_PWM_SLICES[NUM_OSCILLATORS];
-uint8_t PW_PWM_SLICES[NUM_VOICES_TOTAL];
+uint8_t PW_PWM_SLICES[NUM_OSCILLATORS];
 #ifdef ENABLE_CV_OUTS
 uint8_t CUTOFF_PWM_SLICES[NUM_FILTERS];
 uint8_t CUTOFF_PWM_CHANS[NUM_FILTERS];
@@ -222,15 +235,15 @@ uint8_t SUB_LEVEL_PWM_SLICE;
 uint8_t SUB_LEVEL_PWM_CHAN;
 #endif
 
-uint16_t PW_CENTER[NUM_VOICES_TOTAL] = { 570 };
-uint16_t PW_LOW_LIMIT[NUM_VOICES_TOTAL] = { 0 };
-uint16_t PW_HIGH_LIMIT[NUM_VOICES_TOTAL] = { DIV_COUNTER_PW };
+uint16_t PW_CENTER[NUM_OSCILLATORS] = { 570, 570, 570 };
+uint16_t PW_LOW_LIMIT[NUM_OSCILLATORS] = { 0, 0, 0 };
+uint16_t PW_HIGH_LIMIT[NUM_OSCILLATORS] = { DIV_COUNTER_PW, DIV_COUNTER_PW, DIV_COUNTER_PW };
 uint16_t PW_LOOKUP[3] = { 0, (DIV_COUNTER_PW / 2) - 1, DIV_COUNTER_PW - 1 };
-uint16_t PW_PWM[NUM_VOICES_TOTAL];
+uint16_t PW_PWM[NUM_OSCILLATORS];
 
 volatile uint32_t VOICES[NUM_VOICES_TOTAL];
 volatile uint8_t VOICES_LAST[NUM_VOICES_TOTAL];
-volatile uint8_t VOICES_LAST_SEQUENCE[NUM_VOICES_TOTAL] = { 0 };
+volatile uint8_t VOICES_LAST_SEQUENCE[NUM_VOICES_TOTAL] = { 0, 1, 2 };
 volatile uint8_t VOICE_NOTES[NUM_VOICES_TOTAL];
 volatile uint8_t NEXT_VOICE = 0;
 
@@ -264,7 +277,7 @@ void usb_midi_task();
 void serial_midi_task();
 void note_on(uint8_t note, uint8_t velocity);
 void note_off(uint8_t note);
-void voice_task();
+void voice_task_fixed_point();
 void voice_task_float();
 void voice_task_main();
 void adc_task();
@@ -415,7 +428,9 @@ float LFOMultiplier = 1;
 float voiceFreq[NUM_OSCILLATORS];
 uint16_t dato_serial;
 float dato_serial_float;
-uint8_t OSC1_interval = 24;
+// Global octave offset for note math: table_index = midi - 36 + octave_shift (36 ⇒ unison).
+// Wire param remains PARAM_OSC1_INTERVAL (13) / CC 2.
+uint8_t octave_shift = 24;
 uint8_t OSC2_serial_detune = 127;
 uint8_t OSC2_interval = 36;
 uint8_t OSC3_interval = 36;
@@ -425,7 +440,7 @@ uint16_t OSC3DetuneVal = 256;
 
 bool PWMPotsControlManual;
 
-uint16_t PW[NUM_VOICES_TOTAL];
+uint16_t PW[NUM_OSCILLATORS];  // panel / mod PW target per oscillator
 
 void serial_panel_task();
 float get_chan_level(float freq_to_amp_comp);

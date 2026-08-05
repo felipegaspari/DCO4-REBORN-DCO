@@ -12,12 +12,14 @@
 // ENGINE — pitch mode ids (needed by board defaults + overrides below)
 // =============================================================================
 // Deep detail: docs/ENGINE_OPTIONS.md
-//   0 FLOAT (natural modifier→ratio; needs float voice)
+//   0 FLOAT (walk find; natural modifier→ratio; needs float voice)
 //   1 RATIO_Q16 (slopeQ20 + fused y→ratio; fixed default / float A/B)
 //   2 Q12 (slope A/B: IntQ16 y + reciprocal; float A/B OK)
+//   3 FLOAT_FAST (trunc+clamp±1 find; same float tables; needs float voice)
 #define PITCH_INTERP_FLOAT       0
 #define PITCH_INTERP_RATIO_Q16   1
 #define PITCH_INTERP_Q12         2
+#define PITCH_INTERP_FLOAT_FAST  3
 
 // =============================================================================
 // ENGINE — board defaults (Arduino core: PICO_RP2350 / else)
@@ -28,7 +30,7 @@
     #define USE_FLOAT_VOICE_TASK
   #endif
   #ifndef PITCH_INTERP_MODE
-    #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT
+    #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT_FAST
   #endif
   #ifndef USE_FLOAT_AMP_COMP
     #define USE_FLOAT_AMP_COMP
@@ -55,21 +57,26 @@
 // =============================================================================
 // ENGINE — overrides (uncomment to force; after board defaults)
 // =============================================================================
-// #undef USE_FLOAT_VOICE_TASK          // fixed voice_task on RP2350
+// #undef USE_FLOAT_VOICE_TASK          // fixed voice_task_fixed_point on RP2350
 // #define USE_FLOAT_VOICE_TASK         // float voice on RP2040 (soft-float; slow)
 // #undef USE_FLOAT_AMP_COMP            // lean Q8 amp only (no float Hz tables / LUT)
- #define USE_FLOAT_AMP_COMP           // float amp dual-build on RP2040 (large RAM)
+// #define USE_FLOAT_AMP_COMP           // float amp dual-build on RP2040 (large RAM)
 // #define HIGH_PRECISION_CLKDIV 0      // fast fixed clkdiv; ignored if float voice
 // #define AMP_COMP_METHOD_DEFAULT 1    // 0 FLOAT_QUAD / 1 LUT / 2 FIXED; needs USE_FLOAT_AMP_COMP for 0/1
 // Pitch A/B (ids above; default already set — #undef then redefine):
 // #undef PITCH_INTERP_MODE
+// #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT       // walk find A/B
+// #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT_FAST  // trunc+clamp±1 (RP2350 default)
 // #define PITCH_INTERP_MODE PITCH_INTERP_RATIO_Q16
+// #define PITCH_INTERP_MODE PITCH_INTERP_Q12
 
 // =============================================================================
 // ENGINE — guards
 // =============================================================================
-#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT && !defined(USE_FLOAT_VOICE_TASK)
-  #error "PITCH_INTERP_FLOAT requires USE_FLOAT_VOICE_TASK (board default or override)"
+#if (PITCH_INTERP_MODE == PITCH_INTERP_FLOAT || \
+     PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST) && \
+    !defined(USE_FLOAT_VOICE_TASK)
+  #error "PITCH_INTERP_FLOAT / FLOAT_FAST require USE_FLOAT_VOICE_TASK (board default or override)"
 #endif
 
 // =============================================================================
@@ -83,7 +90,7 @@
 // Overrides FINE. Needs RUNNING_AVERAGE.
 #define RUNNING_AVERAGE
 // #define RUNNING_AVERAGE_FINE
- #define RUNNING_AVERAGE_PERIOD
+// #define RUNNING_AVERAGE_PERIOD
 
 // Float vs double clkdiv comparison in voice_task_float; needs RUNNING_AVERAGE.
 // #define CLKDIV_BENCHMARK
@@ -235,8 +242,8 @@ void loop() {
 
   {
     BENCH_BEGIN(loop0_midi);
-    MIDI_USB.read();
-    MIDI_SERIAL.read();
+    while (MIDI_USB.read()) {}
+    while (MIDI_SERIAL.read()) {}
     BENCH_END(loop0_midi);
   }
 
@@ -309,6 +316,8 @@ void loop1() {
       DCO_calibration();
     }
   } else {
+
+    pio_defer_service();
 
     loop1_micros = micros();
 

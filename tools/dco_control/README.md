@@ -145,7 +145,7 @@ section 12 of that file, which nothing else in the firmware invokes:
 - **Period probe** parks OSC1 at a fixed divider and prints the predicted period, to
   compare against a frequency counter on the reset pin. Run both probes and feed the two
   readings to `pio_solve_period_model()` to confirm the weight and overhead constants.
-  **Only works with no note playing** — `voice_task()` pushes a fresh divider every frame
+  **Only works with no note playing** — `voice_task_main()` pushes a fresh divider every frame
   for a held note, which immediately overwrites what the probe set.
 
 On the same tab, the **Hot-path profiler** buttons drive `PARAM_DEBUG_COMMAND` values

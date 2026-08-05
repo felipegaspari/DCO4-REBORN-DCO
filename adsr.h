@@ -20,7 +20,7 @@ uint16_t maxADSRControlValue = ADSR_1_DACSIZE;
 #endif
 
 #ifndef ADSR_BEZIER_USE_MICROS
-#define ADSR_BEZIER_USE_MICROS 0
+#define ADSR_BEZIER_USE_MICROS 1
 #endif
 
 #include "_build_libs/ADSR_Bezier/ADSR_Bezier.h"

@@ -83,6 +83,12 @@ void pio_period_probe(uint8_t osc, uint32_t clk_div);
 void pio_solve_period_model(uint32_t clk_div_a, double measured_hz_a,
                             uint32_t clk_div_b, double measured_hz_b, uint32_t y);
 
+// PIO mutations requested from core 0 (serial/MIDI) and applied on core 1 before voice_task.
+void pio_defer_request_sync_mode();
+void pio_defer_request_reset_pulse_all();
+void pio_defer_request_subosc(uint8_t divide);
+void pio_defer_service();
+
 // The period model itself (PioPeriod, pio_period_split, pio_clk_div_for_y) and the PIO
 // jump-target helpers live in globals.h, next to the state they read.
 

@@ -140,6 +140,33 @@ half — that is correct, not double-counting.
 **`min` / `max`** are the jitter. For a realtime loop the max is usually more actionable than
 the mean; a stage with a 0.6 µs mean and a 40 µs max is a worse problem than a steady 5 µs one.
 
+**Path counters** (printed after Core 1, same window). Integer bumps only — not SysTick
+probes — so they do not add measurement barriers. Use them to attribute stage `max` spikes:
+
+| Counter | Meaning |
+|---|---|
+| `ratio hit` | Segment cache already valid |
+| `ratio miss_direct` | Miss: trunc `((x+1)*N/4)` + clamp + optional ±1 (live FLOAT_FAST; no hot bsearch) |
+| `ratio miss_bsearch` | Unused on slim FAST (should stay 0); kept for struct/dump |
+| `ratio clamp` | Modifier at/outside table ends (early out) |
+| `walk_steps max/sum` | ±1 fixup count on misses (should stay 0–1) |
+| `porta off / note_on / retime / steady_time / steady_slew` | Exclusive portamento path per voice frame |
+
+If `ratio interpolate` max is high **and** miss rate / `walk_steps max` climb under pitch mod,
+the spike is algorithmic. If miss rate is ~0 but max stays large, suspect IRQ inside the
+probe. Same idea for porta: correlate max with `note_on` / `retime` / `steady_slew` counts.
+
+**Live gate for pitch-path edits (same patch/music test):** accept only if `ratio miss rate`
+stays ~70% (not ~90%), `ratio interpolate` mean/max do not worsen, and `loop1` /
+`voice_task` means hold. Cmd **28** (esp. jump) ranks find logic but does **not** clear
+live — trunc-only and fmaf/x0-reshape won or looked fine in places and lost live. Keep
+FLOAT_FAST ±1 even when `walk_steps sum=0` (live ballast). Live `_fast` is
+`__attribute__((noinline))` so inlining into `voice_task_float` does not reshape the
+whole task. Cmd **29** still gates accuracy (~0¢ vs FLOAT walk).
+
+Segment-find changes (direct index vs walk) do **not** change pitch accuracy — same knot
+and lerp. Confirm with pitch accuracy cmd `29` if desired; speed with profiler + path counters.
+
 Reset happens on every report (and on amp-comp method switch), so each dump describes at
 least the last 1 s of collection since the previous reset/dump.
 
@@ -292,25 +319,34 @@ Implementation: [`../amp_comp_bench.ino`](../amp_comp_bench.ino), wired from `ap
 
 ## 9. Pitch interpolators (cmds 28 / 29)
 
-Compare FLOAT / RATIO_Q16 / Q12 for speed and a dual-reference accuracy report. Tables and interpolators live **only** in [`../pitch_interp_bench.ino`](../pitch_interp_bench.ino) (private BSS, lazy-filled); the live voice path is untouched. No extra compile flag — needs `RUNNING_AVERAGE` for paced `bench_out_*` TX (same as the profiler dump).
+Compare FLOAT / FLOAT_FAST / RATIO_Q16 / Q12 for speed and a dual-reference accuracy report. Tables and interpolators live **only** in [`../pitch_interp_bench.ino`](../pitch_interp_bench.ino) (private BSS, lazy-filled); the live voice path is untouched. No extra compile flag — needs `RUNNING_AVERAGE` for paced `bench_out_*` TX (same as the profiler dump).
 
 | `PARAM_DEBUG_COMMAND` | Effect |
 |----------------------:|--------|
 | 28 | Speed bench all methods → `bench_out_*` paced TX |
-| 29 | Dual-ref accuracy (vs FLOAT + vs private Q20 slope ref) → same output path |
+| 29 | Dual-ref accuracy (vs FLOAT walk + vs private Q20 slope ref) → same output path |
 
-Live hot path still uses compile-time `PITCH_INTERP_MODE` only (`FLOAT` / `RATIO_Q16` / `Q12`). Use 28/29 to rank candidates without rebuilding for each mode.
+Live hot path uses compile-time `PITCH_INTERP_MODE`: `FLOAT` (walk), `FLOAT_FAST` (trunc+clamp±1, `noinline`; RP2350 default), `RATIO_Q16`, or `Q12`. Cmd 28/29 private tables always compare FLOAT / FLOAT_FAST / RATIO / Q12; `live_pitch=` reports the compiled mode. Use 28/29 to rank candidates; **live miss rate / mean gate** above before accepting find edits.
 
-**Speed report** (`=== PITCH INTERP BENCH ===`): three rows — FLOAT, RATIO_Q16, Q12. Method, calls, totalUs, meanNs, `pctVsFloat` (FLOAT = 100%). **Flag-path** under the compiled voice engine (header `speed=flag-path voice=FIXED|FLOAT`):
+**Speed report** (`=== PITCH INTERP BENCH ===`): two tables (same four methods), each with calls / totalUs / meanNs / `pctVsFloat` (**that table’s FLOAT** = 100%):
 
-- **Fixed voice** (`!USE_FLOAT_VOICE_TASK`): cost to **`ratioQ16`**. `RATIO_Q16` = fused `slopeQ20` path; `Q12` = `interp_y` + live `y→ratio` reciprocal. `FLOAT` = soft-float reference only. Grid: `xInt -10000…30000`. Shared Q24→xQ16 and final `freq×ratio` omitted.
-- **Float voice** (`USE_FLOAT_VOICE_TASK`): cost to **float ratio**. `FLOAT` = natural mod → float interp; int modes = `mod×10000` → `lroundf` → int interp → float rescale.
+| pattern | step | Role |
+|---------|------|------|
+| `seq` | `0.0001` | Walk-favorable (hit / +1 segment). FLOAT may beat FLOAT_FAST — not a live regression. |
+| `jump` | `0.05` (~2.5 segments), repeats to ≈ seq call count | Miss-heavy; ranking should track live mean under pitch mod. |
 
-**Accuracy report** (`=== PITCH INTERP ACCURACY ===`): same modifier grid (**one osc**). Private **Q20 `y` lerp** is the int reference only (not a live mode). Errors in **cents**. Sections:
+Live cross-check: profiler path counters (`miss_direct`, `walk_steps max` ≤ 1, `miss_bsearch` = 0, miss rate often ~60–70% with pitch mod).
+
+**Flag-path** under the compiled voice engine (header `speed=flag-path voice=FIXED|FLOAT`):
+
+- **Fixed voice** (`!USE_FLOAT_VOICE_TASK`): cost to **`ratioQ16`**. `RATIO_Q16` = fused `slopeQ20` path; `Q12` = `interp_y` + live `y→ratio` reciprocal. `FLOAT` / `FLOAT_FAST` = soft-float references only. Int rows use `xInt` step 1 (seq) / 500 (jump). Shared Q24→xQ16 and final `freq×ratio` omitted.
+- **Float voice** (`USE_FLOAT_VOICE_TASK`): cost to **float ratio**. `FLOAT` = walk find; `FLOAT_FAST` = live trunc+clamp±1 find; int modes = `mod×10000` → `lroundf` → int interp → float rescale.
+
+**Accuracy report** (`=== PITCH INTERP ACCURACY ===`): fine **seq** modifier grid only (**one osc**) — correctness, not speed ranking. Private **Q20 `y` lerp** is the int reference only (not a live mode). Errors in **cents**. Sections:
 
 1. **Table quantization floor** — knot `|Q20_ref − FLOAT|` mean/max cents.
-2. **vs FLOAT** — RATIO / Q12: mean/max, p50/p95/p99, `>0.5¢` / `>1.0¢` (table gap; methods look similar).
-3. **vs Q20 ref on int tables** (slope A/B) — RATIO / Q12 vs private Q20→ratio. Mean/max, percentiles, `>0.01¢` / `>0.1¢`, knot vs mid.
-4. **vs Q20 ref by mod-band** — low / mid / high.
+2. **vs FLOAT walk** — FLOAT_FAST (expect ~0¢), RATIO / Q12: mean/max, p50/p95/p99, `>0.5¢` / `>1.0¢`.
+3. **vs Q20 ref** — FLOAT / FLOAT_FAST / RATIO / Q12 vs private Q20→ratio. Mean/max, percentiles, `>0.01¢` / `>0.1¢`, knot vs mid. (Float rows ≈ table gap; RATIO/Q12 rank slope A/B.)
+4. **vs Q20 ref by mod-band** — low / mid / high (same four methods).
 
 Diagnostics buttons: `PITCH_INTERP_COMMANDS` in [`../tools/dco_control/params.py`](../tools/dco_control/params.py).

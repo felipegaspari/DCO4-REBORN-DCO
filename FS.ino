@@ -166,12 +166,12 @@ void update_FS_voice(byte voiceN) {
 }
 
 
-// Persist PW center for a voice. Called from find_PW_center().
-void update_FS_PWCenter(byte voiceN, uint16_t value) {
+// Persist PW center for one oscillator. Called from find_PW_center() (osc 0 today).
+void update_FS_PWCenter(byte oscN, uint16_t value) {
   byte calibrationDataBytes[FSPWDataSize];
   byte *b = (byte *)&value;
 
-  uint16_t startByteN = voiceN * FSPWDataSize;
+  uint16_t startByteN = oscN * FSPWDataSize;
 
   filePWCenterFS = LittleFS.open("PWCenter", "r+");
   filePWCenterFS.seek(startByteN);
@@ -179,12 +179,12 @@ void update_FS_PWCenter(byte voiceN, uint16_t value) {
   filePWCenterFS.close();
 }
 
-// Persist PW high limit for a voice. Called from find_PW_limit_v2().
-void update_FS_PW_High_Limit(byte voiceN, uint16_t value) {
+// Persist PW high limit for one oscillator. Called from find_PW_limit_v2().
+void update_FS_PW_High_Limit(byte oscN, uint16_t value) {
   byte calibrationDataBytes[FSPWDataSize];
   byte *b = (byte *)&value;
 
-  uint16_t startByteN = voiceN * FSPWDataSize;
+  uint16_t startByteN = oscN * FSPWDataSize;
 
   filePWHighLimitFS = LittleFS.open("PWHighLimit", "r+");
   filePWHighLimitFS.seek(startByteN);
@@ -192,12 +192,12 @@ void update_FS_PW_High_Limit(byte voiceN, uint16_t value) {
   filePWHighLimitFS.close();
 }
 
-// Persist PW low limit for a voice. Called from find_PW_limit_v2().
-void update_FS_PW_Low_Limit(byte voiceN, uint16_t value) {
+// Persist PW low limit for one oscillator. Called from find_PW_limit_v2().
+void update_FS_PW_Low_Limit(byte oscN, uint16_t value) {
   byte calibrationDataBytes[FSPWDataSize];
   byte *b = (byte *)&value;
 
-  uint16_t startByteN = voiceN * FSPWDataSize;
+  uint16_t startByteN = oscN * FSPWDataSize;
 
   filePWLowLimitFS = LittleFS.open("PWLowLimit", "r+");
   filePWLowLimitFS.seek(startByteN);

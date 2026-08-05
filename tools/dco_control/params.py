@@ -149,10 +149,12 @@ def _phase_choices() -> tuple:
 
 PARAMS: list[Param] = [
     # --- Oscillators ---
-    Param(13, "OSC1 interval (semitones)", GROUP_OSC, "combo",
-          choices=tuple((f"+{s}", s) for s in range(0, 73, 12)), default=0, cc=2),
-    Param(14, "OSC2 interval (semitones)", GROUP_OSC, "slider", 0, 60, 0, cc=3),
-    Param(33, "OSC3 interval (semitones)", GROUP_OSC, "slider", 0, 60, 0, cc=4),
+    # Wire value is biased: table_index = midi - 36 + value (36 ⇒ unison).
+    Param(13, "Octave shift (semitones)", GROUP_OSC, "combo",
+          choices=tuple((f"{(s - 36) // 12:+d}", s) for s in range(0, 73, 12)),
+          default=24, cc=2),
+    Param(14, "OSC2 interval (semitones)", GROUP_OSC, "slider", 0, 60, 36, cc=3),
+    Param(33, "OSC3 interval (semitones)", GROUP_OSC, "slider", 0, 60, 36, cc=4),
     Param(15, "OSC2 detune", GROUP_OSC, "slider", 0, 512, 0, cc=5),
     Param(34, "OSC3 detune", GROUP_OSC, "slider", 0, 512, 0, cc=8),
     Param(22, "OSC1 level", GROUP_OSC, "slider", 0, 127, 127, cc=9),
@@ -334,7 +336,7 @@ BLOCKS: list[Block] = [
 
 
 # Diagnostic buttons, all PARAM_DEBUG_COMMAND (160). See DCO/docs/PIO_OSCILLATORS.md
-# section 12. The period probes only hold while no note is playing, because voice_task()
+# section 12. The period probes only hold while no note is playing, because voice_task_main()
 # pushes a fresh divider every frame for a held note.
 DEBUG_COMMANDS = (
     ("PIO topology report", 1),

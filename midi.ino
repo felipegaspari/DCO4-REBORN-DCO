@@ -177,7 +177,8 @@ void note_on(uint8_t note, uint8_t velocity) {
       break;
 
     case 2:
-      for (int i = 0; i < NUM_VOICES_TOTAL; i++)  // REVISAR!! // Previously NUM_VOICES
+      // Mode 2 stub: fill all capacity slots (DCO4 stack). Engine still only runs VOICE_TASK.
+      for (int i = 0; i < NUM_VOICES_TOTAL; i++)
       {
         VOICES[i] = 1;
         VOICE_NOTES[i] = note;
@@ -196,11 +197,14 @@ void note_on(uint8_t note, uint8_t velocity) {
 // Release matching voice(s) on MIDI note-off; set noteEnd flags for the local envelopes.
 void note_off(uint8_t note) {
   // gate off
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++)  // REVISAR!! // Previously NUM_VOICES
+  // Scan full capacity so a release is not missed if NUM_VOICES shrank mid-note.
+  for (int i = 0; i < NUM_VOICES_TOTAL; i++)
   {
     if (VOICE_NOTES[i] == note) {
       // gpio_put(GATE_PINS[i], 0);
-      // VOICE_NOTES[i] = 0;
+      // Keep VOICE_NOTES so voice_task holds last pitch through release
+      // (portaTime==0 snaps portamento_cur_freq from VOICE_NOTES each frame).
+      // Free-slot / steal uses VOICES[] only.
       VOICES[i] = 0;
       noteEnd[i] = 1;
       noteStart[i] = 0;

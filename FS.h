@@ -6,7 +6,7 @@ static constexpr uint16_t FSVoiceDataSize = 22 * 2 * 4;
 static constexpr uint16_t FSPWDataSize = 2;
 
 static constexpr uint16_t FSBankSize = FSVoiceDataSize * NUM_OSCILLATORS;
-static constexpr uint16_t FSPWBankSize = FSPWDataSize * NUM_VOICES_TOTAL;
+static constexpr uint16_t FSPWBankSize = FSPWDataSize * NUM_OSCILLATORS;
 
 // One signed byte per oscillator to store manualCalibrationOffset[].
 static constexpr uint16_t FSManualOffsetDataSize = 1;

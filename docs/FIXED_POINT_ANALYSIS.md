@@ -3,13 +3,13 @@
 > **ARCHIVE — historical only.** This document describes a pre-/mid-migration inventory of float ops. It is **not** the live engine-options reference.  
 > Current float vs fixed flags, precision modes, and call paths: **[`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)**.
 
-This document lists all floating-point operations within the `voice_task` function and its callees. It served as a reference for migrating to fixed-point arithmetic using a library like `fixmath`.
+This document lists all floating-point operations within the `voice_task_fixed_point` function and its callees. It served as a reference for migrating to fixed-point arithmetic using a library like `fixmath`.
 
 ---
 
-## Analysis of `voice_task()` in `voices.ino`
+## Analysis of `voice_task_fixed_point()` in `voices.ino`
 
-The `voice_task` function is the primary real-time processing loop for each synthesizer voice.
+The `voice_task_fixed_point` function is the primary real-time processing loop for each synthesizer voice.
 
 ### 1. Floating-Point Variable Declarations
 
@@ -24,7 +24,7 @@ The `voice_task` function is the primary real-time processing loop for each synt
 
 ### 2. Pitch Bend Calculation
 
-- **Location:** `voices.ino`, inside `voice_task()`
+- **Location:** `voices.ino`, inside `voice_task_fixed_point()`
 - **Code Snippet:**
   ```cpp
   if (midi_pitch_bend < 8192) {
@@ -38,7 +38,7 @@ The `voice_task` function is the primary real-time processing loop for each synt
 
 ### 3. Oscillator 2 Detune
 
-- **Location:** `voices.ino`, inside `voice_task()`
+- **Location:** `voices.ino`, inside `voice_task_fixed_point()`
 - **Code Snippet:**
   ```cpp
   OSC2_detune = 1.00f + (0.0002f * ((int)256 - OSC2DetuneVal));
@@ -48,7 +48,7 @@ The `voice_task` function is the primary real-time processing loop for each synt
 
 ### 4. Portamento (Glide)
 
-- **Location:** `voices.ino`, inside `voice_task()`
+- **Location:** `voices.ino`, inside `voice_task_fixed_point()`
 - **Code Snippet:**
   ```cpp
   freqPortaInterval[DCO_A] = (float)(portamento_stop[DCO_A] - (float)portamento_start[DCO_A]) / portamento_time;
@@ -60,7 +60,7 @@ The `voice_task` function is the primary real-time processing loop for each synt
 
 ### 5. Modulation Calculations
 
-- **Location:** `voices.ino`, inside `voice_task()`
+- **Location:** `voices.ino`, inside `voice_task_fixed_point()`
 - **Code Snippet:**
   ```cpp
   float ADSRModifier = (ADSR1toDETUNE1 != 0) ? ((float)linToLogLookup[ADSR1Level[i]] * ADSR1toDETUNE1_formula) : 0;
@@ -75,7 +75,7 @@ The `voice_task` function is the primary real-time processing loop for each synt
 
 ### 6. Final Frequency Calculation
 
-- **Location:** `voices.ino`, inside `voice_task()`
+- **Location:** `voices.ino`, inside `voice_task_fixed_point()`
 - **Code Snippet:**
   ```cpp
   freq = freq * (float)((float)interpolatePitchMultiplier(freqModifiers) / (float)multiplierTableScale);
@@ -85,7 +85,7 @@ The `voice_task` function is the primary real-time processing loop for each synt
 
 ### 7. PIO Clock Divider Calculation
 
-- **Location:** `voices.ino`, inside `voice_task()`
+- **Location:** `voices.ino`, inside `voice_task_fixed_point()`
 - **Code Snippet:**
   ```cpp
   register uint32_t clk_div1 = (uint32_t)((eightSysClock_Hz / freq) - eightPioPulseLength);
@@ -97,7 +97,7 @@ The `voice_task` function is the primary real-time processing loop for each synt
 
 ### 8. Amplitude Compensation and PWM Modulation
 
-- **Location:** `voices.ino`, inside `voice_task()`
+- **Location:** `voices.ino`, inside `voice_task_fixed_point()`
 - **Code Snippet:**
   ```cpp
   chanLevel = get_chan_level_lookup((int32_t)(freq * 100), DCO_A);
@@ -110,7 +110,7 @@ The `voice_task` function is the primary real-time processing loop for each synt
 
 ---
 
-## Analysis of Functions Called From `voice_task()`
+## Analysis of Functions Called From `voice_task_fixed_point()`
 
 ### 1. `interpolatePitchMultiplier(float x_float)`
 

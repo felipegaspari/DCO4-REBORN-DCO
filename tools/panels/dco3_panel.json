@@ -22,7 +22,7 @@
         "widgets": [
           {
             "type": "panel",
-            "id": "cell_cc2_osc1_interval_semitones",
+            "id": "cell_cc2_octave_shift_semitones",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -31,25 +31,25 @@
             "widgets": [
               {
                 "type": "menu",
-                "id": "cc2_osc1_interval_semitones",
+                "id": "cc2_octave_shift_semitones",
                 "address": "/control",
                 "preArgs": [
                   1,
                   2
                 ],
                 "target": "midi:dco3",
-                "default": 0,
+                "default": 24,
                 "expand": true,
-                "html": "OSC1 interval (semitones)",
+                "html": "Octave shift (semitones)",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
-                  "+0 ": 0,
-                  "+12 ": 12,
-                  "+24 ": 24,
-                  "+36 ": 36,
-                  "+48 ": 48,
-                  "+60 ": 60,
-                  "+72 ": 72
+                  "-3 ": 0,
+                  "-2 ": 12,
+                  "-1 ": 24,
+                  "0 ": 36,
+                  "+1 ": 48,
+                  "+2 ": 60,
+                  "+3 ": 72
                 }
               }
             ]
@@ -72,7 +72,7 @@
                   3
                 ],
                 "target": "midi:dco3",
-                "default": 0,
+                "default": 75,
                 "expand": true,
                 "html": "OSC2 interval (semitones)",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
@@ -111,7 +111,7 @@
                   4
                 ],
                 "target": "midi:dco3",
-                "default": 0,
+                "default": 75,
                 "expand": true,
                 "html": "OSC3 interval (semitones)",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",

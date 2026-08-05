@@ -94,9 +94,9 @@ static void apply_param_lfo2_waveform(int16_t v) {
   LFO2_class.setMode0Freq((float)LFO2Speed, micros());
 }
 
-// PARAM_OSC1_INTERVAL: OSC1 transpose interval.
-static void apply_param_osc1_interval(int16_t v) {
-  OSC1_interval = v;
+// PARAM_OSC1_INTERVAL (13): global octave_shift (semitones). Kept id for wire compat.
+static void apply_param_octave_shift(int16_t v) {
+  octave_shift = v;
 }
 
 // PARAM_OSC2_INTERVAL: OSC2 transpose interval.
@@ -143,9 +143,7 @@ static void apply_param_osc_sync_mode(int16_t v) {
     // for the chunk reads, so writing it on a running SM can make a chunk latch the
     // pulse width as its ramp count.
     phaseAlignOSC2 = 0;
-    for (int i = 0; i < NUM_OSCILLATORS; i++) {
-      osc_set_reset_pulse(i, pioPulseLength);
-    }
+    pio_defer_request_reset_pulse_all();
   } else {
     if (oscSync > 8) {
       phaseAlignOSC2 = oscSync * 2;
@@ -307,10 +305,10 @@ static void apply_param_analog_drift_spread(int16_t v) {
   }
 }
 
-// PARAM_SYNC_MODE: PIO sync topology → setSyncMode().
+// PARAM_SYNC_MODE: PIO sync topology → setSyncMode() (deferred to core 1).
 static void apply_param_sync_mode(int16_t v) {
   syncMode = v;
-  setSyncMode();
+  pio_defer_request_sync_mode();
 }
 
 // PARAM_SOFT_SYNC: pick the sync mechanism. Hard sync costs nothing but gives the slave
@@ -318,7 +316,7 @@ static void apply_param_sync_mode(int16_t v) {
 // at the price of a slightly coarser divider (weight 5 instead of 4).
 static void apply_param_soft_sync(int16_t v) {
   softSyncChunks = (v > 0) ? 1 : 0;
-  setSyncMode();
+  pio_defer_request_sync_mode();
 }
 
 // PARAM_SUBOSC_DIVIDE: sub-oscillator divide ratio off / 2 / 4.
@@ -329,7 +327,7 @@ static void apply_param_subosc_divide(int16_t v) {
   } else if (v >= 2) {
     divide = 2;
   }
-  set_subosc_divide(divide);
+  pio_defer_request_subosc(divide);
 }
 
 // PARAM_LFO1_TO_DCO: LFO1 → DCO detune depth (float + Q24).
@@ -512,7 +510,7 @@ static void apply_param_manual_calibration_store(int16_t /*v*/) {
 // how the host tool in tools/dco_control reaches the checks in docs/PIO_OSCILLATORS.md.
 //
 // The period probe parks an oscillator at a fixed clk_div, so it only holds while no
-// note is playing — voice_task() pushes a fresh divider every frame for a held note.
+// note is playing — voice_task_main() pushes a fresh divider every frame for a held note.
 //
 // 10 / 11 / 12 drive the profiler in bench.h and only do anything in a RUNNING_AVERAGE
 // build. The dump is asynchronous: it asks both cores for a snapshot and core 0 prints
@@ -633,7 +631,7 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_ADSR3_TO_OSC_SELECT,       apply_param_adsr3_to_osc_select },
   { PARAM_LFO1_WAVEFORM,             apply_param_lfo1_waveform },
   { PARAM_LFO2_WAVEFORM,             apply_param_lfo2_waveform },
-  { PARAM_OSC1_INTERVAL,             apply_param_osc1_interval },
+  { PARAM_OSC1_INTERVAL,             apply_param_octave_shift },
   { PARAM_OSC2_INTERVAL,             apply_param_osc2_interval },
   { PARAM_OSC3_INTERVAL,             apply_param_osc3_interval },
   { PARAM_OSC2_DETUNE_VAL,           apply_param_osc2_detune_val },

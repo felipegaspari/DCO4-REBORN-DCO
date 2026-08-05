@@ -30,7 +30,7 @@ enum ParamId : uint16_t {
   PARAM_LFO1_WAVEFORM            = 11,
   PARAM_LFO2_WAVEFORM            = 12,
 
-  PARAM_OSC1_INTERVAL            = 13,
+  PARAM_OSC1_INTERVAL            = 13,  // octave_shift (global); id kept for wire compat
   PARAM_OSC2_INTERVAL            = 14,
 
   PARAM_OSC2_DETUNE_VAL          = 15,
