@@ -33,4 +33,10 @@ File filePWHighLimitFS;
 File filePWLowLimitFS;
 File fileManualOffsetFS;
 
+// Build one oscillator's 22 [freq_x100, RANGE PWM] pairs into out[chanLevelVoiceDataSize].
+void generate_fake_calibration_data(uint8_t osc, uint32_t* out);
+// Seed LittleFS with fake amp-comp + PW defaults.
+// force=false: only if voiceTables file is missing. force=true: overwrite + precompute (cmd 30).
+void seed_fake_calibration_tables(bool force = false);
+
 #endif

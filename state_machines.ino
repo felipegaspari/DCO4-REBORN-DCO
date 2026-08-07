@@ -30,20 +30,78 @@ void assign_sm_mapping() {
   }
 }
 
+// Pick the soft-sync poll program image for N trailing polled chunks (1..3).
+static const pio_program_t *soft_sync_program_for_chunks(uint8_t chunks) {
+  if (chunks >= 3) return &frequency_sync_poll_3_program;
+  if (chunks == 2) return &frequency_sync_poll_2_program;
+  return &frequency_sync_poll_program;
+}
+
+// Keep free-running + exactly one poll image on pio0. Swapping among N=1/2/3 removes the
+// old poll program and loads the new one (12 + 13..15 <= 27 of 32 slots). Hard sync
+// (softSyncChunks == 0) leaves whatever poll image is already resident.
+static void ensure_soft_sync_program(uint8_t chunks) {
+  if (chunks < 1) chunks = 1;
+  if (chunks > 3) chunks = 3;
+  if (chunks == pio_loaded_sync_chunks) return;
+
+  if (pio_loaded_sync_chunks != 0) {
+    pio_remove_program(pio[0], soft_sync_program_for_chunks(pio_loaded_sync_chunks),
+                       pio_offset_sync);
+  }
+  pio_offset_sync = pio_add_program(pio[0], soft_sync_program_for_chunks(chunks));
+  pio_loaded_sync_chunks = chunks;
+}
+
 // Load the oscillator programs into pio0 and start all voice SMs. Called from setup1().
 void init_pio() {
-  // Both oscillator programs stay resident in pio0 (12 + 13 of 32 instruction slots),
-  // so switching an SM between hard and soft sync is a re-init rather than a reload.
-  pio_offset_free = pio_add_program(pio[0], &frequency_sync_4_jumps_program);
-  pio_offset_sync = pio_add_program(pio[0], &frequency_sync_poll_program);
+  // Claim SMs through the SDK so other PIOProgram users cannot steal them.
+  // Oscillators always occupy pio0 SM0–2; pio1 SM0 = sub-osc, SM1 = noise LFSR.
+  for (int sm = 0; sm < NUM_OSCILLATORS; sm++) {
+    pio_sm_claim(pio[0], sm);
+  }
+  pio_sm_claim(pio[SUBOSC_PIO], SUBOSC_SM);
+  pio_sm_claim(pio[NOISE_PIO], NOISE_SM);
 
-  // pio1 carries the sub-oscillator; pio2 stays free for ENABLE_PIO_MIDI.
+  // Free-running program plus one soft-sync poll image (default N=1). Switching hard↔soft
+  // with the same N is a re-init; changing N among 1/2/3 reloads the poll image.
+  pio_offset_free = pio_add_program(pio[0], &frequency_sync_4_jumps_program);
+  pio_loaded_sync_chunks = 0;
+  ensure_soft_sync_program(softSyncChunks > 0 ? softSyncChunks : 1);
+
+  // pio1: noise LFSR must load first at origin 0 (out pc,1 XOR); then sub-osc.
+  // pio2 stays free for ENABLE_PIO_MIDI.
+  noise_lfsr_offset = pio_add_program(pio[NOISE_PIO], &noise_lfsr_program);
   subosc_offset_div2 = pio_add_program(pio[SUBOSC_PIO], &subosc_div2_program);
   subosc_offset_div4 = pio_add_program(pio[SUBOSC_PIO], &subosc_div4_program);
+  if (dcoNoiseUsesPioWhite()) {
+    const int out_pin =
+#ifdef ENABLE_NOISE_OUT
+        (int)NOISE_OUT_PIN;
+#else
+        -1;
+#endif
+    noise_lfsr_init(pio[NOISE_PIO], NOISE_SM, noise_lfsr_offset, 0xC0FFEE01u,
+                    out_pin);
+  }
 
   assign_sm_mapping();
   start_voice_sms();
   set_subosc_divide(subOscDivide);
+}
+
+// Match RESET pad polarity to the analog discharge switch. When ENABLE_PIO_RESET_INVERT
+// is set, logical PIO "1 = assert" becomes pad low (DG411 on) while INOVER keeps jmp_pin
+// / wait readers on the logical sense. Cleared explicitly when the flag is off so a
+// rebuild without the define does not leave stale overrides after a soft reset.
+static void pio_reset_pin_apply_polarity(uint pin) {
+#ifdef ENABLE_PIO_RESET_INVERT
+  gpio_set_outover(pin, GPIO_OVERRIDE_INVERT);
+  gpio_set_inover(pin, GPIO_OVERRIDE_INVERT);
+#else
+  gpio_set_outover(pin, GPIO_OVERRIDE_NORMAL);
+  gpio_set_inover(pin, GPIO_OVERRIDE_NORMAL);
+#endif
 }
 
 // Configure every oscillator state machine on pio0 and start them on the same cycle.
@@ -52,6 +110,17 @@ void start_voice_sms() {
   int slave = sync_slave_osc();
   int master = sync_master_osc();
   bool softSync = (softSyncChunks > 0) && (slave >= 0) && (master >= 0);
+  uint8_t chunks = soft_sync_chunks_clamped();
+  if (chunks < 1) chunks = 1;
+
+  // Stop every voice SM before a possible poll-program reload (instruction memory must
+  // not change under a running SM).
+  for (int i = 0; i < NUM_OSCILLATORS; i++) {
+    pio_sm_set_enabled(pio[0], VOICE_TO_SM[i], false);
+  }
+  if (softSync) {
+    ensure_soft_sync_program(chunks);
+  }
 
   uint32_t enableMask = 0;
 
@@ -71,12 +140,11 @@ void start_voice_sms() {
       sidesetPin = RESET_PINS[slave];
     }
 
-    pio_sm_set_enabled(pio[0], sm, false);
     pio_sm_clear_fifos(pio[0], sm);
 
     if (softSync && i == slave) {
       frequency_sync_poll_init(pio[0], sm, pio_offset_sync, RESET_PINS[i], sidesetPin,
-                               RESET_PINS[master]);
+                               RESET_PINS[master], chunks);
       osc_uses_sync_program[i] = true;
     } else {
       frequency_sync_4_jumps(pio[0], sm, pio_offset_free, RESET_PINS[i], sidesetPin);
@@ -90,19 +158,41 @@ void start_voice_sms() {
     enableMask |= (1u << sm);
   }
 
+  // After pio_gpio_init in the SM inits: apply (or clear) pad polarity on every RESET.
+  for (int i = 0; i < NUM_OSCILLATORS; i++) {
+    pio_reset_pin_apply_polarity(RESET_PINS[i]);
+  }
+
   // Same-cycle start. Separate pio_sm_set_enabled calls used to leave a few hundred
   // nanoseconds of skew between oscillators, which capped phase-align accuracy.
   pio_enable_sm_mask_in_sync(pio[0], enableMask);
 }
 
-// Change only the reset pulse width, keeping the divider the SM was already running.
-// Stops and restarts the SM, so this is for parameter changes rather than the audio path.
-void osc_set_reset_pulse(uint8_t osc, uint32_t y) {
-  uint8_t sm = VOICE_TO_SM[osc];
+// Reload every oscillator's reset pulse width (Y), preserving the running period.
+//
+// Period was Y_old + weight*clk_div + overhead. With a new Y the divider must be
+// recomputed before re-enable; keeping the old clk_div stretches/shrinks pitch until
+// the next voice_task frame. All SMs are stopped, loaded, then started in the same
+// cycle so sync pairs do not tear.
+void osc_reload_reset_pulse_all(uint32_t y) {
+  uint32_t enableMask = 0;
 
-  pio_sm_set_enabled(pio[0], sm, false);
-  osc_load_period_stopped(osc, y, osc_last_clk_div[osc]);
-  pio_sm_set_enabled(pio[0], sm, true);
+  for (int i = 0; i < NUM_OSCILLATORS; i++) {
+    const uint8_t sm = VOICE_TO_SM[i];
+    pio_sm_set_enabled(pio[0], sm, false);
+    enableMask |= (1u << sm);
+  }
+
+  for (int i = 0; i < NUM_OSCILLATORS; i++) {
+    const uint32_t weight = osc_ramp_weight(i);
+    const uint32_t overhead = osc_period_overhead(i);
+    const uint32_t total =
+        osc_last_y[i] + weight * osc_last_clk_div[i] + overhead;
+    const uint32_t clk_div = pio_clk_div_for_y(total, y, weight, overhead);
+    osc_load_period_stopped(i, y, clk_div);
+  }
+
+  pio_enable_sm_mask_in_sync(pio[0], enableMask);
 }
 
 // Report the sync topology and, importantly, which PIO block owns each reset pin.
@@ -125,9 +215,16 @@ void pio_topology_report() {
     bool onPio0 = (fn == GPIO_FUNC_PIO0);
     if (!onPio0) allOnPio0 = false;
 
+    const char *prog = "free";
+    if (osc_uses_sync_program[i]) {
+      switch (soft_sync_chunks_clamped()) {
+        case 2:  prog = "poll2"; break;
+        case 3:  prog = "poll3"; break;
+        default: prog = "poll1"; break;
+      }
+    }
     bench_out_printf("  OSC%d reset=GP%-2u sm=%u program=%s funcsel=%d%s\n",
-                     i + 1, RESET_PINS[i], VOICE_TO_SM[i],
-                     osc_uses_sync_program[i] ? "poll" : "free",
+                     i + 1, RESET_PINS[i], VOICE_TO_SM[i], prog,
                      (int)fn, onPio0 ? "" : "  <-- NOT PIO0");
   }
 
@@ -173,11 +270,18 @@ void pio_solve_period_model(uint32_t clk_div_a, double measured_hz_a,
   double weight = (period_a - period_b) / ((double)clk_div_a - (double)clk_div_b);
   double overhead = period_a - (double)y - weight * (double)clk_div_a;
 
-  Serial.printf("[period solve] weight = %.4f (expected %u or %u)\n",
-                weight, (unsigned)PIO_RAMP_WEIGHT_FREE, (unsigned)PIO_RAMP_WEIGHT_SYNC);
-  Serial.printf("[period solve] overhead = %.2f cycles (expected %u or %u)\n",
-                overhead, (unsigned)PIO_PERIOD_OVERHEAD_FREE,
-                (unsigned)PIO_PERIOD_OVERHEAD_SYNC);
+  Serial.printf("[period solve] weight = %.4f (expected %u/%u/%u/%u for chunks 0..3)\n",
+                weight,
+                (unsigned)PIO_RAMP_WEIGHT_BY_CHUNKS[0],
+                (unsigned)PIO_RAMP_WEIGHT_BY_CHUNKS[1],
+                (unsigned)PIO_RAMP_WEIGHT_BY_CHUNKS[2],
+                (unsigned)PIO_RAMP_WEIGHT_BY_CHUNKS[3]);
+  Serial.printf("[period solve] overhead = %.2f cycles (expected %u/%u/%u/%u)\n",
+                overhead,
+                (unsigned)PIO_PERIOD_OVERHEAD_BY_CHUNKS[0],
+                (unsigned)PIO_PERIOD_OVERHEAD_BY_CHUNKS[1],
+                (unsigned)PIO_PERIOD_OVERHEAD_BY_CHUNKS[2],
+                (unsigned)PIO_PERIOD_OVERHEAD_BY_CHUNKS[3]);
 }
 
 // (Re)configure the sub-oscillator. divide 0 stops it, 2 and 4 give a square one and
@@ -186,16 +290,16 @@ void set_subosc_divide(uint8_t divide) {
   subOscDivide = divide;
 
   PIO p = pio[SUBOSC_PIO];
-  pio_sm_set_enabled(p, 0, false);
+  pio_sm_set_enabled(p, SUBOSC_SM, false);
 
   if (divide == 0) {
     return;
   }
 
   bool div4 = (divide >= 4);
-  subosc_init(p, 0, div4 ? subosc_offset_div4 : subosc_offset_div2,
+  subosc_init(p, SUBOSC_SM, div4 ? subosc_offset_div4 : subosc_offset_div2,
               RESET_PINS[0], SUBOSC_PIN, div4);
-  pio_sm_set_enabled(p, 0, true);
+  pio_sm_set_enabled(p, SUBOSC_SM, true);
 }
 
 // ---- Core-0 → core-1 deferred PIO requests -----------------------------------
@@ -276,12 +380,9 @@ void pio_defer_service() {
     setSyncMode();
   }
   if (pending & PIO_DEFER_RESET) {
-    for (int i = 0; i < NUM_OSCILLATORS; i++) {
-      osc_set_reset_pulse(i, pioPulseLength);
-    }
-    for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
-      note_on_flag[i] = 1;
-    }
+    // Y only; do not force note_on_flag — that retriggered every slider step (~50 Hz)
+    // and was the main source of mid-drag pitch collapse / sync tear.
+    osc_reload_reset_pulse_all(pioPulseLength);
   }
   if (pending & PIO_DEFER_SUBOSC) {
     set_subosc_divide(pio_defer_subosc_value);

@@ -36,15 +36,15 @@ Related docs:
 - **`globals.h`**  
   - System‑wide constants and state:
     - Voice/osc counts: `NUM_VOICES_TOTAL = 3`, `NUM_OSCILLATORS = 3`, `NUM_VOICES_VOICE_TASK = 1` (mono engine bound; PW per-osc; para planned via `setVoiceMode`).
-    - Clock and PIO timing constants (`sysClock` = 225000 kHz → `sysClock_Hz`, `pioPulseLength`, OSR chunk sizes, timing overheads).
-    - **Period model** `period = Y + weight*clk_div + overhead`, with `PIO_RAMP_WEIGHT_FREE = 4` / `PIO_PERIOD_OVERHEAD_FREE = 12` and `PIO_RAMP_WEIGHT_SYNC = 5` / `PIO_PERIOD_OVERHEAD_SYNC = 13`. The overhead includes one fall-through cycle per `jmp x--` loop, which the old `T_LOW_OVERHEAD_CYCLES = 5` was missing (5 cycles short, roughly 0.27 cents of sharp error at 7 kHz).
-    - Per-osc PIO state: `osc_uses_sync_program[]`, `osc_last_y[]`, `osc_last_clk_div[]`, `softSyncChunks`, `subOscDivide`.
+    - Clock and PIO timing constants (`sysClock` = 225000 kHz → `sysClock_Hz`, runtime `pioPulseLength` default 1600 / debug 160 ∈ [200, 50000], OSR chunk sizes, timing overheads).
+    - **Period model** `period = Y + weight*clk_div + overhead`, with weights/overheads `{4,5,6,7}` / `{12,13,14,15}` indexed by `softSyncChunks` (`PIO_*_BY_CHUNKS[]`; N=1 aliases `PIO_RAMP_WEIGHT_SYNC` / `PIO_PERIOD_OVERHEAD_SYNC`). Each trailing polled chunk adds one weight and one overhead cycle.
+    - Per-osc PIO state: `osc_uses_sync_program[]`, `osc_last_y[]`, `osc_last_clk_div[]`, `softSyncChunks`, `pio_loaded_sync_chunks`, `subOscDivide`.
     - Fixed‑point pitch‑bend multipliers (`pitchBendMultiplier_q24`); LFO pitch mods live in `LFO.h` (`lfo1_pitch_mod_q24[]`, `lfo2_pitch_mod_q24[]`).
     - Global voice arrays (`VOICE_NOTES`, `VOICES`, `note_on_flag`, shared `PW[0]`, etc.).
     - Hardware pin mappings: RESET/RANGE for OSC1–3, single `PW_PINS[0]`, `SUBOSC_PIN = 8`.
     - `VOICE_TO_PIO = {0,0,0}` — **all three oscillators share pio0.** A GPIO's function select names exactly one PIO block, so oscillators on separate blocks cannot share a reset pin: `pio_gpio_init()` on the second block silently steals the pin from the first, which is what broke hard sync when the layout was `{0,1,2}`. `pio_topology_report()` asserts this.
     - `VOICE_TO_SM` is **mutable**, rewritten by `assign_sm_mapping()`: the slave takes the lower SM index because when two SMs write a pin on the same cycle the higher-numbered one wins, so the master must outrank its slave or it drops the occasional sync edge.
-    - `DCO_calibration_pin = 10`; `ENABLE_FS_CALIBRATION`.
+    - `DCO_calibration_pin = 6` (temporary A/B on Pico header; was 10; GP25 aborted); `ENABLE_FS_CALIBRATION`.
     - Shared PIO array `pio[3]`, timer variables, MIDI pitch bend state and helper prototypes.
 
 ---
@@ -118,14 +118,15 @@ Related docs:
 
 - **`state_machines.h` / `state_machines.ino`**  
   - **Full subsystem reference: [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md)** — programs, period model, sync modes, phase align, sub-osc, invariants and bench procedures. Read it before changing anything in this section.
-  - `init_pio()` loads **both** oscillator programs into **pio0** (`frequency_sync_4_jumps` and `frequency_sync_poll`) plus the two sub-osc programs into pio1, then calls `assign_sm_mapping()` and `start_voice_sms()`.
+  - `init_pio()` loads `frequency_sync_4_jumps` plus one soft-sync poll image (`frequency_sync_poll` / `_2` / `_3`) into **pio0**, plus the two sub-osc programs into pio1, then calls `assign_sm_mapping()` and `start_voice_sms()`.
   - `start_voice_sms()`:
-    - Picks each oscillator's program: the slave runs `frequency_sync_poll` when `softSyncChunks > 0`, everything else runs `frequency_sync_4_jumps`.
+    - Calls `ensure_soft_sync_program()` so the resident poll image matches `softSyncChunks` when soft sync is on (swap via remove/add; hard sync leaves the current image unused).
+    - Picks each oscillator's program: the slave runs the poll variant when `softSyncChunks > 0`, everything else runs `frequency_sync_4_jumps`.
     - Picks the sideset pin. For **hard sync** the master's sideset points at the *slave's* reset pin, so the master discharges the slave's integrator while the slave keeps its own schedule. For **soft sync** the master leaves its own pin alone and the slave polls it through `jmp pin` instead.
     - Preloads Y with `pioPulseLength` and re-pushes `osc_last_clk_div[]`, because writing Y consumes the OSR that also feeds the chunk reads.
     - Starts every SM on the same cycle with `pio_enable_sm_mask_in_sync()`, removing the inter-oscillator skew that capped phase-align accuracy.
-  - **Sync flavours:** hard sync costs nothing (weight 4) but is analog-cap-only — it discharges the slave without restarting its counter. Soft sync (weight 5) restarts the slave's own count, so it is textbook hard/soft sync and sounds different; because only the final chunk polls, master edges in roughly the first 60% of the slave's ramp are ignored, which is the soft-sync threshold.
-  - **Phase offset** (`phaseAlignOSC2`) is split into a coarse quarter-period jump into a later ramp chunk (`osc_ramp_entry_target()`, addresses 4/6/8, preceded by an exec'd `set pins, 0` because those entries skip address 2) plus a sub-quarter residual that widens Y. That caps the held-reset waveform distortion at 25% of a period instead of the old worst case of nearly a whole period at 180°.
+  - **Sync flavours:** hard sync costs nothing (weight 4) but is analog-cap-only — it discharges the slave without restarting its counter. Soft sync (weights 5/6/7 for 1/2/3 trailing polled chunks) restarts the slave's own count; receptive windows are ~40% / ~67% / ~86% of the ramp because polled chunks run at half speed.
+  - **Phase offset** (`phaseAlignOSC2`) is split into a coarse quarter-period jump into a later ramp chunk (`osc_ramp_entry_target()`, program-dependent addresses, preceded by an exec'd `set pins, 0` because those entries skip address 2) plus a sub-quarter residual that widens Y. That caps the held-reset waveform distortion at 25% of a period instead of the old worst case of nearly a whole period at 180°.
   - **Diagnostics:** `pio_topology_report()` (roles + reset-pin ownership), `pio_period_probe()` / `pio_solve_period_model()` (confirm weight/overhead against a frequency counter).
 
 - **`PWM.h` / `PWM.ino`**  
@@ -281,10 +282,13 @@ Related docs:
     - `midi_cc_apply()` dispatches: targets at or above `CC_LOCAL_FIRST` (224) are the values that only arrive as `'a'`-`'f'` block frames and therefore have no `ParamId`, so they are written to their globals here exactly as `input_handle_*()` writes them; everything else goes to `update_parameters()`.
     - The map, the chart and the Open Stage Control session in `tools/panels/` are all generated from `tools/dco_control/params.py` by `gen_midi_map.py`, which also verifies that each mapped `ParamId` is routed by `paramTable[]` and each `CC_LOCAL_*` has a case in `midi_cc_apply()`.
   - `note_on()` / `note_off()`:
-    - Implement voice allocation based on `voiceMode` and `polyMode`:
-      - Mono, polyphonic, and stacked/unison modes, including voice reuse when already playing a note.
-    - For every assigned voice:
-      - Update `VOICE_NOTES[]`, `VOICES[]`, trigger `note_on_flag[]`, `noteStart[]` / `noteEnd[]`. Note edges stay on the board: EnvDCO/EnvVCA/EnvVCF read those flags on Core1, so nothing is sent over serial.
+    - Voice allocation by `voiceMode` / `polyMode`. Note edges stay on the board (`noteStart[]` / `noteEnd[]` → EnvDCO/EnvVCA/EnvVCF on Core1); nothing is sent over serial for notes.
+    - **Mono (`voiceMode == 0`) — last-note-priority held stack** (Core0 MIDI path only, depth 8 in `midi.ino`):
+      - NoteOn: if pitch already held, remove it then push (re-strike → top); if full, drop oldest. Top → `VOICE_NOTES[0]`, gate `VOICES[0]`, pulse `note_on_flag[0]` and `noteStart[0]`.
+      - NoteOff: remove pitch (ignore if not held). Stack empty → gate off + `noteEnd[0]` (keep `VOICE_NOTES` for release pitch). Otherwise fall back to new top, pulse `note_on_flag[0]` for porta, **do not** set `noteStart` (envelopes continue).
+      - Simultaneous / overlapping keys: last pressed sounds; releasing the top while others remain held glides back via the existing voice_task porta edge (`note_on_flag` → `note_on_flag_flag` → restart from current glide pitch to `VOICE_NOTES`). Porta TIME/SLEW math is unchanged.
+      - `mono_note_stack_clear()` runs from `setVoiceMode()` when entering mono so held notes do not leak across mode switches.
+    - **Para / poly / stack stub**: existing allocators (`get_free_voice*`, reuse-if-playing, mode-2 fill); no mono held stack.
 
 - **`Serial.h` / `Serial.ino`**  
   - Configures UARTs:
@@ -315,6 +319,7 @@ Related docs:
     - Portamento time and mode (time‑based vs slew‑rate) – updates `portamento_time` and `portamento_mode`.
     - ADSR mods (ADSR1→detune, ADSR1→PWM) with precomputed fixed‑point scales (`ADSR1toDETUNE1_scale_q24`).
     - Calibration control flags (`calibrationFlag`, `manualCalibrationFlag`, stages, offsets).
+    - **Character** (`PARAM_CHARACTER` 221): master scale for noise-driven imperfection; diagnostic axes on `PARAM_DEBUG_COMMAND` 0xC8–0xCB. Deep doc: [`CHARACTER.md`](CHARACTER.md).
   - Converts raw UI values into:
     - Exponential or logarithmic curves using `expConverter*()` helpers.
     - Fixed‑point Q24 modulation depths (`LFO1toDCO_q24`, `LFO2toOSC2_q24`, `LFO2toOSC3_q24`, `LFO2toOSC2/3_coarse_q24`).

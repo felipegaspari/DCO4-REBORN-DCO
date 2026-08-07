@@ -70,10 +70,12 @@ The banner includes engine flags (compile-time + live runtime selectors) so rebu
 ```
 =================== DCO BENCH ===================
 clk_sys 225 MHz   probe overhead N cyc   fine probes off
-build: mcu=RP2350 voice=FLOAT pitch=FLOAT amp=FLOAT amp_method=FLOAT_QUAD clkdiv=HP1 note_retrig=EXACT_Y
+build: mcu=RP2350 voice=FLOAT pitch=FLOAT amp=FLOAT cv=FLOAT amp_method=FLOAT_QUAD clkdiv=HP1 note_retrig=EXACT_Y
 ```
 
-Fields: `mcu` (board package), `voice` / `amp` (`USE_FLOAT_VOICE_TASK` / `USE_FLOAT_AMP_COMP`), `pitch` (`PITCH_INTERP_MODE`), `amp_method` (live `amp_comp_method`), `clkdiv` (`HIGH_PRECISION_CLKDIV` → `HP0`/`HP1`; ignored at runtime when `voice=FLOAT`), `note_retrig` (live mode).
+Fields: `mcu` (board package), `voice` / `amp` / `cv` (`USE_FLOAT_VOICE_TASK` / `USE_FLOAT_AMP_COMP` / `USE_FLOAT_CV_OUTS`), `pitch` (`PITCH_INTERP_MODE`), `amp_method` (live `amp_comp_method`), `clkdiv` (`HIGH_PRECISION_CLKDIV` → `HP0`/`HP1`; ignored at runtime when `voice=FLOAT`), `note_retrig` (live mode).
+
+**`update_CV_outs`:** after CV absorption + mod matrix, this probe can dominate Core1 on RP2040 (soft-float) and still matter on RP2350. Compare `update_CV_outs` `%win` and period-only `loop1` mean/max before/after CV/matrix changes; older doc samples (~3 µs / ~3%win) are **stale**. A/B with `#undef USE_FLOAT_CV_OUTS` on RP2350 (`cv=FIXED`).
 
 ```
 -- Core 1  (window 1002.113 ms) --
@@ -88,6 +90,8 @@ loop1 period                48211     20.78     18.00    412.00  1001800.0   99.
     (unattributed)              -         -         -         -    31004.1    3.0
   (unattributed)                -         -         -         -   482593.6   48.1
 ```
+
+*(Example shape only — re-measure on your build.)*
 
 **`%win` is the column that matters.** Probes fire at wildly different rates — `ADSR_update`
 runs on a 100 µs gate, `note-on retrigger` only on note-on, and the per-oscillator stages run
@@ -367,3 +371,81 @@ Live cross-check: profiler path counters (`miss_direct`, `walk_steps max` ≤ 1,
 4. **vs Q20 ref by mod-band** — low / mid / high (same four methods).
 
 Diagnostics buttons: `PITCH_INTERP_COMMANDS` in [`../tools/dco_control/params.py`](../tools/dco_control/params.py).
+
+## 10. Noise engines (`NOISE_ENGINE`)
+
+Engines live in the [`DCO_Noise`](../../DCO_Noise/) Arduino library. The sketch declares `noise0`…`noise1` with ctor args in [`../noise.h`](../noise.h) (`NOISE_ENGINE` in [`../DCO.ino`](../DCO.ino)); `next()` in `loop1`. PIO white via `dcoNoisePioBegin` / `dcoNoisePioRefill`.
+
+| Value | Class | Hot path |
+|------:|-------|----------|
+| 0 | `ColoredNoise` | Voss pink / 1-pole brown / white; `PioNoiseWhite` FIFO seed → xorshift peels |
+| 1 | `FastNoiseGen` | Economy Voss pink / leaky brown / local xorshift white |
+| 2 | `PrimeHybridNoise` | Three prime tables summed (`process`); color at `begin` |
+| 3 | `ProNoise32` | Q16.15 Kellett pink / DC-corrected brown / xorshift white |
+
+**Reproduce**
+
+1. `#define RUNNING_AVERAGE` (stage probes on).
+2. Set `NOISE_ENGINE` to `0`…`3`; leave `ENABLE_NOISE_OUT` **undefined** for a clean A/B (no pin drain on engines 1–3).
+3. Set colors via `noise0`…`noise1` ctor args in `noise.h` (default white / pink; Q15 out).
+4. Dump with debug command **10**.
+
+**Probes** (under `noise_gens` / `loop1_noise`)
+
+| Probe | What it times |
+|-------|----------------|
+| `noise_gens` | Refill helper + `noise0`…`noise1.next()` |
+| `noise refill` | `dcoNoisePioRefill()` — no-op unless engine **0** or `ENABLE_NOISE_OUT` |
+
+Per-color cost: configure which slots are white/pink/brown and compare parent `%win` across builds, or temporarily time a single `next()` by hand. Prefer `%win` / `total` for share of the window.
+
+**Reference results (RP2040)**
+
+`RUNNING_AVERAGE`, historical four-gen reference (white / pink / brown / alt white); live fleet is two gens (`noise0`/`noise1`). `ENABLE_NOISE_OUT` off.
+Means in µs unless suffixed with `c` (cycles). Counts differ across dump sessions — compare **mean** / **`%win`**, not `total`.
+
+| Engine | `noise_gens` mean | `%win` |
+|-------:|------------------:|-------:|
+| 0 | 11.62 µs | 5.2 |
+| 1 | 7.12 µs | 4.4 |
+| 2 | 13.62 µs | 6.9 |
+| 3 | 10.00 µs | 6.0 |
+
+Engine 0:
+
+```
+probe                       count      mean       min       max      total   %win
+noise_gens                  75286     11.62      2.85     34.96    874587.12    5.2
+  noise refill              75286      2.80      0.41     10.27    210529.33    1.2
+```
+
+Engine 1:
+
+```
+probe                       count      mean       min       max      total   %win
+noise_gens                 780032      7.12      3.11     24.61   5555627.00    4.4
+  noise refill             780032        8c        4c       56c     25999.83    0.0
+```
+
+Engine 2:
+
+```
+probe                       count      mean       min       max      total   %win
+noise_gens                  52928     13.62      6.98     34.63    721196.71    6.9
+  noise refill              52928       44c        4c      107c      9356.93    0.0
+```
+
+Engine 3:
+
+```
+probe                       count      mean       min       max      total   %win
+noise_gens                  56302     10.00      5.38     33.42    563379.54    6.0
+  noise refill              56302       11c        4c      154c      2688.02    0.0
+```
+
+**Reading notes**
+
+- **Engine 0:** PIO cost is mostly **`noise refill`** (~2.80 µs here); filter work sits in the parent around the refill child.
+- **Engine 1:** Cheapest parent on this RP2040 set (`noise_gens` ~7.12 µs / 4.4%win); refill is a no-op (~8c).
+- **Engine 2:** Table-sum path (~9 KB heap per gen); **highest** `noise_gens` mean / `%win` here (~13.62 µs / 6.9).
+- **Engine 3:** Kellett pink is heavy per sample, but with the default mixed colors the **parent** mean (~10 µs) sits between engines 0 and 1.

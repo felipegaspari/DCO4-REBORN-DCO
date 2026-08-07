@@ -70,8 +70,8 @@ enum ParamId : uint16_t {
   PARAM_OSC3_DETUNE_VAL          = 34,
   PARAM_LFO2_TO_OSC3              = 35,
 
-  // 36: sync flavour. 0 = hard sync (master sidesets onto the slave's reset pin),
-  // 1 = soft sync (slave polls the master and ignores edges early in its own cycle).
+  // 36: sync flavour. 0 = hard sync (master sidesets onto the slave's reset pin);
+  // 1..3 = soft sync with that many trailing polled ramp chunks (~40%/67%/86% receptive).
   PARAM_SOFT_SYNC                = 36,
 
   // 37: sub-oscillator divide. 0 = off, 2 = one octave down, 4 = two octaves.
@@ -109,7 +109,8 @@ enum ParamId : uint16_t {
   // PARAM_FX_MIX                 = 56,
 
   // Mod matrix: 8 slots × (source, dest, depth). See docs/MOD_MATRIX.md.
-  // Source 0..11 (0xFF/out-of-range = empty); dest 0..8; depth bipolar int16.
+  // Source 0..15 (0xFF/out-of-range = empty); dest 0..9; depth bipolar int16.
+  // Pitch dest (9): ±1023 → ±1 octave (see mod_matrix.h MOD_PITCH_DEPTH_FULL).
   PARAM_MOD_SLOT0_SOURCE         = 60,
   PARAM_MOD_SLOT0_DEST           = 61,
   PARAM_MOD_SLOT0_DEPTH          = 62,
@@ -181,6 +182,9 @@ enum ParamId : uint16_t {
   PARAM_LFO2_TO_OSC2_COARSE      = 219,
   PARAM_LFO2_TO_OSC3_COARSE      = 220,
 
+  // Character amount (0..128). dco_control Character tab; storage only for now.
+  PARAM_CHARACTER                = 221,
+
   // --- Calibration flags (shared) ------------------------------------
   PARAM_CALIBRATION_FLAG         = 150,
   PARAM_MANUAL_CALIBRATION_FLAG  = 151,
@@ -196,11 +200,17 @@ enum ParamId : uint16_t {
   // 156: explicit "store manual calibration offsets" command.
   PARAM_MANUAL_CALIBRATION_STORE = 156,
 
-  // 160: bench diagnostic trigger (DCO-local, no panel UI). Prints to USB serial.
+  // 160: bench / debug trigger (DCO-local; dco_control Diagnostics + Calibration + Character).
   // 1 = PIO topology report, 2 = period probe at a low divider,
   // 3 = period probe at a high divider. See DCO/docs/PIO_OSCILLATORS.md section 12.
   // 10 = dump profiler once, 11 = reset profiler, 12 = toggle ~1 Hz dump
   // (RUNNING_AVERAGE builds only). See DCO/docs/BENCHMARKING.md.
+  // 20–22 amp-comp method, 24–25 amp benches, 26–27 note retrig, 28–29 pitch benches.
+  // 30 = force-seed fake amp-comp + PW tables.
+  // 200–50000 = set pioPulseLength (reset pulse Y cycles); unsigned 16-bit on wire.
+  // Also reloads running SMs via pio_defer_request_reset_pulse_all().
+  // Packed Character jitter setters (unsigned 16-bit, hi|lo, lo = 0..128):
+  //   0xC8xx ampCompJitter, 0xCAxx pitchJitter, 0xCBxx pulsewidthJitter.
   PARAM_DEBUG_COMMAND            = 160
 };
 

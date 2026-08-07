@@ -20,7 +20,7 @@ static const MidiCcEntry midiCcMap[] = {
   {   5, PARAM_OSC2_DETUNE_VAL,               0,   512, MIDI_CC_LINEAR },
   {   8, PARAM_OSC3_DETUNE_VAL,               0,   512, MIDI_CC_LINEAR },
   {  20, PARAM_SYNC_MODE,                     0,   127, MIDI_CC_LINEAR },
-  {  21, PARAM_SOFT_SYNC,                     0,     1, MIDI_CC_LINEAR },
+  {  21, PARAM_SOFT_SYNC,                     0,   127, MIDI_CC_LINEAR },
   {  22, PARAM_SUBOSC_DIVIDE,                 0,   127, MIDI_CC_LINEAR },
   {  23, PARAM_OSC_SYNC_MODE,                 0,   127, MIDI_CC_LINEAR },
   {  69, PARAM_VOICE_MODE,                    0,   127, MIDI_CC_LINEAR },

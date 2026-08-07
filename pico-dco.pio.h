@@ -6,6 +6,7 @@
 
 #if !PICO_NO_HARDWARE
 #include "hardware/pio.h"
+#include "hardware/clocks.h"
 #endif
 
 // --------- //
@@ -219,13 +220,107 @@ static inline pio_sm_config frequency_sync_poll_program_get_default_config(uint 
     sm_config_set_sideset(&c, 2, true, false);
     return c;
 }
+#endif
+
+// ---------------------- //
+// frequency_sync_poll_2  //
+// ---------------------- //
+
+#define frequency_sync_poll_2_wrap_target 0
+#define frequency_sync_poll_2_wrap 13
+
+static const uint16_t frequency_sync_poll_2_program_instructions[] = {
+            //     .wrap_target
+    0x0040, //  0: jmp    x--, 0
+    0xa027, //  1: mov    x, osr
+    0xf000, //  2: set    pins, 0         side 0
+    0x0043, //  3: jmp    x--, 3
+    0xa027, //  4: mov    x, osr
+    0x0045, //  5: jmp    x--, 5
+    0xa027, //  6: mov    x, osr
+    0x00cc, //  7: jmp    pin, 12
+    0x0047, //  8: jmp    x--, 7
+    0xa027, //  9: mov    x, osr
+    0x00cc, // 10: jmp    pin, 12
+    0x004a, // 11: jmp    x--, 10
+    0xa022, // 12: mov    x, y
+    0xf801, // 13: set    pins, 1         side 1
+            //     .wrap
+};
+
+#if !PICO_NO_HARDWARE
+static const struct pio_program frequency_sync_poll_2_program = {
+    .instructions = frequency_sync_poll_2_program_instructions,
+    .length = 14,
+    .origin = -1,
+};
+
+static inline pio_sm_config frequency_sync_poll_2_program_get_default_config(uint offset) {
+    pio_sm_config c = pio_get_default_sm_config();
+    sm_config_set_wrap(&c, offset + frequency_sync_poll_2_wrap_target,
+                       offset + frequency_sync_poll_2_wrap);
+    sm_config_set_sideset(&c, 2, true, false);
+    return c;
+}
+#endif
+
+// ---------------------- //
+// frequency_sync_poll_3  //
+// ---------------------- //
+
+#define frequency_sync_poll_3_wrap_target 0
+#define frequency_sync_poll_3_wrap 14
+
+static const uint16_t frequency_sync_poll_3_program_instructions[] = {
+            //     .wrap_target
+    0x0040, //  0: jmp    x--, 0
+    0xa027, //  1: mov    x, osr
+    0xf000, //  2: set    pins, 0         side 0
+    0x0043, //  3: jmp    x--, 3
+    0xa027, //  4: mov    x, osr
+    0x00cd, //  5: jmp    pin, 13
+    0x0045, //  6: jmp    x--, 5
+    0xa027, //  7: mov    x, osr
+    0x00cd, //  8: jmp    pin, 13
+    0x0048, //  9: jmp    x--, 8
+    0xa027, // 10: mov    x, osr
+    0x00cd, // 11: jmp    pin, 13
+    0x004b, // 12: jmp    x--, 11
+    0xa022, // 13: mov    x, y
+    0xf801, // 14: set    pins, 1         side 1
+            //     .wrap
+};
+
+#if !PICO_NO_HARDWARE
+static const struct pio_program frequency_sync_poll_3_program = {
+    .instructions = frequency_sync_poll_3_program_instructions,
+    .length = 15,
+    .origin = -1,
+};
+
+static inline pio_sm_config frequency_sync_poll_3_program_get_default_config(uint offset) {
+    pio_sm_config c = pio_get_default_sm_config();
+    sm_config_set_wrap(&c, offset + frequency_sync_poll_3_wrap_target,
+                       offset + frequency_sync_poll_3_wrap);
+    sm_config_set_sideset(&c, 2, true, false);
+    return c;
+}
 
 // Slave SM for soft sync. Same pin/sideset wiring as frequency_sync_4_jumps plus
 // jmp_pin aimed at the master's reset GPIO. masterPin is deliberately not
 // pio_gpio_init'd here: the master SM already owns it, and PIO input sampling reads
-// the pad regardless of function select.
-void frequency_sync_poll_init(PIO pio, uint sm, uint offset, uint pin, uint pin2, uint masterPin) {
-    pio_sm_config c = frequency_sync_poll_program_get_default_config(offset);
+// the pad regardless of function select. `chunks` selects wrap/config for the
+// resident poll variant (1, 2, or 3 trailing polled chunks).
+void frequency_sync_poll_init(PIO pio, uint sm, uint offset, uint pin, uint pin2,
+                              uint masterPin, uint chunks) {
+    pio_sm_config c;
+    if (chunks >= 3) {
+        c = frequency_sync_poll_3_program_get_default_config(offset);
+    } else if (chunks == 2) {
+        c = frequency_sync_poll_2_program_get_default_config(offset);
+    } else {
+        c = frequency_sync_poll_program_get_default_config(offset);
+    }
     pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
     sm_config_set_set_pins(&c, pin, 1);
     sm_config_set_sideset_pins(&c, pin2);
@@ -235,6 +330,91 @@ void frequency_sync_poll_init(PIO pio, uint sm, uint offset, uint pin, uint pin2
     pio_sm_init(pio, sm, offset, &c);
 }
 
+#endif
+
+// ------------ //
+// noise_lfsr   //
+// ------------ //
+// Hand-assembled via pioasm (Arduino does not run pioasm at build time).
+// Must load at origin 0 on PIO1 — see pico-dco.pio. 12 instructions.
+// mov pins, isr emits LFSR bit0 when OUT pins are mapped (ENABLE_NOISE_OUT).
+
+#define noise_lfsr_wrap_target 0
+#define noise_lfsr_wrap 11
+
+#define noise_lfsr_n 31
+#define noise_lfsr_k 28
+#define noise_lfsr_l 32
+
+#define noise_lfsr_offset_entry 7u
+
+static const uint16_t noise_lfsr_program_instructions[] = {
+            //     .wrap_target
+    0x0002, //  0: jmp    2
+    0xa029, //  1: mov    x, ~x
+    0x4021, //  2: in     x, 1
+    0xa006, //  3: mov    pins, isr
+    0xa0e6, //  4: mov    osr, isr
+    0x0089, //  5: jmp    y--, 9
+    0x8020, //  6: push   block
+    0xe05f, //  7: set    y, 31                    ; entry
+    0xa0c7, //  8: mov    isr, osr
+    0x6022, //  9: out    x, 2
+    0x6062, // 10: out    null, 2
+    0x60a1, // 11: out    pc, 1
+            //     .wrap
+};
+
+#if !PICO_NO_HARDWARE
+static const struct pio_program noise_lfsr_program = {
+    .instructions = noise_lfsr_program_instructions,
+    .length = 12,
+    .origin = 0,
+};
+
+static inline pio_sm_config noise_lfsr_program_get_default_config(uint offset) {
+    pio_sm_config c = pio_get_default_sm_config();
+    sm_config_set_wrap(&c, offset + noise_lfsr_wrap_target, offset + noise_lfsr_wrap);
+    sm_config_set_in_shift(&c, false, false, 32);   // shift left, no autopush
+    sm_config_set_out_shift(&c, false, false, 32);  // shift left, no autopull
+    return c;
+}
+
+// Seed via TX pull into OSR, then run from entry (set y / mov isr, osr).
+// RX FIFO (JOIN_RX) supplies seed words to noise.h. out_pin >= 0 maps mov pins
+// to that GPIO and slows clkdiv for ~80 kHz listen bitrate; out_pin < 0 = FIFO only.
+static inline void noise_lfsr_init(PIO pio, uint sm, uint offset, uint32_t seed,
+                                   int out_pin) {
+    pio_sm_config c = noise_lfsr_program_get_default_config(offset);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
+
+    // ~9 PIO cycles/bit with mov pins. Target ~80 kHz bitstream when pin is live.
+    if (out_pin >= 0) {
+        sm_config_set_out_pins(&c, (uint)out_pin, 1);
+        const float bit_hz = 80000.0f;
+        const float cycles_per_bit = 9.0f;
+        float div = (float)clock_get_hz(clk_sys) / (bit_hz * cycles_per_bit);
+        if (div < 1.0f) {
+            div = 1.0f;
+        }
+        sm_config_set_clkdiv(&c, div);
+        pio_gpio_init(pio, (uint)out_pin);
+        pio_sm_set_consecutive_pindirs(pio, sm, (uint)out_pin, 1, true);
+    } else {
+        sm_config_set_clkdiv(&c, 1.0f);
+    }
+
+    pio_sm_init(pio, sm, offset + noise_lfsr_offset_entry, &c);
+    if (seed == 0u) {
+        seed = 0xA5A5A5A5u;
+    }
+    // JOIN_RX disables TXF — clear join, put+pull seed, restore config, enable.
+    hw_clear_bits(&pio->sm[sm].shiftctrl, PIO_SM0_SHIFTCTRL_FJOIN_RX_BITS);
+    pio_sm_put(pio, sm, seed);
+    pio_sm_exec(pio, sm, pio_encode_pull(false, false));
+    pio_sm_set_config(pio, sm, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
 #endif
 
 // ------------ //

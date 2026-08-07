@@ -1141,6 +1141,66 @@ void find_PW_limit_v2(PWLimitDir dir) {
 }
 
 //////////////////////////////////////////////////////////////////////////////
+// Raw cal-sense probe (no period gate): sample digital level / edge rate so a
+// TIMEOUT can be split into "pin stuck" vs "edges exist but find_gap rejects".
+// Throttled to ~2 Hz. Called from DCO_calibration_debug on gap timeout.
+static void cal_sense_probe_log() {
+  static uint32_t lastPrintMs = 0;
+  const uint32_t nowMs = millis();
+  if ((nowMs - lastPrintMs) < 500u) {
+    return;
+  }
+  lastPrintMs = nowMs;
+
+  constexpr uint32_t kWindowUs = 40000u;  // 40 ms
+  const uint32_t t0 = micros();
+  bool lastRaw = digitalRead(DCO_calibration_pin);
+  uint32_t edges = 0;
+  uint32_t minDt = 0xFFFFFFFFu;
+  uint32_t maxDt = 0;
+  uint32_t lastEdgeUs = t0;
+  bool haveEdge = false;
+
+  while ((micros() - t0) < kWindowUs) {
+    const bool raw = digitalRead(DCO_calibration_pin);
+    if (raw != lastRaw) {
+      const uint32_t nowUs = micros();
+      const uint32_t dt = nowUs - lastEdgeUs;
+      if (haveEdge) {
+        if (dt < minDt) {
+          minDt = dt;
+        }
+        if (dt > maxDt) {
+          maxDt = dt;
+        }
+      }
+      lastEdgeUs = nowUs;
+      haveEdge = true;
+      edges++;
+      lastRaw = raw;
+    }
+  }
+
+  const bool rawNow = digitalRead(DCO_calibration_pin);
+  double expectHz = 0.0;
+  if (DCO_calibration_current_note >= 12) {
+    expectHz = (double)sNotePitches[DCO_calibration_current_note - 12];
+  }
+
+  Serial.print((String)"[CAL_SENSE] pin=" + DCO_calibration_pin +
+               (String)" raw=" + (int)rawNow +
+               (String)" edges=" + edges);
+  if (edges >= 2 && minDt != 0xFFFFFFFFu) {
+    Serial.print((String)" minDt=" + minDt + (String)" maxDt=" + maxDt);
+  } else {
+    Serial.print(" minDt=- maxDt=-");
+  }
+  Serial.println((String)" pullup=1 invert=" + (int)kGapPolarityInverted +
+                 (String)" note=" + DCO_calibration_current_note +
+                 (String)" expectHz≈" + expectHz);
+}
+
+//////////////////////////////////////////////////////////////////////////////
 // Measure duty-cycle error on DCO_calibration_pin by timing rising/falling
 // edges. Returns 0 when duty is ≈50%, or kGapTimeoutSentinel on timeout.
 float find_gap(byte specialMode) {
@@ -1182,6 +1242,9 @@ float find_gap(byte specialMode) {
   // Local counters for how many rising/falling segments we actually measured.
   uint16_t risingCount  = 0;
   uint16_t fallingCount = 0;
+  // Diagnostics: debounced edges vs period-gate rejects (TIMEOUT localization).
+  uint16_t edgesSeen     = 0;
+  uint16_t edgesRejected = 0;
 
   edgeDetectionLastTime = micros();
 
@@ -1194,16 +1257,25 @@ float find_gap(byte specialMode) {
     microsNow = micros();
     if ((microsNow - edgeDetectionLastTime) > kGapTimeoutUs) {
 
+      const bool rawAtTimeout = digitalRead(DCO_calibration_pin);
+      const uint16_t accepted = samplesCounter;
+
       pulseCounter = 0;
       samplesCounter = 0;
       DCO_calibration_difference = kGapTimeoutSentinel;
       val = 0;
       edgeDetectionLastVal = 0;
 
-      if (autotuneDebug >= 3) {
+      // Manual cal: log at debug >= 1. Auto-cal keeps the quieter >= 3 threshold.
+      if (autotuneDebug >= 3 || (manualCalibrationFlag && autotuneDebug >= 1)) {
         uint16_t pwRaw = g_lastPWMeasurementRaw;
         Serial.println((String)"[GAP_TIMEOUT] note=" + DCO_calibration_current_note +
                        (String)" DCO=" + currentDCO +
+                       (String)" raw=" + (int)rawAtTimeout +
+                       (String)" edges=" + edgesSeen +
+                       (String)" rejected=" + edgesRejected +
+                       (String)" accepted=" + accepted +
+                       (String)" TidealUs≈" + (uint32_t)idealPeriodUs +
                        (String)" PW_raw=" + pwRaw +
                        (String)" ampComp=" + ampCompCalibrationVal);
       }
@@ -1217,9 +1289,10 @@ float find_gap(byte specialMode) {
       if ((microsNow - edgeDetectionLastTime) >= kEdgeDebounceMinUs) {
 
         edgeDetectionLastVal = val;
+        edgesSeen++;
 
         if (pulseCounter == 1 && val == 0) {
-          pulseCounter == 0;
+          pulseCounter = 0;
         }
         if (pulseCounter > 2) {
           uint32_t dt = microsNow - edgeDetectionLastTime;
@@ -1242,6 +1315,8 @@ float find_gap(byte specialMode) {
               risingCount++;
           }
           samplesCounter++;
+          } else {
+            edgesRejected++;
           }
         }
         edgeDetectionLastTime = microsNow;
@@ -1328,40 +1403,55 @@ void DCO_calibration_debug() {
   // of "gap" as the automatic routines.
   GapMeasurement gm = measure_gap(0);  // target is 50% duty
 
+  // Osc under trim is selected by manualCalibrationStage (not currentDCO,
+  // which is only advanced during auto-cal).
+  uint8_t reportDCO = manualCalibrationStage;
+  if (reportDCO >= NUM_OSCILLATORS) {
+    reportDCO = NUM_OSCILLATORS - 1;
+  }
+
   // Compute duty error relative to the center target (0.5) using the
   // *ideal* period for the current note. For manual trimming this is
   // sufficient and keeps the math simple.
-  double dutyErrorPercentTimes100 = 0.0;  // duty error [%] * 100
+  int32_t dutyErrorPercentTimes100 = 0;  // duty error [%] * 100
 
   if (!gm.timedOut) {
     double freqHz = (double)sNotePitches[DCO_calibration_current_note - 12];
     if (freqHz > 0.0) {
       double periodUs = 1000000.0 / freqHz;
-      // gm.value is the low-vs-high time difference (avgLowUs - avgHighUs).
-      // For a perfect 50% duty, low and high are equal, so gm.value == 0.
-      // Duty error fraction from 50% is thus:
-      //   duty_low - 0.5 = (avgLowUs - avgHighUs) / (2 * periodUs)
+      // gm.value is avgHighUs - avgLowUs (same sign as find_gap).
+      // For a perfect 50% duty, high and low are equal, so gm.value == 0.
+      // Duty error fraction from 50% is:
+      //   duty_high - 0.5 = (avgHighUs - avgLowUs) / (2 * periodUs)
       double dutyErrorFrac = (double)gm.value / (2.0 * periodUs);
       double dutyErrorPercent = dutyErrorFrac * 100.0;
       // Scale by 100 for two decimal digits of resolution on the screen.
-      dutyErrorPercentTimes100 = dutyErrorPercent * 100.0;
+      dutyErrorPercentTimes100 = (int32_t)(dutyErrorPercent * 100.0);
     }
   } else {
-    // On timeout, propagate a large sentinel so the UI can tell that the
-    // signal is invalid/out of range instead of near 0%.
-    dutyErrorPercentTimes100 = 0;  // or some large sentinel if preferred
+    // On timeout, propagate a large sentinel so the UI/Serial never look
+    // like a near-perfect 50% trim.
+    dutyErrorPercentTimes100 = kManualGapTimeoutDutyErrTimes100;
   }
 
   if (autotuneDebug >= 1) {
-    Serial.println((String)"[MANUAL_GAP] note=" + DCO_calibration_current_note +
-                   (String)" DCO=" + currentDCO +
-                   (String)" AMP=" + ampCompCalibrationVal +
-                   (String)" gapUs=" + gm.value +
-                   (String)" dutyErr(%)≈" + (dutyErrorPercentTimes100 / 100.0));
+    if (gm.timedOut) {
+      Serial.println((String)"[MANUAL_GAP] note=" + DCO_calibration_current_note +
+                     (String)" DCO=" + reportDCO +
+                     (String)" AMP=" + ampCompCalibrationVal +
+                     (String)" TIMEOUT");
+      // Raw cal-sense window (no period gate) — separates stuck pin from rejected freq.
+      cal_sense_probe_log();
+    } else {
+      Serial.println((String)"[MANUAL_GAP] note=" + DCO_calibration_current_note +
+                     (String)" DCO=" + reportDCO +
+                     (String)" AMP=" + ampCompCalibrationVal +
+                     (String)" gapUs=" + gm.value +
+                     (String)" dutyErr(%)≈" + (dutyErrorPercentTimes100 / 100.0));
+    }
   }
 
   // Send as a 32-bit PARAM_GAP_FROM_DCO value through the standard
   // param protocol: Serial2 → Input, which relays it to the Screen.
-  serialSendParam32(PARAM_GAP_FROM_DCO,
-                    (int32_t)dutyErrorPercentTimes100);
+  serialSendParam32(PARAM_GAP_FROM_DCO, dutyErrorPercentTimes100);
 }

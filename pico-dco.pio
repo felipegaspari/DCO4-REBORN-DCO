@@ -140,17 +140,16 @@ void frequency_sync_4_jumps(PIO pio, uint sm, uint offset, uint pin, uint pin2) 
 %}
 
 
-; Soft-sync slave variant of frequency_sync_4_jumps. The final ramp chunk polls the
+; Soft-sync slave variants of frequency_sync_4_jumps. Trailing ramp chunks poll the
 ; master's reset pin via jmp_pin, so the slave restarts its own count on a master
-; edge instead of only having its integrator discharged. That polled chunk costs two
-; cycles per iteration, so the period model becomes
-;   period = Y + 5*clk_div + 13
-; (PIO_RAMP_WEIGHT_SYNC / PIO_PERIOD_OVERHEAD_SYNC in globals.h).
+; edge instead of only having its integrator discharged. Each polled chunk costs two
+; cycles per iteration (jmp pin + jmp x--), so the period model is
+;   period = Y + (4+N)*clk_div + (12+N)
+; for N trailing polled chunks (see PIO_RAMP_WEIGHT_BY_CHUNKS in globals.h).
 ;
-; Because the polled chunk runs at half speed it occupies 2/5 of the ramp, so master
-; edges arriving in the first ~60% of the slave's ramp are ignored. That receptive
-; window is what makes this soft sync. The sync branch and the ordinary
-; count-expired fall-through both land on do_sync, so no extra tail is needed.
+; Only one poll image is resident on pio0 at a time alongside the free-running
+; program; deeper thresholds swap the loaded variant (see ensure_soft_sync_program).
+; The sync branch and the ordinary count-expired fall-through both land on do_sync.
 .program frequency_sync_poll
 .side_set 1 opt
 .wrap_target
@@ -175,13 +174,75 @@ do_sync:
     set pins, 1     side 1
 .wrap
 
+; N=2: last two chunks poll. Weight 6, overhead 14, receptive ~4/6 of ramp.
+.program frequency_sync_poll_2
+.side_set 1 opt
+.wrap_target
+lp0:
+    jmp x-- lp0
+    mov x, OSR
+    set pins, 0     side 0
+lp1:
+    jmp x-- lp1
+    mov x, OSR
+lp2:
+    jmp x-- lp2
+    mov x, OSR
+lp3:
+    jmp pin, do_sync
+    jmp x-- lp3
+    mov x, OSR
+loop_final:
+    jmp pin, do_sync
+    jmp x-- loop_final
+do_sync:
+    mov x, y
+    set pins, 1     side 1
+.wrap
+
+; N=3: last three chunks poll. Weight 7, overhead 15, receptive ~6/7 of ramp.
+.program frequency_sync_poll_3
+.side_set 1 opt
+.wrap_target
+lp0:
+    jmp x-- lp0
+    mov x, OSR
+    set pins, 0     side 0
+lp1:
+    jmp x-- lp1
+    mov x, OSR
+lp2:
+    jmp pin, do_sync
+    jmp x-- lp2
+    mov x, OSR
+lp3:
+    jmp pin, do_sync
+    jmp x-- lp3
+    mov x, OSR
+loop_final:
+    jmp pin, do_sync
+    jmp x-- loop_final
+do_sync:
+    mov x, y
+    set pins, 1     side 1
+.wrap
+
 % c-sdk {
 // Slave SM for soft sync. Same pin/sideset wiring as frequency_sync_4_jumps plus
 // jmp_pin aimed at the master's reset GPIO. masterPin is deliberately not
 // pio_gpio_init'd here: the master SM already owns it, and PIO input sampling reads
-// the pad regardless of function select.
-void frequency_sync_poll_init(PIO pio, uint sm, uint offset, uint pin, uint pin2, uint masterPin) {
-    pio_sm_config c = frequency_sync_poll_program_get_default_config(offset);
+// the pad regardless of function select. `chunks` selects wrap/config for the
+// resident poll variant (1, 2, or 3 trailing polled chunks).
+void frequency_sync_poll_init(PIO pio, uint sm, uint offset, uint pin, uint pin2,
+                              uint masterPin, uint chunks) {
+    pio_sm_config c;
+    if (chunks >= 3) {
+        c = frequency_sync_poll_3_program_get_default_config(offset);
+    } else if (chunks == 2) {
+        c = frequency_sync_poll_2_program_get_default_config(offset);
+    } else {
+        c = frequency_sync_poll_program_get_default_config(offset);
+    }
     pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
     sm_config_set_set_pins(&c, pin, 1);
     sm_config_set_sideset_pins(&c, pin2);
@@ -191,6 +252,34 @@ void frequency_sync_poll_init(PIO pio, uint sm, uint offset, uint pin, uint pin2
     pio_sm_init(pio, sm, offset, &c);
 }
 %}
+
+; White noise LFSR for CPU coloring + optional pin listen (ENABLE_NOISE_OUT).
+; 32-bit Fibonacci trinomial x^31+x^28+1; pushes one word every 32 steps.
+; mov pins, isr emits bit0 each step when OUT pins are mapped.
+; MUST load at origin 0 on PIO1 (out pc,1 XORs via absolute addresses 0/1).
+; Adapted from PicoTinker forum recipe (Unlicense OR CC0-1.0).
+.program noise_lfsr
+.define public n 31
+.define public k 28
+.define public l 32
+.in 32 left manual
+.out 0 left manual
+.origin 0
+    jmp  retain
+    mov  x, ~x
+retain:
+    in   x, 1
+    mov  pins, isr
+    mov  osr, isr
+    jmp  y--, skip
+    push
+public entry:
+    set  y, 31
+    mov  isr, osr
+skip:
+    out  x, 2
+    out  null, 2
+    out  pc, 1
 
 ; Sub-oscillator: toggles its output every N master reset pulses, giving a 50% duty
 ; square one (div2) or two (div4) octaves below the master. Each master cycle

@@ -11,10 +11,14 @@ uint32_t portamentoStartMillis[NUM_VOICES_TOTAL];
 uint32_t portamentoStartMicros[NUM_VOICES_TOTAL];
 
 bool portamento = true;
-uint32_t portamento_time = 0;
+uint8_t portamento_parameter_value = 0;  // raw UI / param value (0..255)
+uint32_t portamento_time_fixed = 0;      // µs for PORTA_MODE_TIME
+uint32_t portamento_time_slew = 0;       // µs for PORTA_MODE_SLEW
+uint32_t portamento_time = 0;            // active T for current mode
 
-// Portamento mode: 0 = fixed-time glide (current behaviour),
-//                  1 = analog-style slew-rate (time scales with interval).
+// Portamento mode (both glide in semitone space):
+//   0 TIME — fixed duration portamento_time_fixed for any interval
+//   1 SLEW — constant rate (12 semitones / portamento_time_slew); time scales with interval
 enum PortamentoMode : uint8_t {
   PORTA_MODE_TIME = 0,
   PORTA_MODE_SLEW = 1
@@ -25,24 +29,24 @@ uint8_t portamento_mode = PORTA_MODE_SLEW;
 int64_t portamento_start_q24[NUM_OSCILLATORS];
 int64_t portamento_stop_q24[NUM_OSCILLATORS];
 int64_t portamento_cur_freq_q24[NUM_OSCILLATORS];
-// per-microsecond step in Q24
+// Legacy per-µs Hz step (unused by live glide; kept for bench/compat)
 int64_t freqPortaStep_q24[NUM_OSCILLATORS];
 
-// Portamento state in note-space (Q16 semitones) for slew-rate mode
+// Portamento state in note-space (Q16 semitones)
 int32_t porta_note_start_q16[NUM_OSCILLATORS];
 int32_t porta_note_stop_q16[NUM_OSCILLATORS];
 int32_t porta_note_cur_q16[NUM_OSCILLATORS];
-int32_t porta_note_step_q16[NUM_OSCILLATORS];
+int32_t porta_note_step_q16[NUM_OSCILLATORS];  // Q16 semitones per µs
+// False until first real pitch is latched (do not treat table index 0 as "uninit").
+bool porta_note_valid[NUM_OSCILLATORS];
 
-// Float portamento state for the float engine (Hz and semitone domains)
+// Float portamento state for the float engine (Hz cache + semitone glide)
 #ifdef USE_FLOAT_VOICE_TASK
-// Time-based mode: linear in frequency (Hz)
 float porta_freq_start_f[NUM_OSCILLATORS];
 float porta_freq_stop_f [NUM_OSCILLATORS];
-float porta_freq_step_f [NUM_OSCILLATORS];  // Hz per microsecond
+float porta_freq_step_f [NUM_OSCILLATORS];  // legacy Hz/µs (unused by live glide)
 float porta_freq_cur_f  [NUM_OSCILLATORS];
 
-// Slew-rate mode: linear in note-space (semitones)
 float porta_note_start_f[NUM_OSCILLATORS];
 float porta_note_stop_f [NUM_OSCILLATORS];
 float porta_note_cur_f  [NUM_OSCILLATORS];

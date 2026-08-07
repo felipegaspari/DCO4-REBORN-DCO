@@ -42,15 +42,15 @@ From [`globals.h`](../globals.h) today:
 
 | Function | GPIO | Block | PWM slice (`(gpio>>1)&7` for gpio &lt; 32) | Channel |
 |----------|------|-------|---------------------------------------------|---------|
-| OSC1 RESET | 29 | PIO0 SM0/1 | — | — |
-| OSC2 RESET | 27 | PIO0 SM0/1 | — | — |
-| OSC3 RESET | 19 | PIO0 SM2 | — | — |
+| OSC1 RESET | 29 | PIO0 SM0/1 | — | Active-low pad if `ENABLE_PIO_RESET_INVERT` |
+| OSC2 RESET | 27 | PIO0 SM0/1 | — | Active-low pad if `ENABLE_PIO_RESET_INVERT` |
+| OSC3 RESET | 19 | PIO0 SM2 | — | Active-low pad if `ENABLE_PIO_RESET_INVERT` |
 | Sub-osc out | 8 | PIO1 SM0 | — | — |
 | OSC1 RANGE | 28 | PWM | 6 | A |
 | OSC2 RANGE | 22 | PWM | 3 | A |
 | OSC3 RANGE | 17 | PWM | 0 | B |
 | PW (voice 0) | 3 | PWM | 1 | B |
-| Cal sense | 10 | GPIO in | — | — |
+| Cal sense | **6** (was 10; A/B header spare) | GPIO in | — | — |
 | Board fix rails | 23, 24 | GPIO out HIGH | — | — |
 
 **All three oscillators must stay on PIO0.** A GPIO's function select names exactly one PIO
@@ -60,8 +60,8 @@ OSC2 swap SM indices depending on `syncMode` (`assign_sm_mapping()`) so the mast
 outranks its slave; OSC3 is always SM2. `pio_topology_report()` verifies this at runtime.
 
 PIO block budget: **PIO0** oscillators (25 of 32 instructions: `frequency_sync_4_jumps` 12 +
-`frequency_sync_poll` 13), **PIO1** sub-oscillator (12 of 32), **PIO2** reserved for
-`ENABLE_PIO_MIDI`.
+`frequency_sync_poll` 13), **PIO1** noise LFSR @ origin 0 SM1 (12) + sub-oscillator (12) =
+24 of 32, **PIO2** reserved for `ENABLE_PIO_MIDI`.
 
 Full detail on the programs, the period model, sync modes and phase align:
 [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md).
@@ -97,7 +97,9 @@ Full detail on the programs, the period model, sync modes and phase align:
 
 **Do not use for level PWM:** GP2 (aliases GP18), GP6 (aliases RANGE OSC2 GP22).
 
-**Spare / TBD (DCO):** GP2, GP6, GP25 (ADC-capable). Prefer leaving remaining ADC pins free unless needed. Solo-B candidates for AS3320 mode.
+**Spare / TBD (DCO):** GP25 is Pico LED (not on header — do not use for cal sense). GP6 is temporarily cal sense (`DCO_calibration_pin` A/B). Prefer leaving remaining ADC pins free unless needed. Solo-B candidates for AS3320 mode.
+
+**GP2** — PIO1 LFSR white bitstream when `ENABLE_NOISE_OUT` (listen/scope; AC-couple).
 
 ---
 
@@ -112,7 +114,8 @@ Full detail on the programs, the period model, sync modes and phase align:
 | 7 | Resonance 1 PWM |
 | 8 | Sub-osc square out (PIO1) — needs a mixer input on the carrier |
 | 9 | Dist Drive PWM **or** OSC3 level (when `ENABLE_VOICE_AUX`) |
-| 10 | Cal sense |
+| 6 | Cal sense A/B (`DCO_calibration_pin`; was spare — avoid as level PWM / aliases RANGE OSC2) |
+| 10 | (was cal sense; free during GP6 A/B) |
 | 11 | VCA PWM |
 | 12–14 | Dual 74HC595 → DG411 wave mux |
 | 15 | Cutoff 0 PWM |
@@ -122,9 +125,10 @@ Full detail on the programs, the period model, sync modes and phase align:
 | 19,27,29 | RESET ×3 (all PIO0) |
 | 20,21 | HW UART Input |
 | 23,24 | Board fix |
+| 25 | Pico LED (not on header) |
 | 26 | Dist Mix PWM **or** Sub level (when `ENABLE_VOICE_AUX`) |
 | 32,33 | OSC3 / Sub level (solo RP2350B provisional) |
-| 2,6,25 | Spare / TBD (not level PWM — aliases) |
+| 2 | Noise LFSR out (PIO1 SM1) when `ENABLE_NOISE_OUT` |
 
 Approx **26** GPIOs used with dist CVs → stock Pico 2 is tight; **RP2350B recommended** for production (solo level pins GP32/33).
 
@@ -141,10 +145,13 @@ Approx **26** GPIOs used with dist CVs → stock Pico 2 is tight; **RP2350B reco
 ## Feature flags (code)
 
 ```text
-ENABLE_CV_OUTS      // PWM VCF/VCA/reso + OSC1..3/Sub level writers — landed (PWM.ino / cv_out.ino)
-ENABLE_WAVE_MUX     // dual 595 → DG411 per-osc Saw/Pulse/Tri — landed (wave_mux.ino)
-ENABLE_VOICE_AUX    // Dist/mode on RP2040; DCO reuses GP9/26 for OSC3/Sub levels
-ENABLE_PIO_MIDI     // DIN on PIO UART — Phase 5 / next PCB bring-up
+ENABLE_CV_OUTS           // PWM VCF/VCA/reso + OSC1..3/Sub level writers — landed (PWM.ino / cv_out.ino)
+ENABLE_WAVE_MUX          // dual 595 → DG411 per-osc Saw/Pulse/Tri — landed (wave_mux.ino)
+ENABLE_VOICE_AUX         // Dist/mode on RP2040; DCO reuses GP9/26 for OSC3/Sub levels
+ENABLE_PIO_RESET_INVERT  // RESET pad active-low (DG411 discharge); OUTOVER+INOVER — landed (state_machines.ino)
+ENABLE_NOISE_OUT         // GP2 = PIO1 LFSR white bitstream (~80 kHz) for listen/scope
+ENABLE_PIO_MIDI          // DIN on PIO UART — Phase 5 / next PCB bring-up
 ```
+PCM5102 I2S noise listen lives on **VOICE-AUX** (see [`../../VOICE-AUX/docs/I2S_NOISE.md`](../../VOICE-AUX/docs/I2S_NOISE.md)).
 
 Uncomment Phase 3 HW flags in `DCO.ino` as needed. The Input link on Serial2 is unconditional: the `ENABLE_INPUT_UART`, `ENABLE_SCREEN_UART` and `ENABLE_LEGACY_MAINBOARD_LINK` flags were removed along with the Mainboard and SerialPIO paths.

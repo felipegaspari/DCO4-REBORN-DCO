@@ -29,7 +29,8 @@ try:
 except ImportError:
     sys.exit("pyserial is required:  pacman -S python-pyserial   (or pip install pyserial)")
 
-# Coalesce slider drags into one write per interval, so dragging cannot flood the link.
+# Coalesce slider drags into one write per interval (last-write-wins), so dragging
+# cannot flood the link — important once PIO pulse reloads running SMs.
 SEND_INTERVAL_MS = 20
 
 PARAM_BY_PID = {p.pid: p for p in params.PARAMS}
@@ -161,10 +162,14 @@ class App:
         self.pending: dict[str, bytes] = {}  # dedup key -> most recent frame
         self.param_vars: dict[int, tk.Variable] = {}
         self.block_vars: dict[str, dict[str, tk.Variable]] = {}
-        # Scale readout Labels: ("p", pid) or ("b", block_key, field_key) -> Label.
+        # Scale readout Labels: ("p", pid), ("b", block_key, field_key),
+        # ("pio_pulse",), or ("char_jitter", hi).
         # ttk.Scale often skips command on programmatic var.set(); we sync these after apply.
         self._readouts: dict[tuple, ttk.Label] = {}
         self.blocks_by_key = {b.key: b for b in params.BLOCKS}
+        self.pio_pulse_var: tk.DoubleVar | None = None
+        # Character-tab diagnostic jitters (PARAM_DEBUG_COMMAND); not in presets / Send all.
+        self.character_jitter_vars: dict[int, tk.DoubleVar] = {}
         self.mode = mode if mode in theme.MODES else "dark"
         self.dot_on = False
         self.bank = presets.empty_bank()
@@ -302,6 +307,10 @@ class App:
         for key, rd in self._readouts.items():
             if key[0] == "p":
                 var = self.param_vars.get(key[1])
+            elif key[0] == "pio_pulse":
+                var = self.pio_pulse_var
+            elif key[0] == "char_jitter":
+                var = self.character_jitter_vars.get(key[1])
             else:
                 var = self.block_vars.get(key[1], {}).get(key[2])
             if var is None:
@@ -447,8 +456,8 @@ class App:
         self.status_var.set(f"connected to {device}")
         self._set_status_dot(True)
         self.log(f"[link] connected to {device} -- pushing UI state\n")
-        self.send_all()
-        self.log(f"[link] pushed UI state ({len(self.pending)} frames queued)\n")
+        n = self.send_all()
+        self.log(f"[link] pushed UI state ({n} frames)\n")
 
     # --- tabs ------------------------------------------------------------
 
@@ -475,6 +484,32 @@ class App:
                 self._build_osc_tab(inner)
             elif group == params.GROUP_ENV:
                 self._build_env_tab(inner)
+            elif group == params.GROUP_CHARACTER:
+                row = 0
+                for param in [p for p in params.PARAMS if p.group == group]:
+                    row = self._add_param(inner, param, row)
+                row = self._add_character_jitter_sliders(inner, row)
+                inner.columnconfigure(1, weight=1)
+            elif group == params.GROUP_CAL:
+                row = 0
+                for block in [b for b in params.BLOCKS if b.group == group]:
+                    row = self._add_block(inner, block, row)
+                for param in [p for p in params.PARAMS if p.group == group]:
+                    row = self._add_param(inner, param, row)
+                row = self._add_pio_pulse_slider(inner, row)
+                panel = self._add_diag_panel(
+                    inner, row=row, column=0, title="Dev tables",
+                    commands=params.CAL_DEBUG_COMMANDS,
+                    note="PARAM_DEBUG_COMMAND 30: force-write fake amp-comp + PW "
+                         "to LittleFS (development placeholder).",
+                )
+                panel.grid_configure(columnspan=3, sticky="ew")
+                # Single-button panel: place button + note without diag reflow.
+                for i, btn in enumerate(panel._diag_buttons):  # type: ignore[attr-defined]
+                    btn.grid(row=i, column=0, sticky="w", pady=1)
+                panel._diag_note_label.grid(  # type: ignore[attr-defined]
+                    row=len(panel._diag_buttons), column=0, sticky="w", pady=(4, 0))  # type: ignore[attr-defined]
+                inner.columnconfigure(1, weight=1)
             else:
                 row = 0
                 for block in [b for b in params.BLOCKS if b.group == group]:
@@ -528,15 +563,29 @@ class App:
         except (tk.TclError, IndexError):
             self._wheel_canvas = self._tab_canvases[0]
 
-    def _widget_is_descendant(self, widget: tk.Misc | None, ancestor: tk.Misc) -> bool:
-        w = widget
+    def _as_widget(self, widget) -> tk.Misc | None:
+        # bind_all often delivers event.widget as a Tcl path string, not a Misc.
+        if widget is None:
+            return None
+        if isinstance(widget, str):
+            try:
+                return self.root.nametowidget(widget)
+            except (KeyError, tk.TclError):
+                return None
+        return widget
+
+    def _widget_is_descendant(self, widget, ancestor) -> bool:
+        w = self._as_widget(widget)
+        anc = self._as_widget(ancestor)
+        if w is None or anc is None:
+            return False
         while w is not None:
-            if w == ancestor:
+            if w == anc:
                 return True
             w = w.master
         return False
 
-    def _wheel_over_log(self, widget: tk.Misc) -> bool:
+    def _wheel_over_log(self, widget) -> bool:
         log = getattr(self, "log_text", None)
         return log is not None and self._widget_is_descendant(widget, log)
 
@@ -827,6 +876,70 @@ class App:
             tip += f"\n{p.note}"
         self._tooltip(btn, tip)
 
+    def _add_pio_pulse_slider(self, parent: ttk.Frame, row: int) -> int:
+        """Calibration-only: PARAM_DEBUG_COMMAND 160 values 200..50000 set pioPulseLength."""
+        row_pad = 8
+        lo, hi, default = params.PIO_PULSE_LO, params.PIO_PULSE_HI, params.PIO_PULSE_DEFAULT
+        label = ttk.Label(parent, text=f"PIO pulse length (Y)  [{params.DEBUG_PARAM_ID}]")
+        label.grid(row=row, column=0, sticky="w", pady=row_pad, padx=(0, 10))
+        self._tooltip(
+            label,
+            "Reset pulse width in system clock cycles. Sent as unsigned 16-bit on "
+            "PARAM_DEBUG_COMMAND 160 (values 200–50000). Reloads running SMs via defer "
+            "reset (audible while a note is held); large changes may need amp-comp redo.",
+        )
+        var = tk.DoubleVar(value=default)
+        self.pio_pulse_var = var
+        readout = ttk.Label(parent, width=6, text=str(default), anchor="e",
+                            style="Readout.TLabel")
+        self._readouts[("pio_pulse",)] = readout
+
+        def on_slide(_v, var=var, rd=readout):
+            rd.config(text=str(ivar(var)))
+            if self._preset_loading:
+                return
+            self.queue_debug_u16(ivar(var))
+
+        _make_scale(parent, lo=lo, hi=hi, var=var, command=on_slide).grid(
+            row=row, column=1, sticky="ew", pady=row_pad)
+        readout.grid(row=row, column=2, sticky="e", padx=(8, 0))
+        return row + 1
+
+    def _add_character_jitter_sliders(self, parent: ttk.Frame, row: int) -> int:
+        """Character tab: diagnostic jitter amounts via packed PARAM_DEBUG_COMMAND 160."""
+        row_pad = 8
+        lo = params.CHARACTER_JITTER_LO
+        hi = params.CHARACTER_JITTER_HI
+        default = params.CHARACTER_JITTER_DEFAULT
+        for label_text, type_hi in params.CHARACTER_JITTERS:
+            label = ttk.Label(
+                parent, text=f"{label_text}  [{params.DEBUG_PARAM_ID}:0x{type_hi:02X}xx]")
+            label.grid(row=row, column=0, sticky="w", pady=row_pad, padx=(0, 10))
+            self._tooltip(
+                label,
+                f"Diagnostic only (not a ParamId). Sent as unsigned 16-bit on "
+                f"PARAM_DEBUG_COMMAND 160: (0x{type_hi:02X} << 8) | amount, amount 0..128. "
+                f"Stored in firmware; not applied to DSP yet.",
+            )
+            var = tk.DoubleVar(value=default)
+            self.character_jitter_vars[type_hi] = var
+            readout = ttk.Label(parent, width=6, text=str(default), anchor="e",
+                                style="Readout.TLabel")
+            self._readouts[("char_jitter", type_hi)] = readout
+
+            def on_slide(_v, var=var, rd=readout, type_hi=type_hi):
+                amount = ivar(var)
+                rd.config(text=str(amount))
+                if self._preset_loading:
+                    return
+                self.queue_debug_u16((type_hi << 8) | amount)
+
+            _make_scale(parent, lo=lo, hi=hi, var=var, command=on_slide).grid(
+                row=row, column=1, sticky="ew", pady=row_pad)
+            readout.grid(row=row, column=2, sticky="e", padx=(8, 0))
+            row += 1
+        return row
+
     def _add_param(self, parent: ttk.Frame, p: params.Param, row: int) -> int:
         row_pad = 8
         label = ttk.Label(parent, text=f"{p.label}  [{p.pid}]")
@@ -1095,14 +1208,23 @@ class App:
 
     # --- sending ---------------------------------------------------------
 
+    def _enqueue(self, key: str, frame: bytes) -> None:
+        """Stage a frame; last write for the same key wins until the next flush."""
+        self.pending[key] = frame
+
     def queue_param(self, pid: int, value: int) -> None:
-        """Stage a parameter frame, replacing any earlier unsent value for the same id."""
-        self.pending[f"p{pid}"] = protocol.param16(pid, int(value))
+        """Stage a 16-bit parameter frame (coalesced by the 20 ms flush)."""
+        self._enqueue(f"p{pid}", protocol.param16(pid, int(value)))
+
+    def queue_debug_u16(self, value: int) -> None:
+        """Stage unsigned 16-bit PARAM_DEBUG_COMMAND (e.g. pioPulseLength)."""
+        self._enqueue(
+            "p_debug_u16", protocol.param16u(params.DEBUG_PARAM_ID, int(value)))
 
     def queue_block(self, key: str) -> None:
         block = self.blocks_by_key[key]
         values = {k: ivar(v) for k, v in self.block_vars[key].items()}
-        self.pending[f"b{key}"] = block.builder(values)
+        self._enqueue(f"b{key}", block.builder(values))
 
     def send_now(self, frame: bytes) -> None:
         if not self.link.is_open:
@@ -1110,28 +1232,43 @@ class App:
             return
         self.link.send(frame)
 
-    def _flush(self) -> None:
-        if self.pending and self.link.is_open:
-            self.link.send(b"".join(self.pending.values()))
+    def _flush_pending(self) -> int:
+        """Send staged frames if connected. Clears only after a successful send."""
+        if not self.pending or not self.link.is_open:
+            return 0
+        frames = list(self.pending.values())
+        self.link.send(b"".join(frames))
+        n = len(frames)
         self.pending.clear()
+        return n
+
+    def _flush(self) -> None:
+        """Periodic coalesce tick: deliver pending when linked; keep staging offline."""
+        self._flush_pending()
         self.root.after(SEND_INTERVAL_MS, self._flush)
 
-    def send_all(self) -> None:
-        """Push every control once.
+    def send_all(self) -> int:
+        """Push the sound patch once. Returns the number of frames sent.
 
-        Needed after connecting: the board boots with its own defaults and has no idea
-        what this window is showing.
+        Calibration, Diagnostics, and bench/debug controls are omitted — those send
+        only when the user operates them. Needed after connecting: the board boots
+        with its own defaults and has no idea what this window is showing.
         """
         if not self.link.is_open:
             self.log("[link] not connected\n")
-            return
-        for p in params.PARAMS:
-            if p.kind == "pulse":
-                continue  # command-style; firing these would kick off autotune
+            return 0
+        # UI is authoritative; drop any stale offline queue before the full push.
+        self.pending.clear()
+        n = 0
+        for p in presets.patch_params():
             self.queue_param(p.pid, self._param_value(p))
-        for block in params.BLOCKS:
+            n += 1
+        for block in presets.patch_blocks():
             self.queue_block(block.key)
-        self.log(f"[send] all {len(self.pending)} frames\n")
+            n += 1
+        self._flush_pending()
+        self.log(f"[send] patch {n} frames\n")
+        return n
 
     def _param_value(self, p: params.Param) -> int:
         var = self.param_vars.get(p.pid)
@@ -1155,6 +1292,10 @@ class App:
             for block in params.BLOCKS:
                 for f in block.fields:
                     self.block_vars[block.key][f.key].set(f.default)
+            if self.pio_pulse_var is not None:
+                self.pio_pulse_var.set(params.PIO_PULSE_DEFAULT)
+            for var in self.character_jitter_vars.values():
+                var.set(params.CHARACTER_JITTER_DEFAULT)
         finally:
             self._preset_loading = False
         self._sync_readouts()

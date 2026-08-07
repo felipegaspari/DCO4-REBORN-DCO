@@ -66,6 +66,7 @@ Everything from the **filter through the end of the chain** that is **not** cuto
 | Filter mode | AS3320 multimode GPIOs → DG411/4066 ([`FILTER_ROUTING.md`](FILTER_ROUTING.md)) |
 | Distortion | Drive / Mix PWM (+ related digitals) ([`DISTORTION.md`](DISTORTION.md)) |
 | Effects | FV-1 program / digitals (later) |
+| I2S listen | PCM5102 noise listen (local gens @ 48 kHz) — [`VOICE-AUX/docs/I2S_NOISE.md`](../../VOICE-AUX/docs/I2S_NOISE.md); **not** on DCO |
 | Other | Post-filter switches, mutes, slow controls in that segment |
 
 ### Discard matrix (dual-MCU)

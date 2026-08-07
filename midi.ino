@@ -1,3 +1,42 @@
+// Mono last-note-priority held stack (Core0 MIDI path only).
+// Top = sounding pitch. Voice_task porta still restarts only on note_on_flag →
+// note_on_flag_flag from VOICE_NOTES (no pitch queue on Core1).
+static constexpr uint8_t MONO_NOTE_STACK_DEPTH = 8;
+static uint8_t mono_note_stack[MONO_NOTE_STACK_DEPTH];
+static uint8_t mono_note_stack_count = 0;
+
+// Empty held stack when entering mono so notes do not leak across voice modes.
+void mono_note_stack_clear() {
+  mono_note_stack_count = 0;
+}
+
+// Remove first match; no-op if note is not held.
+static void mono_note_stack_remove(uint8_t note) {
+  for (uint8_t i = 0; i < mono_note_stack_count; i++) {
+    if (mono_note_stack[i] != note) continue;
+    for (uint8_t j = i; j + 1u < mono_note_stack_count; j++) {
+      mono_note_stack[j] = mono_note_stack[j + 1u];
+    }
+    mono_note_stack_count--;
+    return;
+  }
+}
+
+// Re-strike moves to top; if full, drop oldest so the newest note still wins.
+static void mono_note_stack_push(uint8_t note) {
+  mono_note_stack_remove(note);
+  if (mono_note_stack_count >= MONO_NOTE_STACK_DEPTH) {
+    for (uint8_t i = 0; i + 1u < MONO_NOTE_STACK_DEPTH; i++) {
+      mono_note_stack[i] = mono_note_stack[i + 1u];
+    }
+    mono_note_stack_count = MONO_NOTE_STACK_DEPTH - 1u;
+  }
+  mono_note_stack[mono_note_stack_count++] = note;
+}
+
+static inline uint8_t mono_note_stack_top() {
+  return mono_note_stack[mono_note_stack_count - 1u];
+}
 
 // Register note/CC/program/pitch-bend handlers on USB + DIN MIDI. USB begin is in init_usb().
 void init_midi() {
@@ -115,11 +154,14 @@ void handleAfterTouchChannel(byte channel, byte pressure) {
 }
 
 // Allocate voice(s) from MIDI note-on per voiceMode/polyMode; set ADSR flags (EnvDCO/VCA/VCF are local).
+// Mono: last-note stack push, then VOICE_NOTES/gate/note_on_flag + noteStart (porta + ADSR).
 void note_on(uint8_t note, uint8_t velocity) {
   mod_matrix_on_note_on();
 
   switch (voiceMode) {
     case 0:
+      // Last-note priority: stack top becomes the sounding pitch.
+      mono_note_stack_push(note);
       VOICE_NOTES[0] = note;
       midi_velocity[0] = velocity;
       VOICES[0] = millis();
@@ -200,13 +242,33 @@ void note_on(uint8_t note, uint8_t velocity) {
 }
 
 // Release matching voice(s) on MIDI note-off; set noteEnd flags for the local envelopes.
+// Mono: stack remove; empty → gate off; else fall back to top + note_on_flag (porta, no ADSR retrigger).
 void note_off(uint8_t note) {
-  // gate off
-  // Scan full capacity so a release is not missed if NUM_VOICES shrank mid-note.
+  if (voiceMode == 0) {
+    const uint8_t prev_count = mono_note_stack_count;
+    mono_note_stack_remove(note);
+    if (mono_note_stack_count == prev_count) {
+      return;  // note was not held
+    }
+    if (mono_note_stack_count == 0) {
+      // Keep VOICE_NOTES so voice_task holds last pitch through release.
+      VOICES[0] = 0;
+      noteEnd[0] = 1;
+      noteStart[0] = 0;
+      return;
+    }
+    // Still holding other keys: sound new top; porta via note_on_flag only.
+    VOICE_NOTES[0] = mono_note_stack_top();
+    VOICES[0] = millis();
+    note_on_flag[0] = 1;
+    noteEnd[0] = 0;
+    return;
+  }
+
+  // Para/poly: scan full capacity so a release is not missed if NUM_VOICES shrank mid-note.
   for (int i = 0; i < NUM_VOICES_TOTAL; i++)
   {
     if (VOICE_NOTES[i] == note) {
-      // gpio_put(GATE_PINS[i], 0);
       // Keep VOICE_NOTES so voice_task holds last pitch through release
       // (portaTime==0 snaps portamento_cur_freq from VOICE_NOTES each frame).
       // Free-slot / steal uses VOICES[] only.

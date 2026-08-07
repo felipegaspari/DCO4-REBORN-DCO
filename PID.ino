@@ -378,7 +378,7 @@ void calibrate_DCO(DCOCalibrationContext& ctx, double dutyErrorFraction) {
                          (String)" duty=NA target=50% tol≈" + toleranceDutyPercent + "%");
         } else {
           // avgValue is the same DCO_calibration_difference used elsewhere:
-          // positive => low segment longer (duty < 50%), negative => high longer.
+          // positive => high segment longer (duty > 50%), negative => low longer.
           double dutyErrorFrac = (double)avgValue / (2.0 * periodUs);
           double dutyPercent   = (0.5 + dutyErrorFrac) * 100.0;
         Serial.println((String)"[DCO_AMP_SCAN] note=" + ctx.currentNote +

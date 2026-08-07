@@ -220,3 +220,147 @@ void update_FS_ManualCalibrationOffset(byte oscIndex, int8_t value) {
   fileManualOffsetFS.write(&b, FSManualOffsetDataSize);
   fileManualOffsetFS.close();
 }
+
+// Archived amp-comp PWM curve (old wrap 10000), used as shape reference for fakes.
+// See _removed/amp_comp.h — excludes the leading (0,0) and trailing sentinel pair.
+static const uint16_t kFakeAmpPwmRef[] = {
+  40, 50, 62, 79, 101, 130, 170, 222, 292, 386,
+  511, 675, 924, 1252, 1688, 2231, 3034, 4132, 5632, 7676, 10000
+};
+static constexpr int kFakeAmpPwmRefCount =
+  (int)(sizeof(kFakeAmpPwmRef) / sizeof(kFakeAmpPwmRef[0]));
+static constexpr uint16_t kFakeAmpPwmRefWrap = 10000;
+static constexpr uint32_t kFakeUnreachableFreqX100 = 20000000u;
+
+// Truncate/create a LittleFS file and write a full bank in one shot.
+static void write_fs_bank(const char* name, const uint8_t* data, size_t size) {
+  File f = LittleFS.open(name, "w");
+  if (!f) {
+    return;
+  }
+  f.write(data, size);
+  f.close();
+}
+
+// Pack one uint16 little-endian into a PW bank buffer at oscN * 2.
+static void pack_pw_u16(uint8_t* bank, uint8_t oscN, uint16_t value) {
+  bank[oscN * FSPWDataSize + 0] = (uint8_t)(value & 0xFF);
+  bank[oscN * FSPWDataSize + 1] = (uint8_t)((value >> 8) & 0xFF);
+}
+
+// Build one oscillator's 22 [freq_x100, RANGE PWM] pairs matching real cal layout.
+void generate_fake_calibration_data(uint8_t osc, uint32_t* out) {
+  if (out == nullptr) {
+    return;
+  }
+  if (osc >= NUM_OSCILLATORS) {
+    osc = NUM_OSCILLATORS - 1;
+  }
+
+  // Small per-osc spread so tables are not identical.
+  static const float kOscScale[NUM_OSCILLATORS] = { 1.00f, 1.02f, 0.98f };
+  const float oscScale = kOscScale[osc];
+  const uint32_t pwmSat = (uint32_t)(0.98f * (float)DIV_COUNTER);
+
+  // Pair 0: lowest-freq anchor (same header as restart_DCO_calibration).
+  out[0] = 0;
+  out[1] = (uint32_t)ampCompLowestFreqVal;
+
+  // Pair 1: note (start - interval) with manual seed PWM.
+  const uint8_t headerNote =
+    (uint8_t)(DCO_calibration_start_note - calibration_note_interval);
+  out[2] = (uint32_t)(sNotePitches[headerNote - 12] * 100.0f);
+  out[3] = (uint32_t)(initManualAmpCompCalibrationVal[osc] +
+                      manualCalibrationOffset[osc]);
+
+  bool plateau = false;
+  for (int pair = 2; pair < ampCompTableSize; ++pair) {
+    const int i = pair * 2;
+
+    if (plateau) {
+      out[i]     = kFakeUnreachableFreqX100;
+      out[i + 1] = DIV_COUNTER;
+      continue;
+    }
+
+    const uint8_t note =
+      (uint8_t)(DCO_calibration_start_note +
+                calibration_note_interval * (pair - 2));
+    const int pitchIdx = (int)note - 12;
+    if (pitchIdx < 0 ||
+        pitchIdx >= (int)(sizeof(sNotePitches) / sizeof(sNotePitches[0]))) {
+      out[i]     = kFakeUnreachableFreqX100;
+      out[i + 1] = DIV_COUNTER;
+      plateau = true;
+      continue;
+    }
+
+    // Map archived curve onto calibrated slots (pair 2 → ref[1], …).
+    int refIdx = pair - 1;
+    if (refIdx < 0) {
+      refIdx = 0;
+    }
+    if (refIdx >= kFakeAmpPwmRefCount) {
+      refIdx = kFakeAmpPwmRefCount - 1;
+    }
+
+    float pwmF = ((float)kFakeAmpPwmRef[refIdx] / (float)kFakeAmpPwmRefWrap) *
+                 (float)DIV_COUNTER * oscScale;
+    if (pwmF < 1.0f) {
+      pwmF = 1.0f;
+    }
+    if (pwmF > (float)DIV_COUNTER) {
+      pwmF = (float)DIV_COUNTER;
+    }
+    uint32_t pwm = (uint32_t)(pwmF + 0.5f);
+
+    if (pwm >= pwmSat) {
+      out[i]     = (uint32_t)(sNotePitches[pitchIdx] * 100.0f);
+      out[i + 1] = DIV_COUNTER;
+      plateau = true;
+      continue;
+    }
+
+    out[i]     = (uint32_t)(sNotePitches[pitchIdx] * 100.0f);
+    out[i + 1] = pwm;
+  }
+}
+
+// Seed LittleFS with fake amp-comp tables + PW defaults, then reload.
+// force=false: only if voiceTables is missing. force=true: overwrite + precompute (cmd 30).
+// Silent: no Serial (Core1 / TinyUSB race). Call before init_FS() at boot so stubs
+// do not mask a missing file.
+void seed_fake_calibration_tables(bool force) {
+  LittleFS.begin();
+  if (!force && LittleFS.exists("voiceTables")) {
+    return;
+  }
+
+  for (uint8_t osc = 0; osc < NUM_OSCILLATORS; ++osc) {
+    generate_fake_calibration_data(osc, calibrationData);
+
+    // Pack LE uint32 pairs into the full voiceTables bank (same as update_FS_voice).
+    const uint16_t startByteN = osc * FSVoiceDataSize;
+    for (int i = 0; i < chanLevelVoiceDataSize; ++i) {
+      const byte* b = (const byte*)&calibrationData[i];
+      for (int j = 0; j < 4; ++j) {
+        voiceTablesBankBuffer[startByteN + i * 4 + j] = b[j];
+      }
+    }
+
+    // Sane PW defaults (empty FS would otherwise load zeros over RAM defaults).
+    pack_pw_u16(PWCenterBankBuffer, osc, 570);
+    pack_pw_u16(PWLowLimitBankBuffer, osc, 0);
+    pack_pw_u16(PWHighLimitBankBuffer, osc, DIV_COUNTER_PW);
+  }
+
+  write_fs_bank("voiceTables", voiceTablesBankBuffer, FSBankSize);
+  write_fs_bank("PWCenter", PWCenterBankBuffer, FSPWBankSize);
+  write_fs_bank("PWLowLimit", PWLowLimitBankBuffer, FSPWBankSize);
+  write_fs_bank("PWHighLimit", PWHighLimitBankBuffer, FSPWBankSize);
+
+  init_FS();
+  if (force) {
+    precompute_amp_comp_for_engine();
+  }
+}

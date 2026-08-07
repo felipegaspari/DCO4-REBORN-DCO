@@ -40,11 +40,12 @@ Vendored Arduino libraries used by the build (passed via `--libraries ./_build_l
 | Library | Path | Notes |
 |---------|------|--------|
 | `ADSR_Bezier` | `_build_libs/ADSR_Bezier` → `../../ADSR_Bezier` | Symlink to monorepo root; track **`main`**. Toggle math backend in [`adsr.h`](adsr.h) via `ADSR_BEZIER_USE_FLOAT` (default `0` = fixed-point). |
+| `DCO_Noise` | `_build_libs/DCO_Noise` → `../../DCO_Noise` | Symlink to monorepo root; noise engines (`begin`/`next`). Fleet size in [`noise.h`](noise.h). |
 | `mo-lfo` | `_build_libs/mo-lfo` | Vendored copy |
 | `MIDI_Library` | `_build_libs/MIDI_Library` | Vendored copy |
 | `PID_v1` | `_build_libs/PID_v1` | Vendored copy |
 
-**Monorepo layout:** clone `DCO3-MONOSYNTH` with the sibling [`ADSR_Bezier`](../ADSR_Bezier/) repo at the repo root so the symlink resolves.
+**Monorepo layout:** clone `DCO3-MONOSYNTH` with sibling [`ADSR_Bezier`](../ADSR_Bezier/) and [`DCO_Noise`](../DCO_Noise/) at the repo root so the symlinks resolve.
 
 **Standalone DCO clone:** replace the symlink with a submodule:
 
@@ -63,6 +64,8 @@ See `docs/` — especially:
 
 - [`docs/PINOUT.md`](docs/PINOUT.md) — provisional hub + CV pin / UART map (Phase 0)
 - [`docs/MOD_MATRIX.md`](docs/MOD_MATRIX.md) — sparse mod matrix (levels / dual reso / Dist Drive)
+- [`docs/CHARACTER.md`](docs/CHARACTER.md) — Character / noise imperfection knobs, inject sites, and removal checklist
+- [`../VOICE-AUX/docs/I2S_NOISE.md`](../VOICE-AUX/docs/I2S_NOISE.md) — PCM5102 I2S noise listen on voice-aux (not on DCO)
 - [`docs/WAVE_MUX.md`](docs/WAVE_MUX.md) — per-osc Saw/Pulse/Tri via dual 595 + DG411
 - [`docs/DUAL_MCU.md`](docs/DUAL_MCU.md) — RP2350A + RP2040 aux; `ENABLE_VOICE_AUX`; ParamId ownership
 - [`../VOICE-AUX/`](../VOICE-AUX/) — RP2040 helper firmware (Dist / filter mode)

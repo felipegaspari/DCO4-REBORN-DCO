@@ -109,12 +109,29 @@ This is the **core measurement primitive** used in multiple calibration routines
 ### Related helpers
 
 - **`DCO_calibration_debug()`**:
-  - Variant of `find_gap()` used for debugging. Repeatedly prints `DCO_calibration_difference` and note.
+  - Manual-cal path: wraps `measure_gap(0)`, prints `[MANUAL_GAP]` (`gapUs` / `dutyErr` or `TIMEOUT`), TXes `PARAM_GAP_FROM_DCO` (154). On timeout also runs `cal_sense_probe_log()` → `[CAL_SENSE]`.
+- **`cal_sense_probe_log()`**:
+  - 40 ms raw `digitalRead(DCO_calibration_pin)` window (no period gate). Logs `raw`, `edges`, `minDt`/`maxDt`, pull-up/invert flags, note and `expectHz`. Throttled ~2 Hz.
 - **`VCO_measure_frequency()`**:
   - Uses total period (`risingEdgeTimeSum + fallingEdgeTimeSum`) to compute **frequency**.
   - Sets `DCO_calibration_difference = targetFreq − measuredFreq` as a frequency error instead of duty error.
 - **`DCO_calibration_find_highest_freq()`, `PID_find_highest_freq()`, `find_highest_freq()`**:
   - Use similar timing logic plus PID or fixed search to find the **highest achievable frequency** for the current DCO and map it to a note.
+
+### Cal-sense bench checks (manual cal)
+
+Pin: `DCO_calibration_pin` = **GP6** (temporary A/B on Pico header; was **GP10**; GP25 aborted — Pico LED / not on header). Feed the signal into the pin shown in `[CAL_SENSE] pin=`. Setup uses `pinMode` on that GPIO (`INPUT` / `INPUT_PULLUP` as configured in `DCO.ino`). Manual cal note = `manual_DCO_calibration_start_note` (24) → **C0 ≈ 16.35 Hz**. RP2040/RP2350 at 3.3 V IO: **VIH ≥ 2.0 V**, **VIL ≤ 0.8 V** (2.48 V is a valid HIGH; detection still needs edges that go below VIL).
+
+Enter manual cal (param 151). On timeout USB shows `[MANUAL_GAP] … TIMEOUT`, `[GAP_TIMEOUT] … raw= edges= rejected= accepted= …`, and throttled `[CAL_SENSE] pin=6 …`.
+
+| Test | Expected Serial |
+|------|-----------------|
+| Float cal pin (pull-up only) | `[CAL_SENSE] pin=6 raw=1 edges=0 …`; `[GAP_TIMEOUT] edges=0 rejected=0` |
+| Tie cal pin to GND | `[CAL_SENSE] pin=6 raw=0 edges=0 …`; same zero-edge timeout |
+| Toggle GND↔3.3 by hand | `[CAL_SENSE] edges` increases; gap may still TIMEOUT (too slow / wrong period) |
+| ~16 Hz 0–3.3 V square into GP6 | `[CAL_SENSE] edges` high; `[MANUAL_GAP]` with real `gapUs` / `dutyErr` |
+
+**Read the counters:** `edges=0` → pin stuck / no digital swing (HW or level). `edges>0` and `rejected` high / `accepted=0` → period gate (wrong frequency vs `expectHz`). Scope-confirmed swing but `edges=0` → wrong pad or MCU not seeing the net. If GP6 works and GP10 never did → pad/routing on 10.
 
 ---
 
@@ -368,6 +385,18 @@ At runtime:
 - For any requested note / frequency:
   - The engine looks up the DCO’s calibration table and interpolates between nearby entries.
   - The resulting `ampCompCalibrationVal` is written to the range PWM, compensating amplitude across the keyboard.
+
+### Fake / development tables
+
+`setup1()` calls `seed_fake_calibration_tables(false)` **before** `init_FS()`. That plants fake amp-comp + PW tables only if the LittleFS `voiceTables` file is **missing**. An existing file (even if all zeros) is left alone; then `init_FS()` loads and `setup1` precomputes as usual.
+
+To **force‑overwrite** at any time, send `PARAM_DEBUG_COMMAND` **30** (dco_control → Calibration tab → **Seed fake calibration tables**), which calls `seed_fake_calibration_tables(true)`:
+
+- Synthesizes per‑oscillator 22‑pair amp‑comp curves (`generate_fake_calibration_data`) using the real note schedule and a scaled historical curve shape
+- Writes full LittleFS banks (`voiceTables` + PW files) in one shot, plus sane PW defaults (`PW_CENTER≈570`, low `0`, high `DIV_COUNTER_PW`)
+- Reloads with `init_FS()` and rebuilds runtime tables with `precompute_amp_comp_for_engine()`
+
+These are **development placeholders**, not a substitute for a real hardware `DCO_calibration()` pass.
 
 ---
 

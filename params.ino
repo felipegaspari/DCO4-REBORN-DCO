@@ -149,6 +149,12 @@ static void apply_param_lfo2_to_osc3_coarse(int16_t v) {
   apply_param_lfo2_to_osc_coarse_depth(v, LFO2toOSC3_coarse_q24);
 }
 
+// PARAM_CHARACTER: master scale (0..128) for Character-tab noise jitters (see character_jitter.h).
+static void apply_param_character(int16_t v) {
+  character = (uint8_t)constrain((int)v, 0, 128);
+  character_recompute_scales();
+}
+
 // PARAM_OSC_SYNC_MODE: osc sync / phase-align (updates phaseAlignOSC2, retriggers notes).
 // oscSync also gates the note-on restart in voices.ino: 0 leaves the oscillators running
 // through note-on (free running), 1 stops and restarts OSC1 and OSC2 together with no
@@ -198,35 +204,63 @@ static void apply_param_osc_sync_mode(int16_t v) {
   }
 }
 
-// PARAM_PORTAMENTO_TIME: map UI value to portamento_time (µs-scale glide).
+// PARAM_PORTAMENTO_TIME: map UI → TIME fixed duration (µs) and SLEW octave period (µs/12st).
 static void apply_param_portamento_time(int16_t v) {
-  uint8_t portaSerial = (uint8_t)v;
-  if (portaSerial == 0) {
-    portamento_time = 0;
-  } else if (portaSerial < 200) {
-    portamento_time = (expConverter(portaSerial + 15, 100) * 2000);
+  portamento_parameter_value = (uint8_t)v;
+  if (portamento_parameter_value == 0) {
+    portamento_time_fixed = 0;
+    portamento_time_slew = 0;
+  } else if (portamento_parameter_value < 200) {
+    // Shared smaller minimum (~1 ms at v=1).
+    const uint32_t t = (uint32_t)expConverter(portamento_parameter_value + 15, 100) * 500u;
+    portamento_time_fixed = t;
+    portamento_time_slew = t;
   } else {
-    portamento_time = map(portaSerial, 200, 255, 1000000, 10000000);
+    // TIME max 10 s (any interval); SLEW max 20 s per octave.
+    portamento_time_fixed =
+        (uint32_t)map(portamento_parameter_value, 200, 255, 1000000, 10000000);
+    portamento_time_slew =
+        (uint32_t)map(portamento_parameter_value, 200, 255, 1000000, 20000000);
   }
+  portamento_time = (portamento_mode == PORTA_MODE_TIME)
+                        ? portamento_time_fixed
+                        : portamento_time_slew;
 }
 
 static void apply_param_vcf_keytrack(int16_t v) {
   VCFKeytrack = v;
+#ifdef USE_FLOAT_CV_OUTS
   if (VCFKeytrack != 0) {
     VCFKeytrackModifier = (float)VCFKeytrack / 8000.0f;
   } else {
     VCFKeytrackModifier = 1.0f;
   }
+#else
+  if (VCFKeytrack != 0) {
+    VCFKeytrackModifier_q15 = ((int32_t)VCFKeytrack * 32768) / 8000;
+  } else {
+    VCFKeytrackModifier_q15 = 32768;
+  }
+#endif
 }
 
 static void apply_param_velocity_to_vcf(int16_t v) {
   velocityToVCFVal = (int8_t)v;
+#ifdef USE_FLOAT_CV_OUTS
   velocityToVCF = velocityToVCFVal * 0.0003935f;
+#else
+  // ≈ val * 0.0003935 * 32768
+  velocityToVCF_q15 = ((int32_t)velocityToVCFVal * 825) >> 6;
+#endif
 }
 
 static void apply_param_velocity_to_vca(int16_t v) {
   velocityToVCAVal = (int8_t)v;
+#ifdef USE_FLOAT_CV_OUTS
   velocityToVCA = velocityToVCAVal * 0.0003935f;
+#else
+  velocityToVCA_q15 = ((int32_t)velocityToVCAVal * 825) >> 6;
+#endif
 }
 
 // Panel bases only — PWM written from mod_matrix_apply_cv() in update_CV_outs.
@@ -272,10 +306,13 @@ DECL_MOD_SLOT_APPLIERS(7)
 
 #undef DECL_MOD_SLOT_APPLIERS
 
-// PARAM_PORTAMENTO_MODE: 0 = fixed-time glide, else slew-rate.
+// PARAM_PORTAMENTO_MODE: 0 = TIME (fixed duration any interval),
+// else SLEW (constant semitone rate; one octave = portamento_time_slew).
 static void apply_param_portamento_mode(int16_t v) {
-  // Portamento mode: 0 = fixed-time glide, 1 = analog-style slew-rate
   portamento_mode = (v == 0) ? PORTA_MODE_TIME : PORTA_MODE_SLEW;
+  portamento_time = (portamento_mode == PORTA_MODE_TIME)
+                        ? portamento_time_fixed
+                        : portamento_time_slew;
 }
 
 // PARAM_CALIBRATION_VALUE: reserved ID (no behavior).
@@ -297,6 +334,9 @@ static void apply_param_unison_detune(int16_t v) {
 // PARAM_ANALOG_DRIFT_AMOUNT: drift modulation depth.
 static void apply_param_analog_drift_amount(int16_t v) {
   analogDrift = v;
+#ifndef USE_FLOAT_CV_OUTS
+  cv_update_vcf_drift_scale();
+#endif
 }
 
 // PARAM_ANALOG_DRIFT_SPEED: recompute all drift LFO rates.
@@ -329,11 +369,13 @@ static void apply_param_sync_mode(int16_t v) {
   pio_defer_request_sync_mode();
 }
 
-// PARAM_SOFT_SYNC: pick the sync mechanism. Hard sync costs nothing but gives the slave
-// no say; soft sync lets the slave ignore master edges arriving early in its own cycle,
-// at the price of a slightly coarser divider (weight 5 instead of 4).
+// PARAM_SOFT_SYNC: 0 = hard sync (sideset, weight 4); 1..3 = soft sync with that many
+// trailing polled chunks (weights 5/6/7, receptive ~40%/67%/86%). Changing among 1..3
+// reloads the poll program image on pio0.
 static void apply_param_soft_sync(int16_t v) {
-  softSyncChunks = (v > 0) ? 1 : 0;
+  if (v < 0) v = 0;
+  if (v > 3) v = 3;
+  softSyncChunks = (uint8_t)v;
   pio_defer_request_sync_mode();
 }
 
@@ -541,8 +583,15 @@ static void apply_param_manual_calibration_store(int16_t /*v*/) {
   }
 }
 
-// PARAM_DEBUG_COMMAND: bench diagnostics, printed to USB serial. No panel UI; this is
-// how the host tool in tools/dco_control reaches the checks in docs/PIO_OSCILLATORS.md.
+// PARAM_DEBUG_COMMAND: bench / debug opcodes for tools/dco_control (Diagnostics + Calibration
+// + Character). See params_def.h near PARAM_DEBUG_COMMAND for the opcode list.
+//
+// Values 200..50000 (uint16 on the wire) set pioPulseLength and reload running SMs
+// via pio_defer_request_reset_pulse_all(). Small opcodes 1..30 stay below that range.
+//
+// Packed Character-tab jitter setters (unsigned 16-bit, hi|lo with lo in 0..128):
+//   0xC8xx ampCompJitter, 0xCAxx pitchJitter, 0xCBxx pulsewidthJitter.
+// These sit above 50000 so they do not collide with the pioPulseLength window.
 //
 // The period probe parks an oscillator at a fixed clk_div, so it only holds while no
 // note is playing — voice_task_main() pushes a fresh divider every frame for a held note.
@@ -551,6 +600,27 @@ static void apply_param_manual_calibration_store(int16_t /*v*/) {
 // build. The dump is asynchronous: it asks both cores for a snapshot and core 0 prints
 // once both have answered, so this handler never blocks the audio core.
 static void apply_param_debug_command(int16_t v) {
+  // Wire may pack unsigned 16-bit (param16u); reinterpret before small-opcode switch.
+  uint32_t n = (uint16_t)v;
+  uint8_t hi = (uint8_t)(n >> 8);
+  uint8_t lo = (uint8_t)n;
+  if ((hi == 0xC8u || hi == 0xCAu || hi == 0xCBu) && lo <= 128u) {
+    switch (hi) {
+      case 0xC8: ampCompJitter = lo; break;
+      case 0xCA: pitchJitter = lo; break;
+      case 0xCB: pulsewidthJitter = lo; break;
+      default: break;
+    }
+    character_recompute_scales();
+    return;
+  }
+  if (n >= 200u && n <= 50000u) {
+    pioPulseLength = n;
+    // Reload Y into running SMs on core 1 (same path as clearing phase-align).
+    pio_defer_request_reset_pulse_all();
+    return;
+  }
+
   switch (v) {
     case 1:
       pio_topology_report();
@@ -624,6 +694,10 @@ static void apply_param_debug_command(int16_t v) {
       pitch_interp_bench_accuracy_pending = true;
       break;
 #endif
+    // Force-write fake amp-comp + PW tables (dev placeholder; dco_control Calibration).
+    case 30:
+      seed_fake_calibration_tables(true);
+      break;
     // Note-on sync retrigger A/B (oscSync >= 1): EXACT_Y vs SYNC_JMP.
     case 26:
       note_retrig_set_mode(NOTE_RETRIG_EXACT_Y);
@@ -676,6 +750,7 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_LFO2_TO_OSC3,              apply_param_lfo2_to_osc3 },
   { PARAM_LFO2_TO_OSC2_COARSE,       apply_param_lfo2_to_osc2_coarse },
   { PARAM_LFO2_TO_OSC3_COARSE,       apply_param_lfo2_to_osc3_coarse },
+  { PARAM_CHARACTER,                 apply_param_character },
   { PARAM_OSC_SYNC_MODE,             apply_param_osc_sync_mode },
   { PARAM_PORTAMENTO_TIME,           apply_param_portamento_time },
   { PARAM_PORTAMENTO_MODE,           apply_param_portamento_mode },

@@ -62,7 +62,7 @@ int samplesCounter = 0;
 double risingEdgeTimeSum, fallingEdgeTimeSum;
 
 // Main error metric used by most calibration routines:
-//  - For duty calibration: (lowTime - highTime) / scaling factor.
+//  - For duty calibration: (highTime - lowTime); duty_high - 0.5 = diff / (2 * periodUs).
 //  - For frequency measurement: (targetFreq - measuredFreq).
 float DCO_calibration_difference;
 

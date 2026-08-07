@@ -12,8 +12,8 @@ There is **no** `USE_FLOAT_ENGINE` umbrella; voice and amp are separate compile 
 
 | Target | Board defaults (`PICO_RP2350` / else) | Why |
 |--------|--------------------------------------|-----|
-| **RP2350** (FPU) | `USE_FLOAT_VOICE_TASK` + `PITCH_INTERP_FLOAT_FAST` + `USE_FLOAT_AMP_COMP`; amp method `FLOAT_QUAD`; HP clkdiv `1` | Float pitch / clkdiv / amp is natural |
-| **RP2040** (no FPU) | Neither float flag; `PITCH_INTERP_RATIO_Q16`; amp method `FIXED`; HP clkdiv `1` | Soft-float is expensive; lean Q8 amp (no LUT RAM) |
+| **RP2350** (FPU) | `USE_FLOAT_VOICE_TASK` + `PITCH_INTERP_FLOAT_FAST` + `USE_FLOAT_AMP_COMP` + `USE_FLOAT_CV_OUTS`; amp method `FLOAT_QUAD`; HP clkdiv `1` | Float pitch / clkdiv / amp / CV is natural |
+| **RP2040** (no FPU) | No float voice/amp/CV flags; `PITCH_INTERP_RATIO_Q16`; amp method `FIXED`; HP clkdiv `1` | Soft-float is expensive; lean Q8 amp; **fixed** `update_CV_outs` |
 
 Overrides (after board defaults) can `#undef` / `#define` those flags. See the commented examples in `DCO.ino`.
 
@@ -27,6 +27,8 @@ Normally **do nothing** — board defaults apply. To force behaviour, use the **
 |------|-------------------------|
 | **RP2350 stock** | (leave overrides commented) |
 | **Fixed voice on RP2350** | `#undef USE_FLOAT_VOICE_TASK` (and `#undef USE_FLOAT_AMP_COMP` / pitch if needed) |
+| **Fixed CV outs on RP2350** | `#undef USE_FLOAT_CV_OUTS` (A/B when `update_CV_outs` `%win` is high) |
+| **Float CV outs on RP2040** | `#define USE_FLOAT_CV_OUTS` (soft-float; expect worse Core1) |
 | **RP2040 speed clkdiv** | `#define HIGH_PRECISION_CLKDIV 0` (~1 µs/voice vs ~4 µs) |
 | **Pitch interp A/B** | `#undef PITCH_INTERP_MODE` then `#define PITCH_INTERP_MODE PITCH_INTERP_FLOAT` (walk) / `FLOAT_FAST` / `RATIO_Q16` / `Q12` |
 
@@ -52,10 +54,13 @@ NOTE_RETRIG_MODE_DEFAULT
 | `USE_FLOAT_VOICE_TASK` | Compiles `voice_task_float()`; omits fixed `voice_task_fixed_point()`. Float portamento in `voices.h`. |
 | `PITCH_INTERP_MODE` | Pitch table path (ids above). Board default: `FLOAT_FAST` on RP2350, `RATIO_Q16` on RP2040. |
 | `USE_FLOAT_AMP_COMP` | **Compile-time** float amp dual-build: Hz tables, LUT (~42 KB), float precompute + Q8 seed. Not the same as method (see §7). |
+| `USE_FLOAT_CV_OUTS` | Float VCA/VCF/keytrack/drift/velocity math in `update_CV_outs`. Off → Q15/integer path. **Always-on** (both builds): Q15 mod matrix, `lerp>>12`, `note-60` keytrack, PWM wrap LUT. RP2350 default on; RP2040 default off (soft-float tax). |
 | `AMP_COMP_METHOD_DEFAULT` | Live method when float amp is built: `0 FLOAT_QUAD` / `1 LUT` / `2 FIXED` (runtime cmds 20–22). |
 | `HIGH_PRECISION_CLKDIV` | Fixed-voice clkdiv only (`1` = 64-bit ~4 µs; `0` = fast ~1 µs). Ignored by float voice. |
 
 **Voice vs amp:** independent. Float voice with `#undef USE_FLOAT_AMP_COMP` uses lean Q8 amp via `get_chan_level_for_engine`. Fixed voice with float amp is unusual (extra RAM); stock board defaults keep them paired on RP2350.
+
+**CV outs:** independent of voice/amp. On RP2040, leave `USE_FLOAT_CV_OUTS` undefined — Core1 already runs fixed voice; float CV math would reintroduce `__aeabi_*` soft-float into the ~10 kHz path. Bench banner prints `cv=FLOAT|FIXED`.
 
 ### Dispatch
 

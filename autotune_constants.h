@@ -1,12 +1,18 @@
 #ifndef __AUTOTUNE_CONSTANTS_H__
 #define __AUTOTUNE_CONSTANTS_H__
 
+#include <stdint.h>
+
 // Common constants used by the DCO/VCO autotune and measurement code.
 // Kept here to avoid magic numbers scattered across the implementation.
 
 // Sentinel value returned by gap-measurement routines to indicate
 // a timeout or invalid measurement.
 constexpr float kGapTimeoutSentinel = 1.16999f;
+
+// PARAM_GAP_FROM_DCO payload (duty error [%] * 100) when find_gap times out.
+// Distinct from a real near-zero trim so USB/Screen never look "perfect".
+constexpr int32_t kManualGapTimeoutDutyErrTimes100 = 99999;
 
 // Maximum time (in microseconds) without seeing an edge before a
 // measurement is considered timed out.
@@ -28,7 +34,7 @@ constexpr double kPWHighDutyFraction   = 0.98;
 // If your hardware inverts the waveform (so the pin is high when the
 // actual DCO output is low, and vice versa), set this to true. All duty
 // measurements (find_gap / measure_gap) will automatically compensate.
-constexpr bool kGapPolarityInverted    = true;   // set to false for non-inverted hardware
+constexpr bool kGapPolarityInverted    = false;  // true if cal pin is inverted vs DCO output
 
 // Duty tolerance used when validating PW low/high limits and PW center lock-in.
 // A sample whose duty is within ±kPWLimitDutyTolerance of the target

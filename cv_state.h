@@ -4,6 +4,9 @@
 // Mainboard-local CV / panel state absorbed onto DCO.
 // Phase 2: EnvVCA/EnvVCF engines + soft CV levels (VCA_PWM/VCF_PWM).
 // Phase 3: PWM / 74HC595 writers (osc levels are PWM → VCAs; no I2C level DAC).
+//
+// USE_FLOAT_CV_OUTS (RP2350 default): float formulas / keytrack / drift / velocity.
+// Else (RP2040 default): Q15 / CV-domain integer counterparts — see cv_out.ino.
 
 #ifndef NUM_FILTERS
 #define NUM_FILTERS 2
@@ -49,17 +52,32 @@ uint16_t DIST_MIX = 0;
 // AS3320 multimode (PARAM_FILTER_MODE). Dual-MCU: aux drives GPIO; solo keeps state for local IO.
 uint8_t FILTER_MODE = 0;
 
+#ifdef USE_FLOAT_CV_OUTS
 float ADSR2toVCF_formula = 0.0f;
 float LFO2toVCF_formula = 0.0f;
 float LFO1toVCA_formula = 0.0f;
-
-bool RESONANCEAmpCompensation = true;
-int16_t VCAResonanceCompensation = 100;
-int16_t VCFKeytrack = 0;
 float VCFKeytrackModifier = 1.0f;
 float VCFKeytrackPerVoice[NUM_VOICES_TOTAL];
 float velocityToVCF = 0;
 float velocityToVCA = 0;
+volatile float VCF_DRIFT[NUM_VOICES_TOTAL];
+#else
+// Q15 multipliers (1.0 = 32768). Precomputed in cv_update_mod_formulas / param apply.
+int32_t ADSR2toVCF_formula_q15 = 0;
+int32_t LFO2toVCF_formula_q15 = 0;
+int32_t LFO1toVCA_formula_q15 = 0;
+int32_t VCFKeytrackModifier_q15 = 32768;
+int32_t VCFKeytrackPerVoice_q15[NUM_VOICES_TOTAL];
+int32_t velocityToVCF_q15 = 0;
+int32_t velocityToVCA_q15 = 0;
+// Drift: (LFO_DRIFT_LEVEL[0] * vcf_drift_scale_q15) >> 15 → CV units.
+int32_t vcf_drift_scale_q15 = 0;
+volatile int16_t VCF_DRIFT[NUM_VOICES_TOTAL];
+#endif
+
+bool RESONANCEAmpCompensation = true;
+int16_t VCAResonanceCompensation = 100;
+int16_t VCFKeytrack = 0;
 int8_t velocityToVCFVal = 0;
 int8_t velocityToVCAVal = 0;
 
@@ -70,7 +88,6 @@ uint16_t VCA_PWM[NUM_VOICES_TOTAL];
 uint16_t VCF_PWM[NUM_VOICES_TOTAL];
 // Per-filter reso after matrix sum (panel base remains RESONANCE).
 uint16_t RESONANCE_PWM[NUM_FILTERS] = { 0, 0 };
-volatile float VCF_DRIFT[NUM_VOICES_TOTAL];
 
 uint16_t AS2164_VCA_linearize_table[4096];
 
@@ -92,4 +109,3 @@ bool ADSR3Enabled = false;
 uint8_t presetName[12] = { 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32 };
 
 #endif
-

@@ -1,30 +1,53 @@
-// Phase 2: Mainboard setPWMOuts math → software VCA/VCF/reso levels (no HW PWM yet).
+// Soft VCA/VCF/reso CV math (~10 kHz with ADSR). Always-on: Q15 matrix, lerp>>12, note-60.
+// USE_FLOAT_CV_OUTS: float VCA/VCF/keytrack/drift (RP2350 default).
+// Else: fixed Q15 / integer path (RP2040 default).
 #include "include_all.h"
+#include <string.h>
 
-// LFO full-scale the Mainboard depth formulas were tuned against. The DCO's own LFOs run
-// at smaller amplitudes (LFO2_CC tracks DIV_COUNTER_PW for the PW path) and with the
-// opposite sign, so the CV path normalises here rather than touching the shared levels.
 static constexpr float CV_LFO_REF_CC = 4095.0f;
 static constexpr float CV_DRIFT_REF_CC = 1000.0f;
 
-static inline uint16_t cv_lerp_u16(uint16_t value, uint16_t x0, uint16_t x1, uint16_t y0, uint16_t y1) {
-  if (x1 == x0) return y0;
-  return (uint16_t)(y0 + ((int32_t)(y1 - y0) * (int32_t)(value - x0)) / (int32_t)(x1 - x0));
+// Always-on: divide by 4096 (>>12) instead of 4095.
+static inline uint16_t lerp_0_4095(uint16_t value, uint16_t y0, uint16_t y1) {
+  return (uint16_t)((int32_t)y0 + ((((int32_t)y1 - (int32_t)y0) * (int32_t)value) >> 12));
+}
+
+static inline uint16_t cv_clamp_u12(int32_t v) {
+  if (v < 0) return 0;
+  if (v > 4095) return 4095;
+  return (uint16_t)v;
 }
 
 // Boot: build AS2164 VCA linearize table (same control points as Mainboard).
 void init_cv_out() {
   generateBezierArray({ 0, 4095 }, { 4095, 0 }, { 150, 1420 }, { -235, 815 }, 4096, AS2164_VCA_linearize_table);
   cv_update_mod_formulas();
+#ifndef USE_FLOAT_CV_OUTS
+  cv_update_vcf_drift_scale();
+#endif
 }
 
 // Recompute LFO1→VCA / EnvVCF→VCF / LFO2→VCF depth scalars.
 // The LFO scalars carry the negative sign that restores the Mainboard's LFO polarity.
 void cv_update_mod_formulas() {
+#ifdef USE_FLOAT_CV_OUTS
   ADSR2toVCF_formula = (1.0f / 512.0f) * (float)ADSR2toVCF;
   LFO2toVCF_formula = -(1.0f / 512.0f) * (float)LFO2toVCF * (CV_LFO_REF_CC / (float)LFO2_CC);
   LFO1toVCA_formula = -(1.0f / 512.0f) * (float)LFO1toVCA * (CV_LFO_REF_CC / (float)LFO1_CC);
+#else
+  // Q15: hot path does (level * formula_q15) >> 15.
+  ADSR2toVCF_formula_q15 = (int32_t)ADSR2toVCF * 64;  // * 32768 / 512
+  LFO2toVCF_formula_q15 = (int32_t)(-(int64_t)LFO2toVCF * 4095 * 32768 / ((int64_t)512 * LFO2_CC));
+  LFO1toVCA_formula_q15 = (int32_t)(-(int64_t)LFO1toVCA * 4095 * 32768 / ((int64_t)512 * LFO1_CC));
+#endif
 }
+
+#ifndef USE_FLOAT_CV_OUTS
+// VCF_DRIFT ≈ LFO_DRIFT_LEVEL[0] * analogDrift / 1000 (see float path constants).
+void cv_update_vcf_drift_scale() {
+  vcf_drift_scale_q15 = ((int32_t)analogDrift * 32768) / 1000;
+}
+#endif
 
 // Hot path (~10 kHz with ADSR): EnvVCA/EnvVCF + LFO + keytrack/vel → soft CV levels.
 void update_CV_outs() {
@@ -35,22 +58,22 @@ void update_CV_outs() {
       static constexpr int MAX_RESONANCE = 2300;
       static constexpr int MIN_RESONANCE = 50;
       static constexpr int MAX_VCA_COMPENSATION = 315;
-      static constexpr float COMPENSATION_FACTOR = 0.14f;
-      // Compensation hits 0 exactly at MAX_RESONANCE; past it the value would go
-      // negative and wrap when cast unsigned for the lerp below.
+      // ≈ * 0.14f via (span * 36) >> 8 — always-on integer (both float/fixed CV builds).
       const int resonance_in = min((int)RESONANCE, MAX_RESONANCE);
       VCAResonanceCompensation =
         (resonance_in >= MIN_RESONANCE)
-          ? (int16_t)(MAX_VCA_COMPENSATION - ((resonance_in - MIN_RESONANCE) * COMPENSATION_FACTOR))
+          ? (int16_t)(MAX_VCA_COMPENSATION - (((resonance_in - MIN_RESONANCE) * 36) >> 8))
           : (int16_t)MAX_VCA_COMPENSATION;
     } else {
       VCAResonanceCompensation = DEFAULT_VCA_COMPENSATION;
     }
 
+#ifdef USE_FLOAT_CV_OUTS
     if (VCFKeytrack != 0) {
       for (byte i = 0; i < NUM_VOICES; i++) {
+        // map(note, 0, 150, -60, 90) ≡ note - 60
         VCFKeytrackPerVoice[i] =
-          1.00f + (float)(VCFKeytrackModifier * map(VOICE_NOTES[i], 0, 150, -60, 90));
+          1.00f + (float)(VCFKeytrackModifier * ((int)VOICE_NOTES[i] - 60));
       }
     } else {
       for (byte i = 0; i < NUM_VOICES; i++) {
@@ -60,7 +83,6 @@ void update_CV_outs() {
 
     if (analogDrift != 0) {
       for (byte i = 0; i < NUM_VOICES; i++) {
-        // Monosynth: use osc-0 drift LFO (Mainboard used per-voice drift).
         VCF_DRIFT[i] = (float)LFO_DRIFT_LEVEL[0] *
                        (0.002f * (CV_DRIFT_REF_CC / (float)LFO_DRIFT_CC)) * (float)analogDrift;
       }
@@ -69,18 +91,53 @@ void update_CV_outs() {
         VCF_DRIFT[i] = 0.0f;
       }
     }
+#else
+    if (VCFKeytrack != 0) {
+      for (byte i = 0; i < NUM_VOICES; i++) {
+        const int32_t dn = (int)VOICE_NOTES[i] - 60;
+        VCFKeytrackPerVoice_q15[i] =
+          32768 + (int32_t)(((int64_t)VCFKeytrackModifier_q15 * dn));
+      }
+    } else {
+      for (byte i = 0; i < NUM_VOICES; i++) {
+        VCFKeytrackPerVoice_q15[i] = 32768;
+      }
+    }
+
+    if (analogDrift != 0) {
+      const int16_t drift_cv =
+        (int16_t)(((int64_t)LFO_DRIFT_LEVEL[0] * (int64_t)vcf_drift_scale_q15) >> 15);
+      for (byte i = 0; i < NUM_VOICES; i++) {
+        VCF_DRIFT[i] = drift_cv;
+      }
+    } else {
+      for (byte i = 0; i < NUM_VOICES; i++) {
+        VCF_DRIFT[i] = 0;
+      }
+    }
+#endif
   }
 
+  int32_t mod_sums[MOD_DEST_COUNT];
+  if (!manualCalibrationFlag) {
+    mod_matrix_accumulate(mod_sums);
+    int32_t pitch_s = mod_sums[MOD_DEST_PITCH];
+    if (pitch_s > MOD_PITCH_DEPTH_FULL) pitch_s = MOD_PITCH_DEPTH_FULL;
+    if (pitch_s < -MOD_PITCH_DEPTH_FULL) pitch_s = -MOD_PITCH_DEPTH_FULL;
+    matrix_pitch_mod_q24 =
+      (int32_t)(((int64_t)pitch_s << 24) / (int64_t)MOD_PITCH_DEPTH_FULL);
+  } else {
+    memset(mod_sums, 0, sizeof(mod_sums));
+    matrix_pitch_mod_q24 = 0;
+  }
+  const int32_t matrix_cutoff = mod_sums[MOD_DEST_VCF_CUTOFF];
+
+#ifdef USE_FLOAT_CV_OUTS
   const int16_t LFO1toVCA_calc = (int16_t)((float)LFO1Level * LFO1toVCA_formula);
   const float LFO2toVCF_mod = (float)LFO2Level * LFO2toVCF_formula;
   const float ADSR2toVCFcalculated = (float)ADSR_VCF_Level * ADSR2toVCF_formula;
   const float ADSR2toVCF2calculated = (float)ADSR_VCF2_Level * ADSR2toVCF_formula;
-
-  int32_t mod_sums[MOD_DEST_COUNT] = { 0 };
-  if (!manualCalibrationFlag) {
-    mod_matrix_accumulate(mod_sums);
-  }
-  const float matrix_cutoff = (float)mod_sums[MOD_DEST_VCF_CUTOFF];
+  const float matrix_cutoff_f = (float)matrix_cutoff;
 
   for (byte i = 0; i < NUM_VOICES; i++) {
     float VCA_velocityFactor = 1.0f;
@@ -91,7 +148,7 @@ void update_CV_outs() {
     int16_t LFO1toVCA_current = (ADSR_VCA_Level[i] == 0) ? 0 : LFO1toVCA_calc;
     uint16_t VCA_Calculated =
       (uint16_t)constrain((float)(ADSR_VCA_Level[i] + LFO1toVCA_current) * VCA_velocityFactor, 0, 4095);
-    VCA_PWM[i] = cv_lerp_u16(AS2164_VCA_linearize_table[VCA_Calculated], 0, 4095,
+    VCA_PWM[i] = lerp_0_4095(AS2164_VCA_linearize_table[VCA_Calculated],
                              (uint16_t)VCAResonanceCompensation, (uint16_t)(4095 - VCALevel));
 
     float VCF_velocityFactor = 1.0f;
@@ -100,19 +157,64 @@ void update_CV_outs() {
     }
     if (i == 0) {
       float combinedValue =
-        ADSR2toVCFcalculated + LFO2toVCF_mod + (float)CUTOFF + VCF_DRIFT[i] + matrix_cutoff;
+        ADSR2toVCFcalculated + LFO2toVCF_mod + (float)CUTOFF + VCF_DRIFT[i] + matrix_cutoff_f;
       float finalValue = combinedValue * VCF_velocityFactor * VCFKeytrackPerVoice[i];
       VCF_PWM[0] = (uint16_t)(4095 - (int)constrain(finalValue, 0, 4095));
 
       float combinedValue2 =
-        ADSR2toVCF2calculated + LFO2toVCF_mod + (float)CUTOFF + VCF_DRIFT[i] + matrix_cutoff;
+        ADSR2toVCF2calculated + LFO2toVCF_mod + (float)CUTOFF + VCF_DRIFT[i] + matrix_cutoff_f;
       float finalValue2 = combinedValue2 * VCF_velocityFactor * VCFKeytrackPerVoice[i];
       VCF_PWM[1] = (uint16_t)(4095 - (int)constrain(finalValue2, 0, 4095));
     }
   }
+#else
+  const int16_t LFO1toVCA_calc =
+    (int16_t)(((int64_t)LFO1Level * (int64_t)LFO1toVCA_formula_q15) >> 15);
+  const int32_t LFO2toVCF_mod =
+    (int32_t)(((int64_t)LFO2Level * (int64_t)LFO2toVCF_formula_q15) >> 15);
+  const int32_t ADSR2toVCFcalculated =
+    (int32_t)(((int64_t)ADSR_VCF_Level * (int64_t)ADSR2toVCF_formula_q15) >> 15);
+  const int32_t ADSR2toVCF2calculated =
+    (int32_t)(((int64_t)ADSR_VCF2_Level * (int64_t)ADSR2toVCF_formula_q15) >> 15);
 
-  // Matrix sum → levels + dual reso (+ Dist Drive when DCO owns dist pins).
-  // Skipped under manual cal (that path calls update_CV_outs_manual_calibration instead).
+  for (byte i = 0; i < NUM_VOICES; i++) {
+    int32_t vca_q15 = 32768;
+    if (velocityToVCAVal != 0) {
+      vca_q15 = 32768 - velocityToVCA_q15 * (127 - (int32_t)midi_velocity[i]);
+      if (vca_q15 < 0) vca_q15 = 0;
+    }
+
+    const int16_t LFO1toVCA_current = (ADSR_VCA_Level[i] == 0) ? 0 : LFO1toVCA_calc;
+    const int32_t vca_pre =
+      (int32_t)ADSR_VCA_Level[i] + (int32_t)LFO1toVCA_current;
+    const uint16_t VCA_Calculated =
+      cv_clamp_u12((int32_t)(((int64_t)vca_pre * vca_q15) >> 15));
+    VCA_PWM[i] = lerp_0_4095(AS2164_VCA_linearize_table[VCA_Calculated],
+                             (uint16_t)VCAResonanceCompensation, (uint16_t)(4095 - VCALevel));
+
+    int32_t vcf_vel_q15 = 32768;
+    if (velocityToVCFVal != 0) {
+      vcf_vel_q15 = 32768 - velocityToVCF_q15 * (127 - (int32_t)midi_velocity[i]);
+      if (vcf_vel_q15 < 0) vcf_vel_q15 = 0;
+    }
+    if (i == 0) {
+      int32_t combined =
+        ADSR2toVCFcalculated + LFO2toVCF_mod + (int32_t)CUTOFF + (int32_t)VCF_DRIFT[i] +
+        matrix_cutoff;
+      int32_t scaled = (int32_t)(((int64_t)combined * vcf_vel_q15) >> 15);
+      scaled = (int32_t)(((int64_t)scaled * VCFKeytrackPerVoice_q15[i]) >> 15);
+      VCF_PWM[0] = (uint16_t)(4095 - (int)cv_clamp_u12(scaled));
+
+      int32_t combined2 =
+        ADSR2toVCF2calculated + LFO2toVCF_mod + (int32_t)CUTOFF + (int32_t)VCF_DRIFT[i] +
+        matrix_cutoff;
+      int32_t scaled2 = (int32_t)(((int64_t)combined2 * vcf_vel_q15) >> 15);
+      scaled2 = (int32_t)(((int64_t)scaled2 * VCFKeytrackPerVoice_q15[i]) >> 15);
+      VCF_PWM[1] = (uint16_t)(4095 - (int)cv_clamp_u12(scaled2));
+    }
+  }
+#endif
+
   uint16_t dist_out = DIST_DRIVE;
   uint16_t dist_mix_out = DIST_MIX;
   if (!manualCalibrationFlag) {
@@ -141,7 +243,6 @@ void update_CV_outs_manual_calibration() {
 
   waveSelector_manual_calibration(stage);
 
-  // Solo the oscillator under cal via level PWMs (others muted / high = attenuator closed).
   OSC1Level = (stage == 0) ? CAL_SQR_ON : CAL_SQR_MUTED;
   OSC2Level = (stage == 1) ? CAL_SQR_ON : CAL_SQR_MUTED;
   OSC3Level = (stage == 2) ? CAL_SQR_ON : CAL_SQR_MUTED;
@@ -151,7 +252,6 @@ void update_CV_outs_manual_calibration() {
 #endif
 
 #ifdef ENABLE_CV_OUTS
-  // Park distortion fully dry so cal edges are not hashed by the clipper.
   const uint16_t cal_reso[NUM_FILTERS] = { CAL_RESONANCE_COMPARE, CAL_RESONANCE_COMPARE };
   write_cv_pwm_raw(CAL_CUTOFF_COMPARE, cal_reso, CAL_VCA_COMPARE, 0, 0);
 #endif

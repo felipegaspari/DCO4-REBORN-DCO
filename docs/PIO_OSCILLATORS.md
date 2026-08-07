@@ -47,12 +47,16 @@ Two consequences shape everything below:
 ## 2. The analog core and where `pioPulseLength` comes from
 
 ```c
-static constexpr uint32_t sysClock       = 225000;  // kHz
-static constexpr uint32_t pioPulseLength = 3000;    // cycles
+static constexpr uint32_t sysClock_Hz = 225000000;
+uint32_t pioPulseLength = 1600;  // cycles; runtime via PARAM_DEBUG_COMMAND 160 ∈ [200, 50000]
 ```
 
 `pioPulseLength` is the reset pulse width in system clock cycles, held in the state machine's
-**Y** register. At 225 MHz, 3000 cycles is **13.3 us**.
+**Y** register. At 225 MHz, 1600 cycles is **~7.1 us**. It is not persisted; the Calibration
+tab in `dco_control` sends unsigned 16-bit values 200–50000 on id 160 to change it live
+(small opcodes 1–30 stay below that range). Setting Y via debug 160 also requests
+`pio_defer_request_reset_pulse_all()` so running SMs reload (stop / load Y / restart) and
+voices resplit period.
 
 ### 2.1 Sizing the pulse
 
@@ -66,6 +70,14 @@ discussion behind the current analog build:
 | Discharge series R | ~180 R | Limits peak switch current inside the DG411's pulsed rating |
 | Discharge time constant | ~846 ns | `180 R x 4.7 nF` |
 | Pulse needed for full discharge | **~7.5 us (~1700 cycles)** | About 9 time constants; residual charge is negligible |
+
+**RESET pad polarity.** PIO programs always use logical `1` = assert / discharge and `0` = ramp.
+If the analog switch is **active-low** (DG411: IN low closes the discharge path), define
+`ENABLE_PIO_RESET_INVERT` in [`DCO.ino`](../DCO.ino). `start_voice_sms()` then applies GPIO
+`OUTOVER` + `INOVER` invert on every `RESET_PINS[]` entry so the pad is active-low while
+soft-sync `jmp pin`, hard-sync sideset, phase-align `set pins, 0`, and the sub-oscillator
+`wait` on OSC1 RESET all keep the same logical sense. Leave the flag undefined for
+active-high / direct FET discharge.
 
 > **Open item.** The constant is **3000** cycles (13.3 us), roughly 1.8x the ~1700 the RC
 > analysis calls for. See section 13 before changing it — it is not simply a spare-margin
@@ -129,12 +141,12 @@ flowchart LR
 
 | Block | Contents | Instructions used |
 |-------|----------|-------------------|
-| **PIO0** | `frequency_sync_4_jumps` + `frequency_sync_poll` | 25 of 32 |
-| **PIO1** | `subosc_div2` + `subosc_div4` | 12 of 32 |
+| **PIO0** | `frequency_sync_4_jumps` + one of `frequency_sync_poll{,_2,_3}` | 25–27 of 32 |
+| **PIO1** | `noise_lfsr` (origin 0, SM1) + `subosc_div2` + `subosc_div4` (SM0) | 24 of 32 |
 | **PIO2** | reserved for `ENABLE_PIO_MIDI` | 0 |
 
-The 7 free slots on PIO0 are why soft sync ships with one threshold rather than three
-(section 7.4).
+Only one soft-sync poll image is resident at a time. Changing `softSyncChunks` among 1/2/3
+reloads that image via `pio_remove_program` / `pio_add_program` (section 7.4).
 
 ### 3.3 Pins
 
@@ -152,12 +164,21 @@ The 7 free slots on PIO0 are why soft sync ships with one threshold rather than 
 | Program | Length | Loaded by `init_pio()` | Weight | Overhead | Role |
 |---------|--------|------------------------|--------|----------|------|
 | `frequency_sync_4_jumps` | 12 | **yes**, PIO0 | 4 | 12 | Free-running and hard-sync oscillator |
-| `frequency_sync_poll` | 13 | **yes**, PIO0 | 5 | 13 | Soft-sync slave (polls master) |
+| `frequency_sync_poll` | 13 | one of three, PIO0 | 5 | 13 | Soft-sync slave, N=1 (~40%) |
+| `frequency_sync_poll_2` | 14 | one of three, PIO0 | 6 | 14 | Soft-sync slave, N=2 (~67%) |
+| `frequency_sync_poll_3` | 15 | one of three, PIO0 | 7 | 15 | Soft-sync slave, N=3 (~86%) |
+| `noise_lfsr` | 12 | **yes**, PIO1 @ origin 0, SM1 | — | — | White LFSR → RX FIFO + optional GP2 bit out |
 | `subosc_div2` | 4 | **yes**, PIO1 | — | — | Divide OSC1 by 2 |
 | `subosc_div4` | 8 | **yes**, PIO1 | — | — | Divide OSC1 by 4 |
 | `frequency` | 18 | no | — | — | Legacy 8-chunk oscillator |
 | `frequency_sync` | 20 | no | — | — | Legacy sync experiment |
 | `frequency_pulse1` | 5 | no | — | — | Legacy PW generator |
+
+`noise_lfsr` must be added **before** the sub-osc programs: it requires instruction
+memory origin 0 (`out pc, 1` XORs via absolute addresses 0/1). SM1 JOIN_RX supplies one
+seed word per `update_noise_gens()`; CPU xorshift-fills a white buffer, then Voss pink /
+leaky brown run from that buffer with no further MMIO. With `ENABLE_NOISE_OUT`, `mov pins, isr`
+also drives **GP2** at ~80 kHz bit rate for listen/scope.
 
 ### 4.1 The `.pio.h` file is hand-maintained
 
@@ -204,9 +225,11 @@ addr                                cycles        note
 `mov x, OSR` is a **non-destructive** re-read, so the OSR keeps holding `clk_div` and every chunk
 reloads the same value. That is what lets the CPU change pitch mid-period (section 6).
 
-### 4.3 `frequency_sync_poll`
+### 4.3 Soft-sync poll programs
 
-Identical for addresses 0-8. The final chunk gains a poll:
+Three variants differ only in how many **trailing** chunks use the 2-cycle poll loop. N=1
+(`frequency_sync_poll`) is identical to the free program for addresses 0–8; the final chunk
+gains a poll:
 
 ```
  9   loop_final: jmp pin, do_sync   1     branch if master's reset is high
@@ -215,9 +238,13 @@ Identical for addresses 0-8. The final chunk gains a poll:
 12         set pins, 1   side 1     1
 ```
 
-Both the sync branch and the ordinary count-expired fall-through land on `do_sync`, so no extra
-tail is needed. The poll costs **2 cycles per iteration** in that one chunk, which is where
-`weight = 5` comes from: three chunks at 1 cycle plus one at 2 cycles.
+N=2 / N=3 (`frequency_sync_poll_2` / `_3`) convert successive trailing chunks the same way and
+share one `do_sync` tail. Lengths are 13 / 14 / 15 instructions; restart addresses are 11 / 12 / 13.
+Phase-align ramp entries for N=2 are `{0,4,6,9}` and for N=3 `{0,4,7,10}` (see `PIO_RAMP_ENTRY_SYNC_*`
+in [`globals.h`](../globals.h)).
+
+Both the sync branch and the ordinary count-expired fall-through land on `do_sync`. Each polled
+chunk costs **2 cycles per iteration**, so weight = `4 + N`.
 
 `sm_config_set_jmp_pin` points the slave at the master's reset GPIO. PIO input sampling reads the
 pad regardless of function select, so a slave can read a pin another state machine drives.
@@ -232,8 +259,13 @@ period = Y + weight * clk_div + overhead
 
 | Program | weight | overhead |
 |---------|--------|----------|
-| `frequency_sync_4_jumps` | `PIO_RAMP_WEIGHT_FREE` = 4 | `PIO_PERIOD_OVERHEAD_FREE` = 12 |
-| `frequency_sync_poll` | `PIO_RAMP_WEIGHT_SYNC` = 5 | `PIO_PERIOD_OVERHEAD_SYNC` = 13 |
+| `frequency_sync_4_jumps` (chunks 0) | 4 | 12 |
+| `frequency_sync_poll` (chunks 1) | 5 | 13 |
+| `frequency_sync_poll_2` (chunks 2) | 6 | 14 |
+| `frequency_sync_poll_3` (chunks 3) | 7 | 15 |
+
+Tables: `PIO_RAMP_WEIGHT_BY_CHUNKS[]` / `PIO_PERIOD_OVERHEAD_BY_CHUNKS[]` in [`globals.h`](../globals.h).
+`PIO_RAMP_WEIGHT_SYNC` / `PIO_PERIOD_OVERHEAD_SYNC` remain aliases for the N=1 row.
 
 ### 5.1 Where overhead = 12 comes from
 
@@ -249,8 +281,8 @@ five mov instructions          5
 overhead                       12
 ```
 
-The polled program adds one: its final chunk is a 2-instruction loop, so it falls through both
-instructions, giving 13.
+Each polled chunk adds one extra fall-through cycle (the 2-instruction loop falls through both
+instructions), so overhead is `12 + N` for N trailing polled chunks.
 
 **This corrected a real tuning error.** The old constants were `T_HIGH_OVERHEAD_CYCLES = 2` plus
 `T_LOW_OVERHEAD_CYCLES = 5`, totalling 7 — short by exactly the five loop fall-throughs. Every
@@ -395,14 +427,14 @@ permutation of `{0,1,2}`, so `start_voice_sms()` reconfiguring all three always 
 
 Selected by `softSyncChunks` (parameter `PARAM_SOFT_SYNC`, id 36).
 
-| | Hard sync (`softSyncChunks` = 0) | Soft sync (`softSyncChunks` = 1) |
+| | Hard sync (`softSyncChunks` = 0) | Soft sync (`softSyncChunks` = 1..3) |
 |---|---|---|
 | Mechanism | Master's sideset also drives the slave's reset pin | Slave polls master's pin with `jmp pin` |
-| Program on slave | `frequency_sync_4_jumps` | `frequency_sync_poll` |
-| Weight | 4 | 5 |
+| Program on slave | `frequency_sync_4_jumps` | `frequency_sync_poll` / `_2` / `_3` |
+| Weight | 4 | 5 / 6 / 7 |
 | Effect on slave | Discharges the capacitor only; the slave's counter keeps running | Restarts the slave's own count |
 | Character | Analog-cap-only reset, as on DCO4 | Textbook hard/soft sync |
-| Receptive window | Always | Last ~40% of the ramp |
+| Receptive window | Always | Last ~40% / ~67% / ~86% of the ramp |
 
 They sound different and both are worth having. Hard sync leaves the slave's schedule intact, so
 its counter and its actual output disagree until the next wrap. Soft sync genuinely restarts the
@@ -411,24 +443,22 @@ slave.
 In soft-sync mode the master leaves its sideset on **its own** pin — otherwise both mechanisms
 would fire at once.
 
-### 7.4 Why the soft-sync threshold is what it is
+### 7.4 Soft-sync thresholds
 
-Polling only the final chunk means master edges arriving earlier in the slave's cycle are
-ignored, which is exactly what makes sync "soft". But the threshold is not 75%: because the
-polled chunk runs at 2 cycles per iteration, it occupies `2/5` of the ramp time. The receptive
-window is therefore the **last ~40%**.
+Polling only trailing chunks means master edges arriving earlier in the slave's cycle are
+ignored, which is exactly what makes sync "soft". Because each polled chunk runs at 2 cycles per
+iteration, N trailing chunks occupy `2N / (4+N)` of the ramp time:
 
-Deeper thresholds would need more programs:
+| Polled chunks | Weight | Receptive window | Program length | Resident with free |
+|---------------|--------|------------------|----------------|--------------------|
+| 1 | 5 | ~40% (`2/5`) | 13 | 25/32 |
+| 2 | 6 | ~67% (`4/6`) | 14 | 26/32 |
+| 3 | 7 | ~86% (`6/7`) | 15 | 27/32 |
 
-| Polled chunks | Weight | Receptive window | Program length |
-|---------------|--------|------------------|----------------|
-| 1 | 5 | ~40% | 13 |
-| 2 | 6 | ~67% | 14 |
-| 3 | 7 | ~86% | 15 |
-
-Only the first is implemented. PIO0 has 32 instruction slots and the two resident programs
-already use 25, so there is no room for a second polled variant without evicting the free-running
-program. `softSyncChunks` is consequently a 0/1 choice, not a 0-3 range.
+All three are implemented. PIO0 cannot hold free + every poll variant at once (12+13+14 = 39),
+so `ensure_soft_sync_program()` keeps **exactly one** poll image beside `frequency_sync_4_jumps`
+and swaps it when `softSyncChunks` changes among 1/2/3. Hard sync leaves the current poll image
+resident unused.
 
 ---
 
@@ -482,7 +512,8 @@ Instead, the coarse offset is a one-shot jump **into a later ramp chunk**, so OS
 simply starts partway up its ramp. Steady-state cycles are untouched.
 
 ```c
-static constexpr uint8_t PIO_RAMP_ENTRY[4] = { 0, 4, 6, 8 };
+// Free / poll-1; poll-2 uses {0,4,6,9}, poll-3 uses {0,4,7,10}
+static constexpr uint8_t PIO_RAMP_ENTRY_FREE[4] = { 0, 4, 6, 8 };
 ```
 
 | Advance | Entry address | Chunks remaining |
@@ -556,8 +587,10 @@ inaudible until the carrier board gives GP8 a mixer input.**
 |----------|---------|-------------|---------------|
 | `sync_slave_osc()` / `sync_master_osc()` | Resolve `syncMode` into oscillator indices, or -1 | `assign_sm_mapping()`, `start_voice_sms()`, `pio_topology_report()` | none |
 | `assign_sm_mapping()` | Rewrite `VOICE_TO_SM` so the slave sits below its master | `init_pio()`, `setSyncMode()` | Call **before** `start_voice_sms()` |
-| `init_pio()` | Load both oscillator programs into PIO0 and both sub-osc programs into PIO1, then start everything | `setup1()` | Boot only |
-| `start_voice_sms()` | Choose each SM's program, set pin and sideset pin; preload Y; start all three on one cycle | `init_pio()`, `setSyncMode()` | Safe to re-call whenever topology changes |
+| `init_pio()` | Load free + one poll image into PIO0 and both sub-osc programs into PIO1, then start everything | `setup1()` | Boot only |
+| `ensure_soft_sync_program(n)` | Swap the resident poll image to N trailing chunks (1..3) | `init_pio()`, `start_voice_sms()` | SMs must be stopped |
+| `start_voice_sms()` | Ensure poll image; choose each SM's program, pins; apply RESET polarity; preload Y; start all three on one cycle | `init_pio()`, `setSyncMode()` | Safe to re-call whenever topology changes |
+| `pio_reset_pin_apply_polarity(pin)` | OUTOVER+INOVER invert/clear for `ENABLE_PIO_RESET_INVERT` | `start_voice_sms()` | RESET pins only |
 | `osc_load_period_stopped(osc, y, clk_div)` | Push Y then `clk_div` (with FJOIN clear) | `start_voice_sms()`, `osc_set_reset_pulse()` | **SM must already be stopped.** |
 | `osc_load_periods_stopped_noclear(...)` | Dual-osc Y + clk_div, no FJOIN | Both engine note-on EXACT_Y paths | After frame put+pull (TX empty); caller disable/enable |
 | `osc_set_reset_pulse(osc, y)` | Change only Y, restoring `osc_last_clk_div[osc]` | `apply_param_osc_sync_mode()` | Stops and restarts the SM itself; parameter path, not audio path |
@@ -574,10 +607,10 @@ and `globals.h` is included first.
 | Inline | Returns |
 |--------|---------|
 | `osc_program_base(osc)` | Load offset of the program that oscillator is running |
-| `osc_restart_target(osc)` | Absolute address of `mov x, y` — jump here to retrigger a cycle (10 for the free program, 11 for the polled one) |
-| `osc_ramp_entry_target(osc, quarters)` | Absolute address of a ramp chunk entry, for phase advance |
-| `osc_ramp_weight(osc)` | 4 or 5, per program |
-| `osc_period_overhead(osc)` | 12 or 13, per program |
+| `osc_restart_target(osc)` | Absolute address of `mov x, y` — jump here to retrigger a cycle (10 free; 11/12/13 for poll N=1/2/3) |
+| `osc_ramp_entry_target(osc, quarters)` | Absolute address of a ramp chunk entry, for phase advance (program-dependent for poll-2/3) |
+| `osc_ramp_weight(osc)` | 4, or 5/6/7 from `softSyncChunks` when the slave runs a poll program |
+| `osc_period_overhead(osc)` | 12, or 13/14/15 likewise |
 | `pio_period_split(total, w, k)` | Exact `{clk_div, y}` split; note-on only |
 | `pio_clk_div_for_y(total, y, w, k)` | Rounded `clk_div` for a fixed Y; every frame |
 
@@ -590,7 +623,8 @@ and `globals.h` is included first.
 | `osc_uses_sync_program[]` | Which resident program each SM runs; drives all the weight/address helpers |
 | `osc_last_y[]` | Y currently loaded; `pio_clk_div_for_y()` solves against it |
 | `osc_last_clk_div[]` | Last divider pushed, so a Y write can restore it (section 6.3) |
-| `softSyncChunks` | 0 = hard sync, 1 = soft sync |
+| `softSyncChunks` | 0 = hard sync; 1..3 = soft sync trailing polled chunks |
+| `pio_loaded_sync_chunks` | Which poll image is currently in pio0 instruction memory (1..3) |
 | `subOscDivide` | 0 / 2 / 4 |
 
 ---
@@ -614,7 +648,8 @@ Everything here is a trap that has already bitten, or would bite the next change
    the chunks exist to eliminate (section 6.1).
 8. **Entering a ramp chunk requires an explicit `set pins, 0` first** (section 8.2).
 9. **Changing `pioPulseLength` invalidates amp-comp calibration.** It is baked into the measured
-   gap tables (sections 2.1, 13).
+   gap tables (sections 2.1, 13). Runtime changes via debug 160 may need an amp-comp redo after
+   large Y moves.
 
 ---
 
@@ -624,7 +659,8 @@ Everything here is a trap that has already bitten, or would bite the next change
 
 Nothing in the firmware calls the three helpers below, so on a running board they are
 reached through `PARAM_DEBUG_COMMAND` (id 160): `1` runs the topology report, `2` and `3`
-run period probes at a low and a high divider. See `apply_param_debug_command()` in
+run period probes at a low and a high divider. Values **200–50000** (unsigned 16-bit on the
+wire) set `pioPulseLength` instead of running an opcode. See `apply_param_debug_command()` in
 [`params.ino`](../params.ino).
 
 The easiest way to send that is the bench controller in
@@ -691,5 +727,5 @@ generated frequency should agree to the displayed precision.
 | **`.pio` source drift** | Duplicate `.program frequency`, two `init_sm_pin` signatures (section 4.1). Worth cleaning so the file could be assembled again as a cross-check on the hand-written header. |
 | **Hard-sync listening check** | The static and runtime checks pass, but the detune-sweep listening test in 12.1 has not been performed on hardware. |
 | **Sub-oscillator** | Firmware complete; GP8 needs a mixer input on the carrier before it is audible. |
-| **Soft-sync thresholds** | Only the ~40% window exists. Deeper windows need PIO0 instruction space (section 7.4). |
+| **Soft-sync thresholds** | N=1/2/3 implemented via poll-program swap (section 7.4). Listening comparison across thresholds still open. |
 | **Legacy programs** | `frequency`, `frequency_sync`, `frequency_pulse1` are still in the header but never loaded. Removing them would free nothing at runtime, but would reduce confusion. |

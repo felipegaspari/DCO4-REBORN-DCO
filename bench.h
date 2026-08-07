@@ -81,6 +81,8 @@ static inline const char *bench_pitch_interp_mode_name() {
   /* --- Core 1: loop1() --- */                                                               \
   X(loop1_period,      1, BENCH_US,  BENCH_T_MAIN, BENCH_NONE,          "loop1 period")        \
   X(loop1_millis,      1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "millisTimer")         \
+  X(loop1_noise,       1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "noise_gens")          \
+  X(loop1_noise_refill,1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_noise,   "noise refill")        \
   X(loop1_adsr,        1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "ADSR_update")         \
   X(loop1_cv_outs,     1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "update_CV_outs")      \
   X(voice_task,        1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "voice_task TOTAL")    \
@@ -386,7 +388,9 @@ static inline void bench_add_raw(uint8_t id, uint32_t d) {
 #define BENCH_FBEGIN(id) ((void)0)
 #define BENCH_FEND(id)   ((void)0)
 #else
-#define BENCH_BEGIN(id) const uint32_t bench_t_##id = bench_now()
+// volatile start: force a real store/load so back-to-back probes cannot CSE timestamps.
+// Do NOT wrap in do/while — voice_task declares locals inside a probe and uses them after END.
+#define BENCH_BEGIN(id) volatile uint32_t bench_t_##id = bench_now()
 #define BENCH_END(id)   bench_add_cyc(BENCH_##id, bench_t_##id)
 #ifdef RUNNING_AVERAGE_FINE
 #define BENCH_FBEGIN(id) BENCH_BEGIN(id)
@@ -656,9 +660,14 @@ inline void bench_print_report() {
 #else
   const char *amp = "FIXED";
 #endif
+#ifdef USE_FLOAT_CV_OUTS
+  const char *cv = "FLOAT";
+#else
+  const char *cv = "FIXED";
+#endif
   snprintf(line, sizeof(line),
-           "build: mcu=%s voice=%s pitch=%s amp=%s amp_method=%s clkdiv=%s note_retrig=%s",
-           mcu, voice, bench_pitch_interp_mode_name(), amp,
+           "build: mcu=%s voice=%s pitch=%s amp=%s cv=%s amp_method=%s clkdiv=%s note_retrig=%s",
+           mcu, voice, bench_pitch_interp_mode_name(), amp, cv,
            amp_comp_method_name(amp_comp_method), clkdiv,
            note_retrig_mode_name(note_retrig_mode));
   bench_out_println(line);

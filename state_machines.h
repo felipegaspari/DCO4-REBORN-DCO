@@ -77,7 +77,7 @@ static inline void osc_load_period_stopped(uint8_t osc, uint32_t y, uint32_t clk
   osc_load_period_stopped_noclear(osc, y, clk_div);
 }
 
-void osc_set_reset_pulse(uint8_t osc, uint32_t y);
+void osc_reload_reset_pulse_all(uint32_t y);
 void pio_topology_report();
 void pio_period_probe(uint8_t osc, uint32_t clk_div);
 void pio_solve_period_model(uint32_t clk_div_a, double measured_hz_a,

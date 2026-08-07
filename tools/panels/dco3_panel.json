@@ -250,7 +250,7 @@
             "css": "grid-row: span 5;",
             "widgets": [
               {
-                "type": "switch",
+                "type": "menu",
                 "id": "cc21_soft_sync",
                 "address": "/control",
                 "preArgs": [
@@ -263,8 +263,10 @@
                 "html": "Soft sync",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
-                  "Off ": 0,
-                  "On ": 127
+                  "0 - hard sync (cap only) ": 0,
+                  "1 - soft ~40% window ": 1,
+                  "2 - soft ~67% window ": 2,
+                  "3 - soft ~86% window ": 3
                 }
               }
             ]
@@ -2987,7 +2989,11 @@
                   "8 LFO1 ": 8,
                   "9 LFO2 ": 9,
                   "10 Pitch bend ": 10,
-                  "11 Mod wheel ": 11
+                  "11 Mod wheel ": 11,
+                  "12 Noise 0 ": 12,
+                  "13 Noise 1 ": 13,
+                  "14 Noise 2 (reserved) ": 14,
+                  "15 Noise 3 (reserved) ": 15
                 }
               }
             ]
@@ -3023,7 +3029,8 @@
                   "5 VCF2 reso ": 5,
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
-                  "8 Dist Mix ": 8
+                  "8 Dist Mix ": 8,
+                  "9 Pitch ": 9
                 }
               }
             ]
@@ -3102,7 +3109,11 @@
                   "8 LFO1 ": 8,
                   "9 LFO2 ": 9,
                   "10 Pitch bend ": 10,
-                  "11 Mod wheel ": 11
+                  "11 Mod wheel ": 11,
+                  "12 Noise 0 ": 12,
+                  "13 Noise 1 ": 13,
+                  "14 Noise 2 (reserved) ": 14,
+                  "15 Noise 3 (reserved) ": 15
                 }
               }
             ]
@@ -3138,7 +3149,8 @@
                   "5 VCF2 reso ": 5,
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
-                  "8 Dist Mix ": 8
+                  "8 Dist Mix ": 8,
+                  "9 Pitch ": 9
                 }
               }
             ]
@@ -3217,7 +3229,11 @@
                   "8 LFO1 ": 8,
                   "9 LFO2 ": 9,
                   "10 Pitch bend ": 10,
-                  "11 Mod wheel ": 11
+                  "11 Mod wheel ": 11,
+                  "12 Noise 0 ": 12,
+                  "13 Noise 1 ": 13,
+                  "14 Noise 2 (reserved) ": 14,
+                  "15 Noise 3 (reserved) ": 15
                 }
               }
             ]
@@ -3253,7 +3269,8 @@
                   "5 VCF2 reso ": 5,
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
-                  "8 Dist Mix ": 8
+                  "8 Dist Mix ": 8,
+                  "9 Pitch ": 9
                 }
               }
             ]
@@ -3332,7 +3349,11 @@
                   "8 LFO1 ": 8,
                   "9 LFO2 ": 9,
                   "10 Pitch bend ": 10,
-                  "11 Mod wheel ": 11
+                  "11 Mod wheel ": 11,
+                  "12 Noise 0 ": 12,
+                  "13 Noise 1 ": 13,
+                  "14 Noise 2 (reserved) ": 14,
+                  "15 Noise 3 (reserved) ": 15
                 }
               }
             ]
@@ -3368,7 +3389,8 @@
                   "5 VCF2 reso ": 5,
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
-                  "8 Dist Mix ": 8
+                  "8 Dist Mix ": 8,
+                  "9 Pitch ": 9
                 }
               }
             ]
@@ -3447,7 +3469,11 @@
                   "8 LFO1 ": 8,
                   "9 LFO2 ": 9,
                   "10 Pitch bend ": 10,
-                  "11 Mod wheel ": 11
+                  "11 Mod wheel ": 11,
+                  "12 Noise 0 ": 12,
+                  "13 Noise 1 ": 13,
+                  "14 Noise 2 (reserved) ": 14,
+                  "15 Noise 3 (reserved) ": 15
                 }
               }
             ]
@@ -3483,7 +3509,8 @@
                   "5 VCF2 reso ": 5,
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
-                  "8 Dist Mix ": 8
+                  "8 Dist Mix ": 8,
+                  "9 Pitch ": 9
                 }
               }
             ]
@@ -3562,7 +3589,11 @@
                   "8 LFO1 ": 8,
                   "9 LFO2 ": 9,
                   "10 Pitch bend ": 10,
-                  "11 Mod wheel ": 11
+                  "11 Mod wheel ": 11,
+                  "12 Noise 0 ": 12,
+                  "13 Noise 1 ": 13,
+                  "14 Noise 2 (reserved) ": 14,
+                  "15 Noise 3 (reserved) ": 15
                 }
               }
             ]
@@ -3598,7 +3629,8 @@
                   "5 VCF2 reso ": 5,
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
-                  "8 Dist Mix ": 8
+                  "8 Dist Mix ": 8,
+                  "9 Pitch ": 9
                 }
               }
             ]
@@ -3677,7 +3709,11 @@
                   "8 LFO1 ": 8,
                   "9 LFO2 ": 9,
                   "10 Pitch bend ": 10,
-                  "11 Mod wheel ": 11
+                  "11 Mod wheel ": 11,
+                  "12 Noise 0 ": 12,
+                  "13 Noise 1 ": 13,
+                  "14 Noise 2 (reserved) ": 14,
+                  "15 Noise 3 (reserved) ": 15
                 }
               }
             ]
@@ -3713,7 +3749,8 @@
                   "5 VCF2 reso ": 5,
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
-                  "8 Dist Mix ": 8
+                  "8 Dist Mix ": 8,
+                  "9 Pitch ": 9
                 }
               }
             ]
@@ -3792,7 +3829,11 @@
                   "8 LFO1 ": 8,
                   "9 LFO2 ": 9,
                   "10 Pitch bend ": 10,
-                  "11 Mod wheel ": 11
+                  "11 Mod wheel ": 11,
+                  "12 Noise 0 ": 12,
+                  "13 Noise 1 ": 13,
+                  "14 Noise 2 (reserved) ": 14,
+                  "15 Noise 3 (reserved) ": 15
                 }
               }
             ]
@@ -3828,7 +3869,8 @@
                   "5 VCF2 reso ": 5,
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
-                  "8 Dist Mix ": 8
+                  "8 Dist Mix ": 8,
+                  "9 Pitch ": 9
                 }
               }
             ]

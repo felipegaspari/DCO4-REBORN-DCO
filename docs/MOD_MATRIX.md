@@ -14,32 +14,36 @@ Related: [`DUAL_MCU.md`](DUAL_MCU.md), [`PINOUT.md`](PINOUT.md).
 
 ```text
 slot: source × dest × depth
-contribution = source_norm * depth
-hw[d] = clamp(panel_base[d] ± sum)   // − for level attenuators, + for reso / cutoff / dist
+contribution = (src_q15 * depth) >> 15    // src_q15: ±32768 ≈ ±1.0
+hw[d] = clamp(panel_base[d] ± sum)       // − for level attenuators, + for reso / cutoff / dist
 ```
 
 Eight slots (`MOD_SLOT_COUNT`). Empty when `source` or `dest` is `0xFF` (or out-of-range ParamId value).
 
-Depth is bipolar `int16` (typically ±4095 for full-scale swing).
+Depth is bipolar `int16` (typically ±4095 for full-scale swing). Hot path is **integer Q15** on both RP2040 and RP2350 (no float normalize per slot). Noise sources pass through `noiseLevel[]` (already Q15).
 
 ---
 
 ## Sources
 
-| ID | Name | Norm | Notes |
-|----|------|------|-------|
-| 0 | ADSR3 | `0..1` | EnvDCO (`ADSR1Level[0] / 4095`) |
-| 1 | ADSR4 | `0..1` | Stub `0` until engine exists |
-| 2 | LFO3 | `-1..1` | Stub `0` (`PARAM_LFO3_*` reserved) |
-| 3 | LFO4 | `-1..1` | Stub `0` |
-| 4 | Velocity | `0..1` | `midi_velocity[0] / 127` |
-| 5 | Keytrack | `-1..1` | Note vs pivot 60, independent of `VCFKeytrack` |
-| 6 | Random | `-1..1` | DCO: S&H on note-on; aux: ~5 Hz free-run |
-| 7 | Aftertouch | `0..1` | Channel AT / 127 |
-| 8 | LFO1 | `-1..1` | `LFO1Level / LFO1_CC_HALF`; fixed `LFO1toDCO` / `LFO1toVCA` unchanged |
-| 9 | LFO2 | `-1..1` | `LFO2Level / LFO2_CC_HALF`; fixed detune/PW/VCF depths unchanged |
-| 10 | Pitch bend | `-1..1` | `(midi_pitch_bend − 8192) / 8192`; fixed pitch path in voice engine unchanged |
-| 11 | Mod wheel | `0..1` | MIDI CC 1 / 127 |
+| ID | Name | Q15 norm | Notes |
+|----|------|----------|-------|
+| 0 | ADSR3 | `0..32768` | EnvDCO (`ADSR1Level[0] << 3` ≈ `/4095`) |
+| 1 | ADSR4 | `0` | Stub until engine exists |
+| 2 | LFO3 | `0` | Stub (`PARAM_LFO3_*` reserved) |
+| 3 | LFO4 | `0` | Stub |
+| 4 | Velocity | `0..32766` | `midi_velocity[0] * 258` |
+| 5 | Keytrack | `±32768` | `(note − 60) * 682`; note 0 → 0; independent of `VCFKeytrack` |
+| 6 | Random | `±32000` | DCO: S&H Q15 on note-on; aux: ~5 Hz free-run Q15 |
+| 7 | Aftertouch | `0..32766` | Channel AT `* 258` |
+| 8 | LFO1 | `±32768` | `LFO1Level` × reciprocal of `LFO1_CC_HALF`; fixed buses unchanged |
+| 9 | LFO2 | `±32768` | Same for `LFO2_CC_HALF` |
+| 10 | Pitch bend | `±32768` | `(bend − 8192) << 2` |
+| 11 | Mod wheel | `0..32766` | MIDI CC 1 `* 258` |
+| 12 | Noise 0 | `±32767` | Pass-through `noiseLevel[0]` (already Q15) |
+| 13 | Noise 1 | `±32767` | Pass-through `noiseLevel[1]` |
+| 14 | Noise 2 | `0` | Reserved — no generator (`NUM_NOISE_GENS == 2`) |
+| 15 | Noise 3 | `0` | Reserved — no generator |
 
 EnvVCA (ADSR1) and EnvVCF (ADSR2) stay on fixed buses only.
 
@@ -58,6 +62,9 @@ EnvVCA (ADSR1) and EnvVCF (ADSR2) stay on fixed buses only.
 | 6 | Dist Drive | RP2040 aux / solo DCO | Add to panel `DIST_DRIVE` |
 | 7 | VCF cutoff | RP2350 | Add to shared `CUTOFF` sum → both filter cutoff paths |
 | 8 | Dist Mix | RP2040 aux / solo DCO | Add to panel `DIST_MIX` |
+| 9 | Pitch | RP2350 / DCO voice | Shared OSC1/2/3; Q24 octave-fraction into `modifiersBase` (with pitch bend). **Depth ±1023 → ±1.0 oct** (clamped); dual-bus with `LFO1toDCO` / EnvDCO |
+
+Pitch is latched from `dest_sums[9]` in `update_CV_outs()` → `matrix_pitch_mod_q24`; not applied via `mod_matrix_apply_cv`.
 
 ---
 

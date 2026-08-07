@@ -5,6 +5,7 @@ Purpose of **every file**, and for each source function: **what it does**, **who
 - Deep narrative: [`REFERENCE_AI.md`](REFERENCE_AI.md)
 - Engine flags: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
 - Hot-path profiling: [`BENCHMARKING.md`](BENCHMARKING.md)
+- Character / noise jitter: [`CHARACTER.md`](CHARACTER.md)
 - Repo entry / doc index: [`../README.md`](../README.md)
 
 Headers with no bodies are marked **no function definitions**.  
@@ -22,7 +23,7 @@ flowchart TD
   fw1 --> loop1["loop1()"]
 
   setup0 --> initSerial["init_serial / init_midi / init_LFOs"]
-  setup1 --> initCore1["init_FS / init_ADSR / init_pwm / init_pio / init_voices"]
+  setup1 --> initCore1["seed_fake_if_missing / init_FS / init_ADSR / init_pwm / init_pio / init_voices"]
 
   loop0 --> midiRead["MIDI_*.read → handle* → note_on/off"]
   loop0 --> serialTask["serial_panel_task → handlers"]
@@ -63,17 +64,17 @@ Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine flags (
 - `setup()` — Core 0 init: serial, MIDI, LFOs, pins, USB strings, cal pin.
   - **Called from:** Arduino framework (Core 0).
   - **When:** Boot once.
-- `setup1()` — Core 1 init: PID, FS, ADSR, `mod_matrix_init`, amp-comp precompute, PWM, PIO, voices; clears cal flags.
+- `setup1()` — Core 1 init: PID, `seed_fake_calibration_tables(false)` if `voiceTables` missing, FS, ADSR, `mod_matrix_init`, amp-comp precompute, PWM, PIO, voices; clears cal flags.
   - **Called from:** Arduino framework (Core 1).
   - **When:** Boot once. (`init_DCO_calibration` block below is unreachable — see that function.)
 - `loop()` — Core 0: MIDI read, Serial2 pump, LFO1; ~100 µs LFO2 + drift + FIFO push.
   - **Called from:** Arduino framework (Core 0).
   - **When:** Forever.
-- `loop1()` — Core 1: `millisTimer`; auto/manual cal **or** ADSR + FIFO pop + `voice_task_main`; ends with `bench_service(1)`.
+- `loop1()` — Core 1: `millisTimer`; noise fleet; auto/manual cal **or** ADSR + FIFO pop + `voice_task_main`; ends with `bench_service(1)`.
   - **Called from:** Arduino framework (Core 1).
   - **When:** Forever.
 
-**Key macros:** `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `PITCH_INTERP_MODE` (`FLOAT` / `FLOAT_FAST` / `RATIO_Q16` / `Q12`), `HIGH_PRECISION_CLKDIV`, `AMP_COMP_METHOD_DEFAULT`, `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`.
+**Key macros:** `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `USE_FLOAT_CV_OUTS`, `PITCH_INTERP_MODE` (`FLOAT` / `FLOAT_FAST` / `RATIO_Q16` / `Q12`), `HIGH_PRECISION_CLKDIV`, `AMP_COMP_METHOD_DEFAULT`, `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`.
 
 ### `bench.h`
 
@@ -109,7 +110,31 @@ Umbrella include. **No function definitions.**
 
 ### `globals.h`
 
-Shared constants, pins, state, prototypes. **No function definitions.**
+Shared constants, pins, state, prototypes. Includes Character knobs / `char_*_scale_q15` (see [`CHARACTER.md`](CHARACTER.md)). **No function definitions** (inlines for period split live here).
+
+### `character_jitter.h`
+
+Character-tab noise jitter: precomputed scales, per-axis deltas, amp clamp. Deep doc: [`CHARACTER.md`](CHARACTER.md).
+
+**Functions**
+- `character_axis_scale()` — `(axis * character) >> 7` then scale by max delta.
+  - **Called from:** `character_recompute_scales()`.
+  - **When:** Param / diag path.
+- `character_recompute_scales()` — Refresh `char_*_scale_q15` from knobs.
+  - **Called from:** `apply_param_character`; `apply_param_debug_command` (0xC8 / 0xCA / 0xCB).
+  - **When:** Character / jitter change.
+- `character_pitch_delta_q24()` — `noiseLevel[1] * char_pitch_scale_q15 >> 15` (Q24).
+  - **Called from:** `voice_task_fixed_point` / `voice_task_float` (gated).
+  - **When:** Hot path, pitch jitter on.
+- `character_amp_delta()` — `noiseLevel[0] * char_amp_scale_q15 >> 15` absolute PWM counts (caller gates scale ≠ 0).
+  - **Called from:** RANGE PWM sites in both voice engines.
+  - **When:** Hot path / note-on, amp jitter on.
+- `character_clamp_amp()` — Saturate level to `0..DIV_COUNTER`.
+  - **Called from:** same RANGE PWM sites after `chanLevel* + amp_j`.
+  - **When:** Amp jitter on.
+- `character_pw_delta()` — `noiseLevel[0] * char_pw_scale_q15 >> 15`.
+  - **Called from:** PW calc in both voice engines.
+  - **When:** ~10 kHz PW update.
 
 ### `tusb_config.h`
 
@@ -163,9 +188,9 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `get_free_voice()` — Oldest/steal free voice.
   - **Called from:** `note_on()` when `polyMode == 0`.
   - **When:** MIDI note-on.
-- `setVoiceMode()` — Apply `voiceMode` → `NUM_VOICES` / `STACK_VOICES`.
+- `setVoiceMode()` — Apply `voiceMode` → `NUM_VOICES` / `STACK_VOICES`; on mono also `mono_note_stack_clear()`.
   - **Called from:** `init_voices()`; `apply_param_voice_mode()`.
-  - **When:** Boot; Serial2 param.
+  - **When:** Boot; Serial2 / MIDI voice-mode param.
 - `setSyncMode()` — Rebuild sync topology via `assign_sm_mapping()` + `start_voice_sms()`; retrigger.
   - **Called from:** `apply_param_sync_mode()`, `apply_param_soft_sync()`.
   - **When:** Serial2 param.
@@ -227,13 +252,17 @@ PIO load, SM setup, sync topology and diagnostics. **All three oscillators live 
 - `assign_sm_mapping()` — Rewrite `VOICE_TO_SM` so the slave outranks-below its master.
   - **Called from:** `init_pio()`, `setSyncMode()`.
   - **When:** Boot; sync topology change.
-- `init_pio()` — Load both oscillator programs into pio0 and the sub-osc programs into pio1.
+- `init_pio()` — `pio_sm_claim` pio0 SM0–2 + pio1 subosc/noise SMs; load free + one soft-sync poll image into pio0 and the sub-osc programs into pio1.
   - **Called from:** `setup1()`.
   - **When:** Boot Core1.
-- `start_voice_sms()` — Per-osc program/pin/sideset selection, Y preload, same-cycle start
-  via `pio_enable_sm_mask_in_sync()`.
+- `ensure_soft_sync_program()` — Swap resident poll image (N=1/2/3) via remove/add.
+  - **Called from:** `init_pio()`, `start_voice_sms()`.
+- `start_voice_sms()` — Ensure poll image; per-osc program/pin/sideset selection, Y preload,
+  RESET pad polarity (`ENABLE_PIO_RESET_INVERT`), same-cycle start via `pio_enable_sm_mask_in_sync()`.
   - **Called from:** `init_pio()`, `setSyncMode()`.
-  - **When:** Boot; sync topology change.
+  - **When:** Boot; sync topology / soft-sync threshold change.
+- `pio_reset_pin_apply_polarity()` — `static`; GPIO OUTOVER+INOVER invert (or clear) on one RESET pin.
+  - **Called from:** `start_voice_sms()`.
 - `osc_load_period_stopped()` / `_noclear` / `osc_load_periods_stopped_noclear()` — `static inline` in `state_machines.h`: push Y + clk_div to a
   **stopped** SM via direct TXF/instr MMIO (Y travels through the OSR, which also feeds the
   chunk reads). Clear variant for boot/topology; fused noclear for note-on EXACT_Y.
@@ -245,14 +274,17 @@ PIO load, SM setup, sync topology and diagnostics. **All three oscillators live 
   - **Called from:** Bench/diagnostic use.
 - `pio_period_probe()` / `pio_solve_period_model()` — Bench helpers for confirming the
   period weight and overhead against a frequency counter.
-- `set_subosc_divide()` — (Re)configure the sub-oscillator on pio1.
+- `set_subosc_divide()` — (Re)configure the sub-oscillator on pio1 SM0.
   - **Called from:** `init_pio()`, `apply_param_subosc_divide()`.
+- `init_pio()` also loads `noise_lfsr` at PIO1 origin 0 (SM1) before the sub-osc programs
+  and starts it via `noise_lfsr_init()` — white words for `noise.h`.
 
 ### `pico-dco.pio`
 
 PIO assembly source. **Not C functions.** Programs in use: `frequency_sync_4_jumps`
-(free-running, weight 4), `frequency_sync_poll` (soft-sync slave, polls `jmp pin` in the
-final chunk, weight 5), `subosc_div2` / `subosc_div4`.
+(free-running, weight 4), `frequency_sync_poll` / `_2` / `_3` (soft-sync slave, N=1/2/3
+trailing `jmp pin` chunks, weights 5/6/7; one resident at a time), `noise_lfsr` (PIO1
+origin 0), `subosc_div2` / `subosc_div4`.
 
 Annotated listings and the period model for each program: [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md).
 
@@ -278,8 +310,11 @@ above `frequency_sync_poll`.
   - **Called from:** `frequency_sync_4_jumps()`.
   - **When:** Boot SM init.
 - `frequency_sync_4_jumps()` — Init SM for production 4-jump sync program.
-  - **Called from:** `init_sm_sync()`.
-  - **When:** Boot.
+  - **Called from:** `start_voice_sms()`.
+  - **When:** Boot; sync topology change.
+- `frequency_sync_poll_init()` — Init soft-sync slave SM (`chunks` selects poll-1/2/3 wrap).
+  - **Called from:** `start_voice_sms()`.
+  - **When:** Soft sync enabled.
 - `frequency_pulse1_program_get_default_config()` — Default config for pulse1 program.
   - **Called from:** `frequency_pulse1_program_init()`.
   - **When:** Only if pulse1 init used.
@@ -344,8 +379,8 @@ Amp-comp tables, LUT, method select, dual precompute/facade.
   - **Called from:** `precompute_amp_comp_for_engine()` when `USE_FLOAT_AMP_COMP`.
   - **When:** Boot / after auto-cal reload.
 - `precompute_amp_comp_for_engine()` — Float+LUT+fixed dual build, or fixed-only.
-  - **Called from:** `setup1()`; end of `DCO_calibration()`.
-  - **When:** Boot Core1; end of auto-cal.
+  - **Called from:** `setup1()`; end of `DCO_calibration()`; end of `seed_fake_calibration_tables()`.
+  - **When:** Boot Core1; end of auto-cal; after fake seed.
 - `amp_comp_set_method()` / `get_chan_level_for_engine()` — Runtime method + Hz → PWM facade.
   - **Called from:** debug cmds 20–22; `voice_task_float()`, `voice_task_autotune()`.
   - **When:** Float play path / cal / A/B.
@@ -487,10 +522,13 @@ Constants only. **No function definitions.**
 - `find_PW_limit_v2()` — High-level PW limit; persist low/high via FS.
   - **Called from:** `DCO_calibration()` (LOW then HIGH).
   - **When:** Auto-cal.
-- `find_gap()` — Edge-time duty/freq measurement on cal pin.
+- `find_gap()` — Edge-time duty/freq measurement on cal pin; timeout logs `raw` / `edges` / `rejected` / `accepted`.
   - **Called from:** `measure_gap()`; also direct inside `#if 0` legacy PID.
   - **When:** Cal measurement (live via wrapper).
-- `DCO_calibration_debug()` — Live gap → `serialSendParam32` for UI.
+- `cal_sense_probe_log()` — 40 ms raw cal-sense edge probe (no period gate); `[CAL_SENSE] pin=…` ~2 Hz.
+  - **Called from:** `DCO_calibration_debug()` on gap timeout.
+  - **When:** Manual-cal timeout diagnostics. Bench table: [`AUTOTUNE.md`](AUTOTUNE.md) “Cal-sense bench checks” (`DCO_calibration_pin`, currently GP6).
+- `DCO_calibration_debug()` — Live gap → `[MANUAL_GAP]` + `serialSendParam32` for UI; probe on TIMEOUT.
   - **Called from:** `loop1()` manual-cal branch every iter.
   - **When:** Manual-cal.
 
@@ -559,29 +597,35 @@ Globals / prototypes. **No function definitions.**
 
 ### `FS.h`
 
-Constants / buffers. **No function definitions.**
+Constants / buffers; declares fake-calibration helpers under `ENABLE_FS_CALIBRATION`.
 
 ### `FS.ino`
 
 **Functions**
 - `init_FS()` — Mount LittleFS; load tables into float or Q8 arrays.
-  - **Called from:** `setup1()`; end of `DCO_calibration()`.
-  - **When:** Boot; after auto-cal write.
+  - **Called from:** `setup1()`; end of `DCO_calibration()`; end of `seed_fake_calibration_tables()`.
+  - **When:** Boot; after auto-cal write; after fake seed.
 - `update_FS_voice()` — Persist one osc amp table.
-  - **Called from:** `DCO_calibration()` per osc.
-  - **When:** Auto-cal.
+  - **Called from:** `DCO_calibration()` per osc; `seed_fake_calibration_tables()`.
+  - **When:** Auto-cal; fake seed.
 - `update_FS_PWCenter()` — Persist PW center.
-  - **Called from:** `find_PW_center()`.
-  - **When:** Auto-cal.
+  - **Called from:** `find_PW_center()`; `seed_fake_calibration_tables()`.
+  - **When:** Auto-cal; fake seed.
 - `update_FS_PW_High_Limit()` — Persist PW high limit.
-  - **Called from:** `find_PW_limit_v2()`.
-  - **When:** Auto-cal.
+  - **Called from:** `find_PW_limit_v2()`; `seed_fake_calibration_tables()`.
+  - **When:** Auto-cal; fake seed.
 - `update_FS_PW_Low_Limit()` — Persist PW low limit.
-  - **Called from:** `find_PW_limit_v2()`.
-  - **When:** Auto-cal.
+  - **Called from:** `find_PW_limit_v2()`; `seed_fake_calibration_tables()`.
+  - **When:** Auto-cal; fake seed.
 - `update_FS_ManualCalibrationOffset()` — Persist manual offset.
   - **Called from:** `apply_param_manual_calibration_store()`.
   - **When:** Serial2 param (user store).
+- `generate_fake_calibration_data()` — Build one osc’s 22 `[freq_x100, RANGE PWM]` pairs (archived curve shape, real note schedule).
+  - **Called from:** `seed_fake_calibration_tables()`.
+  - **When:** Fake seed.
+- `seed_fake_calibration_tables(force)` — Write full fake amp-comp + PW banks to LittleFS (`"w"` truncate), then `init_FS()`. Precomputes when `force=true`. Silent (no Serial). `force=false` only if `voiceTables` is missing.
+  - **Called from:** `setup1()` with `false` (before `init_FS`); `apply_param_debug_command` case **30** with `true`.
+  - **When:** Boot if file missing; on-demand force-overwrite.
 
 ### `irq_tuner.h` / `irq_tuner.ino`
 
@@ -593,7 +637,7 @@ Experimental; bodies commented. **No active function definitions.**
 
 ### `midi.h`
 
-Prototypes / instances. **No function definitions.**
+Prototypes / instances (`init_midi`, `mono_note_stack_clear`). **No function definitions.**
 
 ### `midi_cc.h`
 
@@ -630,10 +674,16 @@ MIDI CC control surface: the `MIDI_CC_LINEAR` / `MIDI_CC_EXP_TIME` curves, the `
 - `handlePitchBend()` — Sets `midi_pitch_bend`.
   - **Called from:** MIDI library.
   - **When:** MIDI callback.
-- `note_on()` — Allocate voice(s), set ADSR/note flags (local envelopes only, nothing on the wire).
+- `handleAfterTouchChannel()` — → `mod_matrix_set_aftertouch()`.
+  - **Called from:** MIDI library.
+  - **When:** MIDI callback.
+- `mono_note_stack_clear()` — Empty the mono last-note held stack (Core0).
+  - **Called from:** `setVoiceMode()` when `voiceMode == 0`.
+  - **When:** Entering mono (boot / voice-mode param).
+- `note_on()` — Allocate voice(s), set ADSR/note flags (local envelopes only, nothing on the wire). Mono: push last-note stack then `VOICE_NOTES[0]` / gate / `note_on_flag` + `noteStart`. Para/poly: existing allocators.
   - **Called from:** `handleNoteOn()`.
   - **When:** MIDI note-on.
-- `note_off()` — Release voice(s), set `noteEnd[]` for the local envelopes.
+- `note_off()` — Mono: remove from held stack; empty → gate off + `noteEnd`; else fall back to stack top + `note_on_flag` (porta, no `noteStart`). Para/poly: scan slots, gate off + `noteEnd`.
   - **Called from:** `handleNoteOff()`.
   - **When:** MIDI note-off.
 
@@ -760,7 +810,7 @@ Prototype. **No function definitions.**
 - `apply_param_analog_drift_speed()` — Drift speed (recomputes via `expConverterFloat`).
 - `apply_param_analog_drift_spread()` — Drift spread (recomputes speeds).
 - `apply_param_sync_mode()` — → `setSyncMode()`.
-- `apply_param_soft_sync()` — Hard (sideset) vs soft (polled `jmp pin`) sync → `setSyncMode()`.
+- `apply_param_soft_sync()` — Soft sync threshold 0..3 (hard / poll N=1/2/3) → `setSyncMode()`.
 - `apply_param_subosc_divide()` — Sub-osc off / ÷2 / ÷4 → `set_subosc_divide()`.
 - `apply_param_lfo1_to_dco()` — LFO1→DCO depth (`expConverterFloat`).
 - `apply_param_lfo1_to_osc1/2/3()` — additive LFO1 pitch depth per osc (stacks on global FIFO bus).
@@ -778,7 +828,8 @@ Prototype. **No function definitions.**
 - `apply_param_manual_calibration_stage()` — Manual cal stage index.
 - `apply_param_manual_calibration_offset()` — Per-osc manual offset.
 - `apply_param_manual_calibration_store()` — → `update_FS_ManualCalibrationOffset`.
-- `apply_param_debug_command()` — Bench diagnostics (id 160): 1 → `pio_topology_report()`, 2/3 → `pio_period_probe()` at a low/high divider, 10/11/12 → profiler dump / reset / periodic toggle (`RUNNING_AVERAGE`), 20–22 → amp-comp method (FLOAT_QUAD / LUT / FIXED), 24/25 → amp-comp speed/accuracy (`AMP_COMP_BENCHMARK` + `RUNNING_AVERAGE`), 28/29 → pitch-interp speed/accuracy (`RUNNING_AVERAGE`). Period probes only hold with no note playing.
+- `apply_param_character()` — `PARAM_CHARACTER` (221): master 0..128 → `character_recompute_scales()`. See [`CHARACTER.md`](CHARACTER.md).
+- `apply_param_debug_command()` — Bench diagnostics (id 160): 1 → `pio_topology_report()`, 2/3 → `pio_period_probe()` at a low/high divider, 10/11/12 → profiler dump / reset / periodic toggle (`RUNNING_AVERAGE`), 20–22 → amp-comp method (FLOAT_QUAD / LUT / FIXED), 24/25 → amp-comp speed/accuracy (`AMP_COMP_BENCHMARK` + `RUNNING_AVERAGE`), 28/29 → pitch-interp speed/accuracy (`RUNNING_AVERAGE`), 30 → force-seed fake calibration tables, **200–50000** (uint16) → set `pioPulseLength` and reload running SMs via `pio_defer_request_reset_pulse_all()`, **0xC8xx / 0xCAxx / 0xCBxx** → Character-tab axis jitters (amp / pitch / PW) then recompute scales. Period probes only hold with no note playing.
 
 ---
 
@@ -794,6 +845,20 @@ Flags only. **No function definitions.**
 - `millisTimer()` — Update soft timer flags (99 µs, ~1 ms, 200 ms, 1000 ms, …).
   - **Called from:** `loop1()` every iteration.
   - **When:** Realtime Core1. (`timer99microsFlag` used in voice PW update; `timer1000msFlag` for `RUNNING_AVERAGE`.)
+
+### `noise.h`
+
+Sketch declarations only (Arduino style). Library: `DCO_Noise`.
+Compile `NOISE_ENGINE` in `DCO.ino` selects `DcoNoiseGen` for `noise0`…`noise1` (`NUM_NOISE_GENS = 2`):
+- **0 — `ColoredNoise`:** Voss pink / 1-pole brown / white; `PioNoiseWhite` peels.
+- **1 — `FastNoiseGen`:** economy Voss pink / leaky brown / local xorshift white.
+- **2 — `PrimeHybridNoise`:** three prime tables; color at ctor/`begin` (~9 KB/gen).
+- **3 — `ProNoise32`:** Q16.15 Kellett pink / DC-corrected brown / xorshift white.
+
+Ctor args set color/seed; `next()` is always Q15. `setup1` calls `dcoNoisePioBegin`; `loop1`
+calls `dcoNoisePioRefill` + `.next()` into `noiseLevel[0..1]`. Mod-matrix sources 14/15
+(Noise 2/3) stay reserved and read as 0. Flag gating for PIO white lives in the library
+(`dcoNoiseUsesPioWhite`). See [`BENCHMARKING.md`](BENCHMARKING.md) §10.
 
 ### `utils.h`
 
@@ -875,6 +940,7 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | Library | Path | Used by |
 |---------|------|---------|
 | `ADSR_Bezier` | `_build_libs/ADSR_Bezier` (symlink → monorepo root, branch `main`) | `adsr.*` |
+| `DCO_Noise` | `_build_libs/DCO_Noise` (symlink → monorepo root) | `noise.h` fleet |
 | `mo-lfo` | `_build_libs/mo-lfo` | `LFO.*` |
 | `MIDI_Library` | `_build_libs/MIDI_Library` | `midi.*` |
 | `PID_v1` | `_build_libs/PID_v1` | `PID.*` / `init_PID` |
@@ -899,6 +965,7 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | Start auto-cal | Param → `apply_param_calibration_flag` → `loop1` → `DCO_calibration` |
 | Manual cal UI | `apply_param_manual_calibration_*` → `loop1` manual branch |
 | MIDI notes | `loop` → MIDI `.read` → `note_on`/`note_off` → local `noteStart[]`/`noteEnd[]` (no serial note frames) |
+| Mono note priority / held notes | `midi.ino` mono stack (`mono_note_stack_*`); porta still via `note_on_flag` → `voices.ino` |
 | MIDI CC assignments | `tools/dco_control/params.py` `cc=` field → `gen_midi_map.py` → `midi_cc_map.h` + [`MIDI_CC_MAP.md`](MIDI_CC_MAP.md) |
 | Play audio path | `loop1` → `ADSR_update` + `voice_task_main` |
 | Measure where the time goes | `RUNNING_AVERAGE` in `DCO.ino` → probe table in `bench.h` → debug command 10 |

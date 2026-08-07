@@ -24,7 +24,7 @@ Menu-style parameters use a 0..127 range so the scaling is an identity and a men
 | 5 | OSC2 detune | Oscillators | `PARAM_OSC2_DETUNE_VAL` | 0 | 512 | linear |
 | 8 | OSC3 detune | Oscillators | `PARAM_OSC3_DETUNE_VAL` | 0 | 512 | linear |
 | 20 | Hard sync topology | Oscillators | `PARAM_SYNC_MODE` | 0 | 127 | linear |
-| 21 | Soft sync | Oscillators | `PARAM_SOFT_SYNC` | 0 | 1 | linear |
+| 21 | Soft sync | Oscillators | `PARAM_SOFT_SYNC` | 0 | 127 | linear |
 | 22 | Sub-oscillator divide | Oscillators | `PARAM_SUBOSC_DIVIDE` | 0 | 127 | linear |
 | 23 | Osc sync / phase align OSC2 | Oscillators | `PARAM_OSC_SYNC_MODE` | 0 | 127 | linear |
 | 69 | Voice mode | Oscillators | `PARAM_VOICE_MODE` | 0 | 127 | linear |
@@ -132,11 +132,13 @@ These parameters take discrete values; the CC number to send is the value itself
 
 - **CC 2, Octave shift**: -3 = 0, -2 = 12, -1 = 24, +0 = 36, +1 = 48, +2 = 60, +3 = 72
 - **CC 20, Hard sync topology**: 0 - all free running = 0, 1 - OSC2 masters OSC1 = 1, 2 - OSC1 masters OSC2 = 2
+- **CC 21, Soft sync**: 0 - hard sync (cap only) = 0, 1 - soft ~40% window = 1, 2 - soft ~67% window = 2, 3 - soft ~86% window = 3
 - **CC 22, Sub-oscillator divide**: Off = 0, Divide by 2 = 2, Divide by 4 = 4
 - **CC 23, Osc sync / phase align OSC2**: Off - free running (no note-on sync) = 0, Sync at note-on (0 deg) = 1, Sync + 30 deg = 15, Sync + 45 deg = 2, Sync + 60 deg = 30, Sync + 90 deg = 3, Sync + 120 deg = 60, Sync + 135 deg = 4, Sync + 150 deg = 75, Sync + 180 deg = 5, Sync + 210 deg = 105, Sync + 225 deg = 6, Sync + 240 deg = 120, Sync + 270 deg = 7, Sync + 315 deg = 8
   - out of 7-bit reach, use the serial bench app instead: Sync + 300 deg (150), Sync + 330 deg (165)
 - **CC 69, Voice mode**: 0 - mono = 0, 1 - poly = 1, 2 - stack = 2
-- **CC 72, Portamento mode**: 0 - fixed time = 0, 1 - slew rate = 1
+  - Mono (`0`) uses a last-note-priority held-note stack (overlapping keys; release falls back and retriggers porta). See [`REFERENCE_AI.md`](REFERENCE_AI.md) (`note_on` / `note_off`).
+- **CC 72, Portamento mode**: 0 - fixed time (same duration any interval) = 0, 1 - slew rate (time scales with interval; knob = time per octave) = 1
 - **CC 25, ADSR3 to osc select**: 0 - OSC1 = 0, 1 - OSC2 = 1, 2 - OSC1+2 = 2, 3 - OSC3 = 3, 4 - all = 4
 - **CC 118, Filter mode**: 0 - LP24 = 0, 1 - BP12 = 1, 2 - HP6/LP18 = 2, 3 - alt = 3
 - **CC 60, LFO1 waveform**: 0 - off = 0, 1 - saw = 1, 2 - triangle = 2, 3 - sine = 3, 4 - square = 4

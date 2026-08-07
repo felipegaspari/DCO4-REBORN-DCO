@@ -99,23 +99,28 @@ static void init_one_level_pwm(uint8_t pin, uint8_t& slice, uint8_t& chan) {
   pwm_set_enabled(slice, true);
 }
 
-static uint16_t scale_level_cv_to_wrap(uint16_t level_cv, uint8_t slice) {
-  // Shared-slice paths keep voice wrap; scale 0..4095 into that domain.
-  for (int i = 0; i < NUM_OSCILLATORS; i++) {
-    if (slice == RANGE_PWM_SLICES[i]) {
-      return (uint16_t)(((uint32_t)level_cv * DIV_COUNTER) / DIV_COUNTER_CV);
-    }
-  }
-  for (int i = 0; i < NUM_OSCILLATORS; i++) {
-    if (PW_PWM_SLICES[i] == 0xFF) continue;
-    if (slice == PW_PWM_SLICES[i]) {
-      return (uint16_t)(((uint32_t)level_cv * DIV_COUNTER_PW) / DIV_COUNTER_CV);
-    }
+// Per-slice wrap for shared RANGE/PW domains; 0 = CV wrap (no scale). Filled in init_level_pwm.
+static uint16_t level_wrap_for_slice[8] = { 0 };
+
+static inline uint16_t scale_level_cv_to_wrap(uint16_t level_cv, uint8_t slice) {
+  const uint16_t wrap = level_wrap_for_slice[slice & 7];
+  if (wrap) {
+    return (uint16_t)(((uint32_t)level_cv * wrap) / DIV_COUNTER_CV);
   }
   return level_cv;
 }
 
 void init_level_pwm() {
+  for (int s = 0; s < 8; s++) {
+    level_wrap_for_slice[s] = 0;
+  }
+  for (int i = 0; i < NUM_OSCILLATORS; i++) {
+    level_wrap_for_slice[RANGE_PWM_SLICES[i] & 7] = DIV_COUNTER;
+    if (PW_PWM_SLICES[i] != 0xFF) {
+      level_wrap_for_slice[PW_PWM_SLICES[i] & 7] = DIV_COUNTER_PW;
+    }
+  }
+
   init_one_level_pwm(OSC1_LEVEL_PIN, OSC1_LEVEL_PWM_SLICE, OSC1_LEVEL_PWM_CHAN);
   init_one_level_pwm(OSC2_LEVEL_PIN, OSC2_LEVEL_PWM_SLICE, OSC2_LEVEL_PWM_CHAN);
   init_one_level_pwm(OSC3_LEVEL_PIN, OSC3_LEVEL_PWM_SLICE, OSC3_LEVEL_PWM_CHAN);

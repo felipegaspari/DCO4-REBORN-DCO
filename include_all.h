@@ -35,6 +35,8 @@
 #include "state_machines.h"
 #include "PWM.h"
 #include "utils.h"
+#include "noise.h"
+#include "character_jitter.h"
 #include "Timer_millis.h"
 
 #include "LFO.h"

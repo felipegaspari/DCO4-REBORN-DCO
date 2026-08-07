@@ -16,42 +16,46 @@
 //   1 RATIO_Q16 (slopeQ20 + fused y→ratio; fixed default / float A/B)
 //   2 Q12 (slope A/B: IntQ16 y + reciprocal; float A/B OK)
 //   3 FLOAT_FAST (trunc+clamp±1 find; same float tables; needs float voice)
-#define PITCH_INTERP_FLOAT       0
-#define PITCH_INTERP_RATIO_Q16   1
-#define PITCH_INTERP_Q12         2
-#define PITCH_INTERP_FLOAT_FAST  3
+#define PITCH_INTERP_FLOAT 0
+#define PITCH_INTERP_RATIO_Q16 1
+#define PITCH_INTERP_Q12 2
+#define PITCH_INTERP_FLOAT_FAST 3
 
 // =============================================================================
 // ENGINE — board defaults (Arduino core: PICO_RP2350 / else)
 // =============================================================================
 #if defined(PICO_RP2350)
-  // RP2350 has an FPU: float voice + float amp-comp dual-build (LUT + Q8 for A/B).
-  #ifndef USE_FLOAT_VOICE_TASK
-    #define USE_FLOAT_VOICE_TASK
-  #endif
-  #ifndef PITCH_INTERP_MODE
-    #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT_FAST
-  #endif
-  #ifndef USE_FLOAT_AMP_COMP
-    #define USE_FLOAT_AMP_COMP
-  #endif
-  #ifndef AMP_COMP_METHOD_DEFAULT
-    #define AMP_COMP_METHOD_DEFAULT 0   // FLOAT_QUAD (0); LUT=1, FIXED=2 — cmds 20–22
-  #endif
-  #ifndef HIGH_PRECISION_CLKDIV
-    #define HIGH_PRECISION_CLKDIV 1     // fixed-voice clkdiv only; ignored by float voice
-  #endif
+// RP2350 has an FPU: float voice + float amp-comp dual-build (LUT + Q8 for A/B).
+#ifndef USE_FLOAT_VOICE_TASK
+#define USE_FLOAT_VOICE_TASK
+#endif
+#ifndef PITCH_INTERP_MODE
+#define PITCH_INTERP_MODE PITCH_INTERP_FLOAT_FAST
+#endif
+#ifndef USE_FLOAT_AMP_COMP
+#define USE_FLOAT_AMP_COMP
+#endif
+#ifndef AMP_COMP_METHOD_DEFAULT
+#define AMP_COMP_METHOD_DEFAULT 0  // FLOAT_QUAD (0); LUT=1, FIXED=2 — cmds 20–22
+#endif
+#ifndef HIGH_PRECISION_CLKDIV
+#define HIGH_PRECISION_CLKDIV 1  // fixed-voice clkdiv only; ignored by float voice
+#endif
+#ifndef USE_FLOAT_CV_OUTS
+#define USE_FLOAT_CV_OUTS  // float VCA/VCF/keytrack/drift in update_CV_outs
+#endif
 #else
-  // RP2040 / fallback: fixed voice + lean Q8 amp (no float amp tables / LUT RAM).
-  #ifndef AMP_COMP_METHOD_DEFAULT
-    #define AMP_COMP_METHOD_DEFAULT 2   // FIXED
-  #endif
-  #ifndef PITCH_INTERP_MODE
-    #define PITCH_INTERP_MODE PITCH_INTERP_RATIO_Q16
-  #endif
-  #ifndef HIGH_PRECISION_CLKDIV
-    #define HIGH_PRECISION_CLKDIV 1     // 1 = ~4µs/voice 64-bit div; 0 = ~1µs fast Q-format
-  #endif
+// RP2040 / fallback: fixed voice + lean Q8 amp (no float amp tables / LUT RAM).
+// CV outs stay fixed-point (no USE_FLOAT_CV_OUTS) — soft-float would choke Core1.
+#ifndef AMP_COMP_METHOD_DEFAULT
+#define AMP_COMP_METHOD_DEFAULT 2  // FIXED
+#endif
+#ifndef PITCH_INTERP_MODE
+#define PITCH_INTERP_MODE PITCH_INTERP_RATIO_Q16
+#endif
+#ifndef HIGH_PRECISION_CLKDIV
+#define HIGH_PRECISION_CLKDIV 1  // 1 = ~4µs/voice 64-bit div; 0 = ~1µs fast Q-format
+#endif
 #endif
 
 // =============================================================================
@@ -61,6 +65,8 @@
 // #define USE_FLOAT_VOICE_TASK         // float voice on RP2040 (soft-float; slow)
 // #undef USE_FLOAT_AMP_COMP            // lean Q8 amp only (no float Hz tables / LUT)
 // #define USE_FLOAT_AMP_COMP           // float amp dual-build on RP2040 (large RAM)
+// #undef USE_FLOAT_CV_OUTS             // fixed VCA/VCF path on RP2350 (A/B / shipping)
+// #define USE_FLOAT_CV_OUTS            // float VCA/VCF path on RP2040 (soft-float; slow)
 // #define HIGH_PRECISION_CLKDIV 0      // fast fixed clkdiv; ignored if float voice
 // #define AMP_COMP_METHOD_DEFAULT 1    // 0 FLOAT_QUAD / 1 LUT / 2 FIXED; needs USE_FLOAT_AMP_COMP for 0/1
 // Pitch A/B (ids above; default already set — #undef then redefine):
@@ -73,11 +79,32 @@
 // =============================================================================
 // ENGINE — guards
 // =============================================================================
-#if (PITCH_INTERP_MODE == PITCH_INTERP_FLOAT || \
-     PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST) && \
-    !defined(USE_FLOAT_VOICE_TASK)
-  #error "PITCH_INTERP_FLOAT / FLOAT_FAST require USE_FLOAT_VOICE_TASK (board default or override)"
+#if (PITCH_INTERP_MODE == PITCH_INTERP_FLOAT || PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST) && !defined(USE_FLOAT_VOICE_TASK)
+#error "PITCH_INTERP_FLOAT / FLOAT_FAST require USE_FLOAT_VOICE_TASK (board default or override)"
 #endif
+
+// =============================================================================
+// ENGINE — noise (see noise.h)
+// =============================================================================
+// NOISE_ENGINE — which DCO_Noise class noise0..1 use (see noise.h):
+//   0 ColoredNoise     — Voss pink / 1-pole brown / white; whites from PioNoiseWhite
+//   1 FastNoiseGen     — economy Voss pink / leaky brown / local xorshift white
+//   2 PrimeHybridNoise — per-gen prime tables (997/1499/1999); dither + rephase
+//   3 ProNoise32       — Q16.15 Kellett pink / DC-corrected brown / xorshift white
+// Objects: noise0..1 in noise.h (ctor sets min/max/color/seed); next() in loop1.
+// PIO white: dcoNoisePioBegin / dcoNoisePioRefill (library reads these flags).
+// Bench: parent noise_gens + "noise refill".
+#define NOISE_ENGINE 1
+// #undef NOISE_ENGINE
+// #define NOISE_ENGINE 0
+// #define NOISE_ENGINE 1
+// #define NOISE_ENGINE 2
+// #define NOISE_ENGINE 3
+
+// ENABLE_NOISE_OUT — PIO1 LFSR 1-bit white on GP2 (listen/scope). Comment out to
+// free the pin. Engine 0 still uses LFSR FIFO seed (no GPIO). Engines 1/2/3 with
+// this off skip PIO noise MMIO (clean benches). Library reads this flag.
+//#define ENABLE_NOISE_OUT
 
 // =============================================================================
 // PROFILING / BENCH (see docs/BENCHMARKING.md)
@@ -118,9 +145,15 @@
 // Leave commented for solo RP2350B / single-MCU (full local IO). See docs/DUAL_MCU.md.
 // #define ENABLE_VOICE_AUX
 
+// Oscillator RESET pad polarity. Uncomment when discharge is through an active-low
+// switch (e.g. DG411: IN low = on). PIO still uses logical 1 = assert / discharge;
+// GPIO OUTOVER+INOVER invert the pad so soft sync jmp_pin and sub-osc wait keep
+// working. Leave commented for active-high / direct FET discharge. See PIO_OSCILLATORS.md.
+#define ENABLE_PIO_RESET_INVERT
+
 // Note-on sync retrigger (oscSync >= 1): 0 = EXACT_Y, 1 = SYNC_JMP. Runtime: cmds 26/27.
 #ifndef NOTE_RETRIG_MODE_DEFAULT
-  #define NOTE_RETRIG_MODE_DEFAULT 0
+#define NOTE_RETRIG_MODE_DEFAULT 0
 #endif
 
 #include <Adafruit_TinyUSB.h>
@@ -184,7 +217,7 @@ void setup() {
   init_LFOs();
   init_DRIFT_LFOs();
 
-  
+
   // init_tuner();
   // init_tuning_tables();
 
@@ -194,7 +227,7 @@ void setup() {
   pinMode(24, OUTPUT);  // Fix pin on DCO BOARD
   digitalWrite(24, HIGH);
 
-  pinMode(DCO_calibration_pin, INPUT_PULLUP);
+  pinMode(DCO_calibration_pin, INPUT);
 
   // gpio_init(11);
   // gpio_set_dir(11, GPIO_IN);
@@ -211,6 +244,9 @@ void setup1() {
 
   init_PID();
 
+  // Create voiceTables only if the file is missing (before init_FS stubs it).
+  // Force overwrite: PARAM_DEBUG_COMMAND 30 / dco_control Calibration tab.
+  seed_fake_calibration_tables(false);
   init_FS();
 
   init_ADSR();
@@ -227,6 +263,7 @@ void setup1() {
 
   init_pwm();
   init_pio();
+  dcoNoisePioBegin(pio[NOISE_PIO], NOISE_SM);
   init_voices();
 
   if (calibrationFlag == true) {
@@ -299,10 +336,27 @@ void loop1() {
     BENCH_END(loop1_millis);
   }
 
+  {
+    BENCH_BEGIN(loop1_noise);
+    {
+      BENCH_BEGIN(loop1_noise_refill);
+      dcoNoisePioRefill();
+      BENCH_END(loop1_noise_refill);
+    }
+    noiseLevel[0] = noise0.next();
+    noiseLevel[1] = noise1.next();
+    BENCH_END(loop1_noise);
+  }
+
   if (calibrationFlag == true) {
     if (manualCalibrationFlag == true) {
-      VOICE_NOTES[0]               = manual_DCO_calibration_start_note;
+      VOICE_NOTES[0] = manual_DCO_calibration_start_note;
       DCO_calibration_current_note = manual_DCO_calibration_start_note;
+      // Keep currentDCO in sync so [GAP_MEASURE]/[GAP_TIMEOUT] logs match the soloed osc.
+      currentDCO = manualCalibrationStage;
+      if (currentDCO >= NUM_OSCILLATORS) {
+        currentDCO = NUM_OSCILLATORS - 1;
+      }
       ampCompCalibrationVal = initManualAmpCompCalibrationValPreset + manualCalibrationOffset[manualCalibrationStage];
       voice_task_autotune(0, ampCompCalibrationVal);
       update_CV_outs_manual_calibration();

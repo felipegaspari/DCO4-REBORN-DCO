@@ -22,7 +22,12 @@ enum ModSource : uint8_t {
   MOD_SRC_LFO2 = 9,
   MOD_SRC_PITCH_BEND = 10,
   MOD_SRC_MOD_WHEEL = 11,
-  MOD_SRC_COUNT = 12
+  MOD_SRC_NOISE0 = 12,
+  MOD_SRC_NOISE1 = 13,
+  // Reserved: fleet is two gens (noise0/1). IDs kept for panel/protocol stability → read as 0.
+  MOD_SRC_NOISE2 = 14,
+  MOD_SRC_NOISE3 = 15,
+  MOD_SRC_COUNT = 16
 };
 
 enum ModDest : uint8_t {
@@ -35,8 +40,13 @@ enum ModDest : uint8_t {
   MOD_DEST_DIST_DRIVE = 6,
   MOD_DEST_VCF_CUTOFF = 7,
   MOD_DEST_DIST_MIX = 8,
-  MOD_DEST_COUNT = 9
+  MOD_DEST_PITCH = 9,
+  MOD_DEST_COUNT = 10
 };
+
+// Shared pitch dest: ±1023 depth → ±1.0 octave (Q24 octave-fraction). Latched ~10 kHz.
+extern volatile int32_t matrix_pitch_mod_q24;
+static constexpr int32_t MOD_PITCH_DEPTH_FULL = 1023;
 
 struct ModSlot {
   uint8_t source;

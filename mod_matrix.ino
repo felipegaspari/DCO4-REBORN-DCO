@@ -1,14 +1,27 @@
 #include "include_all.h"
+#include <string.h>
 
 static ModSlot g_mod_slots[MOD_SLOT_COUNT];
-static float mod_random_snh = 0.0f;
+static int16_t mod_random_snh_q15 = 0;
 static uint8_t mod_aftertouch = 0;
 static uint8_t mod_wheel = 0;
+
+volatile int32_t matrix_pitch_mod_q24 = 0;
+
+// Q15 ≈ level * 32768 / LFO*_CC_HALF via (level * MUL) >> 16.
+static constexpr uint32_t MOD_LFO1_TO_Q15_MUL = (32768u << 16) / (uint32_t)LFO1_CC_HALF;
+static constexpr uint32_t MOD_LFO2_TO_Q15_MUL = (32768u << 16) / (uint32_t)LFO2_CC_HALF;
 
 static inline uint16_t mod_clamp_u16(int32_t v) {
   if (v < 0) return 0;
   if (v > 4095) return 4095;
   return (uint16_t)v;
+}
+
+static inline int32_t mod_clamp_q15(int32_t v) {
+  if (v < -32768) return -32768;
+  if (v > 32768) return 32768;
+  return v;
 }
 
 void mod_matrix_init() {
@@ -17,9 +30,10 @@ void mod_matrix_init() {
     g_mod_slots[i].dest = MOD_DEST_EMPTY;
     g_mod_slots[i].depth = 0;
   }
-  mod_random_snh = 0.0f;
+  mod_random_snh_q15 = 0;
   mod_aftertouch = 0;
   mod_wheel = 0;
+  matrix_pitch_mod_q24 = 0;
 }
 
 void mod_matrix_set_source(uint8_t slot, int16_t v) {
@@ -46,7 +60,8 @@ void mod_matrix_set_depth(uint8_t slot, int16_t v) {
 }
 
 void mod_matrix_on_note_on() {
-  mod_random_snh = ((float)random(0, 2001) - 1000.0f) * 0.001f;
+  // ±1.0 Q15; random(0..2000)-1000 → scale to ±32768.
+  mod_random_snh_q15 = (int16_t)(((int32_t)random(0, 2001) - 1000) * 32);
 }
 
 void mod_matrix_set_aftertouch(uint8_t pressure) {
@@ -57,54 +72,60 @@ void mod_matrix_set_mod_wheel(uint8_t value) {
   mod_wheel = value;
 }
 
-static float mod_matrix_read_source(uint8_t src) {
+// Source as Q15 (±32768 ≈ ±1.0). Mul/shift — no float, avoid hot /4095 on M0+.
+static int32_t mod_matrix_read_source_q15(uint8_t src) {
   switch (src) {
     case MOD_SRC_ADSR3:
-      return (float)ADSR1Level[0] / 4095.0f;
+      // (level * 32768) / 4095 ≈ level << 3 (max error 8 Q15 LSBs at full scale).
+      return (int32_t)ADSR1Level[0] << 3;
     case MOD_SRC_ADSR4:
     case MOD_SRC_LFO3:
     case MOD_SRC_LFO4:
-      return 0.0f;
+      return 0;
     case MOD_SRC_VELOCITY:
-      return (float)midi_velocity[0] / 127.0f;
+      return (int32_t)midi_velocity[0] * 258;
     case MOD_SRC_KEYTRACK: {
       const uint8_t note = VOICE_NOTES[0];
-      if (note == 0) return 0.0f;
-      float kt = ((float)note - 60.0f) / 48.0f;
-      if (kt < -1.0f) return -1.0f;
-      if (kt > 1.0f) return 1.0f;
-      return kt;
+      if (note == 0) return 0;
+      // 32768 / 48 ≈ 682
+      return mod_clamp_q15(((int32_t)note - 60) * 682);
     }
     case MOD_SRC_RANDOM:
-      return mod_random_snh;
+      return (int32_t)mod_random_snh_q15;
     case MOD_SRC_AFTERTOUCH:
-      return (float)mod_aftertouch / 127.0f;
+      return (int32_t)mod_aftertouch * 258;
     case MOD_SRC_LFO1:
-      return (float)LFO1Level / (float)LFO1_CC_HALF;
+      return (int32_t)(((int64_t)LFO1Level * (int64_t)MOD_LFO1_TO_Q15_MUL) >> 16);
     case MOD_SRC_LFO2:
-      return (float)LFO2Level / (float)LFO2_CC_HALF;
+      return (int32_t)(((int64_t)LFO2Level * (int64_t)MOD_LFO2_TO_Q15_MUL) >> 16);
     case MOD_SRC_PITCH_BEND:
-      return ((float)midi_pitch_bend - 8192.0f) / 8192.0f;
+      return ((int32_t)midi_pitch_bend - 8192) << 2;
     case MOD_SRC_MOD_WHEEL:
-      return (float)mod_wheel / 127.0f;
+      return (int32_t)mod_wheel * 258;
+    case MOD_SRC_NOISE0:
+    case MOD_SRC_NOISE1:
+    case MOD_SRC_NOISE2:
+    case MOD_SRC_NOISE3: {
+      const uint8_t i = (uint8_t)(src - MOD_SRC_NOISE0);
+      if (i >= NUM_NOISE_GENS) return 0;
+      // Already Q15 from noise engines.
+      return (int32_t)noiseLevel[i];
+    }
     default:
-      return 0.0f;
+      return 0;
   }
 }
 
 void mod_matrix_accumulate(int32_t dest_sums[MOD_DEST_COUNT]) {
-  for (uint8_t d = 0; d < MOD_DEST_COUNT; d++) {
-    dest_sums[d] = 0;
-  }
+  memset(dest_sums, 0, sizeof(int32_t) * MOD_DEST_COUNT);
 
   for (uint8_t i = 0; i < MOD_SLOT_COUNT; i++) {
     const ModSlot& s = g_mod_slots[i];
-    if (s.source == MOD_SRC_EMPTY || s.dest == MOD_DEST_EMPTY) continue;
-    if (s.depth == 0) continue;
+    if (s.source == MOD_SRC_EMPTY || s.dest == MOD_DEST_EMPTY || s.depth == 0) continue;
     if (s.dest >= MOD_DEST_COUNT) continue;
 
-    const float src_norm = mod_matrix_read_source(s.source);
-    dest_sums[s.dest] += (int32_t)(src_norm * (float)s.depth);
+    const int32_t src_q15 = mod_matrix_read_source_q15(s.source);
+    dest_sums[s.dest] += (int32_t)(((int64_t)src_q15 * (int64_t)s.depth) >> 15);
   }
 }
 

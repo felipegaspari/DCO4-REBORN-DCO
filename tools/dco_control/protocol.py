@@ -61,6 +61,11 @@ def param16(param_id: int, value: int) -> bytes:
     return CMD_PARAM_16 + bytes([param_id & 0xFF]) + struct.pack(">h", _clamp16(value)) + bytes([FINISH])
 
 
+def param16u(param_id: int, value: int) -> bytes:
+    """'p' frame with unsigned 16-bit value (0..65535). Firmware reinterprets as uint16_t."""
+    return CMD_PARAM_16 + bytes([param_id & 0xFF]) + struct.pack(">H", _clampu16(value)) + bytes([FINISH])
+
+
 def param8(param_id: int, value: int) -> bytes:
     """'w' frame: 8-bit parameter. The DCO sign-extends, so -1 arrives as -1."""
     return CMD_PARAM_8 + bytes([param_id & 0xFF]) + struct.pack(">b", _clamp8(value)) + bytes([FINISH])

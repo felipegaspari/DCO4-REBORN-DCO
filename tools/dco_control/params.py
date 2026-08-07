@@ -23,6 +23,7 @@ GROUP_FILTER = "Filter"
 GROUP_PWM = "PWM"
 GROUP_LFO = "LFOs"
 GROUP_MOD = "Mod matrix"
+GROUP_CHARACTER = "Character"
 GROUP_CAL = "Calibration"
 # App-only tab (PIO reports + profiler). Not in GROUP_ORDER — no MIDI CC / OSC panel.
 GROUP_DIAG = "Diagnostics"
@@ -34,6 +35,7 @@ GROUP_ORDER = [
     GROUP_PWM,
     GROUP_LFO,
     GROUP_MOD,
+    GROUP_CHARACTER,
     GROUP_CAL,
 ]
 
@@ -51,6 +53,10 @@ _MOD_SOURCES = (
     ("9 LFO2", 9),
     ("10 Pitch bend", 10),
     ("11 Mod wheel", 11),
+    ("12 Noise 0", 12),
+    ("13 Noise 1", 13),
+    ("14 Noise 2 (reserved)", 14),
+    ("15 Noise 3 (reserved)", 15),
 )
 
 _MOD_DESTS = (
@@ -64,6 +70,7 @@ _MOD_DESTS = (
     ("6 Dist Drive", 6),
     ("7 VCF cutoff", 7),
     ("8 Dist Mix", 8),
+    ("9 Pitch (±1 oct @ ±1023)", 9),
 )
 
 
@@ -164,8 +171,13 @@ PARAMS: list[Param] = [
           note="which oscillator's sideset drives which reset pin; not the note-on phase "
                "reset, which is 'Osc sync / phase align OSC2' below",
           cc=20),
-    Param(36, "Soft sync", GROUP_OSC, "check", default=0,
-          note="off = hard sync (cap discharge only), on = slave polls master", cc=21),
+    Param(36, "Soft sync", GROUP_OSC, "combo", default=0,
+          choices=(("0 - hard sync (cap only)", 0),
+                   ("1 - soft ~40% window", 1),
+                   ("2 - soft ~67% window", 2),
+                   ("3 - soft ~86% window", 3)),
+          note="0 = hard sync (sideset); 1..3 = soft sync trailing polled chunks",
+          cc=21),
     Param(37, "Sub-oscillator divide", GROUP_OSC, "combo", default=0,
           choices=(("Off", 0), ("Divide by 2", 2), ("Divide by 4", 4)),
           note="output on GP8, needs a mixer input on the carrier to be audible", cc=22),
@@ -279,6 +291,10 @@ PARAMS: list[Param] = [
     Param(82, "Mod slot 7 dest", GROUP_MOD, "combo", default=255, choices=_MOD_DESTS, cc=110),
     Param(83, "Mod slot 7 depth", GROUP_MOD, "slider", -4095, 4095, 0, cc=111),
 
+    # --- Character ---
+    # Real param; jitter siblings on this tab are diagnostic (PARAM_DEBUG_COMMAND), not PARAMS.
+    Param(221, "Character", GROUP_CHARACTER, "slider", 0, 128, 0),
+
     # --- Calibration ---
     # The two pulses keep cc=None on purpose: autotune takes over the board for a minute
     # and the store writes the filesystem, neither of which should be one stray CC away.
@@ -373,5 +389,28 @@ PITCH_INTERP_COMMANDS = (
     ("Pitch: speed bench", 28),
     ("Pitch: accuracy", 29),
 )
+
+# Calibration-tab debug actions (PARAM_DEBUG_COMMAND 160). Not synth params.
+CAL_DEBUG_COMMANDS = (
+    ("Seed fake calibration tables", 30),
+)
+
+# PIO reset pulse Y (cycles). Sent as unsigned 16-bit on PARAM_DEBUG_COMMAND 160;
+# firmware treats values in [PIO_PULSE_LO, PIO_PULSE_HI] as set-pioPulseLength.
+PIO_PULSE_LO = 200
+PIO_PULSE_HI = 50000
+PIO_PULSE_DEFAULT = 1600
+
+# Character-tab diagnostic jitter sliders (not synth params). Sent as unsigned 16-bit
+# on PARAM_DEBUG_COMMAND 160: (hi << 8) | amount, amount in 0..128.
+# Firmware hi bytes: 0xC8 amp-comp, 0xCA pitch, 0xCB pulsewidth.
+CHARACTER_JITTERS = (
+    ("Amplitude compensation jitter", 0xC8),
+    ("Pitch jitter", 0xCA),
+    ("Pulsewidth jitter", 0xCB),
+)
+CHARACTER_JITTER_LO = 0
+CHARACTER_JITTER_HI = 128
+CHARACTER_JITTER_DEFAULT = 0
 
 DEBUG_PARAM_ID = 160

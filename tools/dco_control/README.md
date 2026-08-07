@@ -48,13 +48,14 @@ python3 app.py --port /dev/ttyACM0  # or name it explicitly
 python3 app.py --theme light        # dark is the default
 ```
 
-Pick the port and press **Connect**. The tool **automatically pushes** the current UI
-(patch + cal controls) with **Send all**, so the board matches what you see — including a
-preset already loaded at startup. Loading / Prev / Next / Init while connected also push.
-Use the **Send all** button anytime to resync after a board reset.
+Pick the port and press **Connect**. The tool **automatically pushes the sound patch**
+with **Send all** (same set as presets: no Calibration, Diagnostics, or bench/debug).
+Loading / Prev / Next / Init while connected also push that patch only. Use **Send all**
+anytime to resync the patch after a board reset.
 
-Hot-path benches are only meaningful after that sync; otherwise the UI can show a preset
-while the DCO is still on firmware defaults.
+When connected, patch sliders/combos/checks send live on change (coalesced ~20 ms).
+**Calibration**, **Diagnostics**, and **bench** controls are not stored and are sent
+**only on manual use** (move a cal control, click a diag/bench button, drag PIO pulse).
 
 ### Preset bank
 
@@ -72,8 +73,8 @@ A classic **128-slot** program bar sits under the connection toolbar:
 
 A leading `*` beside the name means the UI differs from the last loaded or saved snapshot.
 The bank lives in [`presets/bank.json`](presets/bank.json). Slot 0 ships as **Init**; the rest
-are empty until you save into them. Calibration and Diagnostics pulse commands are not stored
-— only the sound patch (the same non-pulse, non-cal set **Send all** would push for a patch).
+are empty until you save into them. Calibration, Diagnostics, and bench controls are not
+stored and are not part of Connect / preset / **Send all** — only the sound patch is.
 
 ### If the port will not open
 
@@ -88,7 +89,7 @@ are empty until you save into them. Calibration and Diagnostics pulse commands a
 
 ## 4. Layout
 
-Six parameter tabs from the tables in [`params.py`](params.py), plus a seventh for
+Parameter tabs from the tables in [`params.py`](params.py), plus Diagnostics for
 bench-only buttons:
 
 | Tab | Contents |
@@ -98,7 +99,8 @@ bench-only buttons:
 | Filter | Cutoff, resonance, envelope and LFO amounts, keytrack, distortion Drive/Mix |
 | PWM | Pulse width, LFO2 and envelope to PW |
 | LFOs | Waveforms, speeds, and the LFO routing depths |
-| Calibration | Autotune trigger, manual calibration stage and offsets |
+| Calibration | Autotune trigger, manual calibration stage/offsets, PIO pulse length (Y) via debug 160, fake-cal seed |
+| Character | Master Character amount (ParamId 221) plus diagnostic noise jitters via debug 160 (`0xC8` / `0xCA` / `0xCB`); see [`docs/CHARACTER.md`](../../docs/CHARACTER.md) |
 | Diagnostics | PIO topology / period probes and hot-path profiler buttons |
 
 Anything the board prints — the topology report, profiler tables, `DCO_DEBUG_REPORT`
@@ -128,9 +130,9 @@ style so the same code works under either backend.
 
 ## 5. Testing the PIO sync work
 
-The **Oscillators** tab (Sync section) is the reason this tool exists. `PARAM_SOFT_SYNC` (36) and
-`PARAM_SUBOSC_DIVIDE` (37) have no Input-board UI at all, so the panel cannot reach them;
-this is the only way to exercise them. See
+The **Oscillators** tab (Sync section) is the reason this tool exists. `PARAM_SOFT_SYNC` (36)
+(0 = hard, 1..3 = soft-sync thresholds) and `PARAM_SUBOSC_DIVIDE` (37) have no Input-board UI
+at all, so the panel cannot reach them; this is the only way to exercise them. See
 [`DCO/docs/PIO_OSCILLATORS.md`](../../docs/PIO_OSCILLATORS.md) for what they do.
 
 On the **Diagnostics** tab, the three PIO buttons call the bench helpers documented in
