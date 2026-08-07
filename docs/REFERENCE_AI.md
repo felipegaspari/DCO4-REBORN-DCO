@@ -298,7 +298,7 @@ Related docs:
   - Implements a **robust non‑blocking frame parser** for Serial2 (`serial_parser.h`), speaking the Input panel protocol (`serial_input_protocol.h`):
     - Commands:  
       - `'a'` / `'b'` / `'c'` – 4×16‑bit ADSR blocks (BE) → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times.  
-      - `'d'` – filter block → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_update_mod_formulas()`.  
+      - `'d'` – filter block → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_update_mod_scales()` (depths in payload).  
       - `'e'` – `ADSR1toVCA`.  
       - `'f'` – 16‑bit PW value (BE) → `PW[0]` at /4 scale.  
       - `'p'` – paramNumber + 16‑bit value (BE) → `update_parameters()`.  

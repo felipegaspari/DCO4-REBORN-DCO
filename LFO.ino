@@ -11,33 +11,31 @@ void init_DRIFT_LFOs() {
   }
 }
 
-// Configure one drift LFO (waveform, amplitude, speed offset from spread/speed params).
+// Configure one drift LFO. Wave bus is full-scale Q15; CC arg is legacy/unused for amplitude.
 void init_DRIFT_LFO(lfo &LFO, int CC, byte LFONumber) {
+  (void)CC;
   LFO_DRIFT_SPEED_OFFSET[LFONumber] = (float)(1.00f - (float)((float)analogDriftSpread * 0.005) + (float)((float)analogDriftSpread * 0.00125f * (float)LFONumber)) * (float)expConverterFloat((float)analogDriftSpeed, 5000);
-  LFO.setWaveForm(LFO_DRIFT_WAVEFORM);                  // inicializar forma de onda
-  LFO.setAmpl(CC);                                      // establecer amplitud máxima
-  LFO.setAmplOffset(0);                                 // sin offset a la amplitud
-  LFO.setMode(0);                                       // establecer modo de sincronización a modo0 -> sin sincronización a BPM
+  LFO.setWaveForm(LFO_DRIFT_WAVEFORM);
+  LFO.setAmplQ15(MO_LFO_Q15_ONE);  // full-scale bipolar Q15 (±1.0)
+  LFO.setMode(0);
   LFO.setMode0Freq(LFO_DRIFT_SPEED_OFFSET[LFONumber], micros());
 }
 
-// Configure main detune LFO (LFO1). Called from init_LFOs().
+// Configure main detune LFO (LFO1). Amplitude is Q15 full-scale; depths live in *_q24.
 void init_LFO1() {
-  LFO1_class.setWaveForm(LFO1Waveform);  // initialize waveform
-  LFO1_class.setAmpl(LFO1_CC);           // set amplitude to maximum
-  LFO1_class.setAmplOffset(0);           // no offset to the amplitude
-  LFO1_class.setMode(0);                 // set sync mode to mode0 -> no sync to BPM
-  LFO1_class.setMode0Freq(0.5);          // set LFO to 30 Hz
+  LFO1_class.setWaveForm(LFO1Waveform);
+  LFO1_class.setAmplQ15(MO_LFO_Q15_ONE);
+  LFO1_class.setMode(0);
+  LFO1_class.setMode0Freq(0.5);
 }
 
 
-// Configure secondary LFO (LFO2: PW / OSC2 detune, etc.). Called from init_LFOs().
+// Configure secondary LFO (LFO2: PW / OSC2 detune, etc.).
 void init_LFO2() {
-  LFO2_class.setWaveForm(2);    // initialize waveform
-  LFO2_class.setAmpl(LFO2_CC);  // set amplitude to maximum
-  LFO2_class.setAmplOffset(0);  // no offset to the amplitude
-  LFO2_class.setMode(0);        // set sync mode to mode0 -> no sync to BPM
-  LFO2_class.setMode0Freq(5);   // set LFO to 30 Hz
+  LFO2_class.setWaveForm(2);
+  LFO2_class.setAmplQ15(MO_LFO_Q15_ONE);
+  LFO2_class.setMode(0);
+  LFO2_class.setMode0Freq(5);
 }
 
 // Update LFO1 Q15 level + per-osc pitch mods (depth_q24 is full-scale octave travel). ~50 µs.

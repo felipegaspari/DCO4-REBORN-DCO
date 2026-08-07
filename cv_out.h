@@ -10,7 +10,7 @@
 void init_cv_out();
 void update_CV_outs();
 void update_CV_outs_manual_calibration();
-void cv_update_mod_formulas();
+void cv_update_mod_scales();
 #ifndef USE_FLOAT_CV_OUTS
 void cv_update_vcf_drift_scale();
 #endif

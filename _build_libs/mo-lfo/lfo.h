@@ -1,8 +1,8 @@
 //----------------------------------//
 // LFO class for Arduino
 // by mo-thunderz
-// version 1.1
-// last update: 29.12.2020
+// modified by felipegaspari
+// version 1.2
 //----------------------------------//
 
 #include "Arduino.h"
@@ -11,88 +11,112 @@
 // -------------------------------------------------
 // Configuration macros
 // -------------------------------------------------
-// Configure the sine lookup table resolution:
-//   LFO_SINE_TABLE_BITS = log2(table_size)
-//   e.g. 8 -> 256 samples, 9 -> 512 samples, 10 -> 1024 samples
-// You can override this with a #define before including this header.
+// Sine lookup table resolution: LFO_SINE_TABLE_BITS = log2(table_size)
+//   e.g. 8 -> 256, 9 -> 512 (default), 10 -> 1024
+// Override with #define before including this header.
 #ifndef LFO_SINE_TABLE_BITS
 #define LFO_SINE_TABLE_BITS 9
 #endif
 
 #define LFO_SINE_TABLE_SIZE (1u << LFO_SINE_TABLE_BITS)
+#define LFO_SINE_FRAC_BITS  (16 - LFO_SINE_TABLE_BITS)
 
-#ifndef lfo_h
-#define lfo_h
+// Math / output backend:
+//   0 = legacy unipolar DAC integer output (default, examples)
+//   1 = bipolar Q15 hot path (±32767 ≈ ±1.0), for synth engines
+#ifndef MO_LFO_USE_Q15
+#define MO_LFO_USE_Q15 0
+#endif
 
+#ifndef MO_LFO_CONFIG_REPORTED
+#define MO_LFO_CONFIG_REPORTED
+#if MO_LFO_USE_Q15
+#pragma message("MO-LFO: math=Q15 bipolar (MO_LFO_USE_Q15=1)")
+#else
+#pragma message("MO-LFO: math=DAC unipolar int (MO_LFO_USE_Q15=0)")
+#endif
+#endif
+
+#ifndef mo_lfo_h
+#define mo_lfo_h
+
+// Q15 full scale in int16_t (±32767 ≈ ±1.0)
+static const int16_t MO_LFO_Q15_ONE = 32767;
 
 class lfo
 {
     public:
         // constructor
+        // dacSize: vertical range for DAC mode; in Q15 mode used only when bridging setAmpl(dac counts)
         lfo(int dacSize);
 
-        void setAmpl(int l_ampl);                                                                                           // use this function to set the amplitude from 0 to DACSIZE-1
-        void setAmplOffset(int l_ampl_offset);                      // use this function to set the amplitude offset from 0 to DACSIZE-1
+        void setAmpl(int l_ampl);                                   // DAC counts 0..dacSize-1 (Q15 mode: converts once to _ampl_q15)
+#if MO_LFO_USE_Q15
+        void setAmplQ15(int16_t l_ampl_q15);                        // direct Q15 amplitude 0..32767
+        int16_t getAmplQ15() const { return _ampl_q15; }
+#endif
+        void setAmplOffset(int l_ampl_offset);                      // DAC mode only; no-op in Q15 mode
         void setWaveForm(int l_waveForm);                           // 0 -> off, 1 -> saw, 2 -> triangle, 3 -> sin, 4 -> square [0,4]
-        void setMode(bool l_freq_sync);                             // use this function to set sync to free running (false) or BPM locked (true)
-        void setMode0Freq(float l_mode0_freq);                      // set Freq in Hz of free-running mode
-        void setMode0Freq(float l_mode0_freq, unsigned long l_t);   // set Freq in Hz of free-running mode, but by adding the current time the freq will be changed without phase jump -> just use micros() as second parameter
-        void setMode1Bpm(float l_mode1_bpm);                        // set BPM of track for sync mode
-        void setMode1Rate(float l_mode1_rate);                      // l_model_rate represents the lfo cycle duration in quarter notes -> see table at the bottom of this file
-        void setMode1Phase(float l_mode1_phase_offset);             // set phase offset for sync mode (free mode does not have phase offset as it is free running, though you can use sync(micros) in free mode to set phase to 0)
-        void sync(unsigned long l_t);                               // function to sync LFO to external trigger -> use sync(micros())
+        void setMode(bool l_freq_sync);                             // false -> free running, true -> BPM locked
+        void setMode0Freq(float l_mode0_freq);                      // free-running frequency in Hz
+        void setMode0Freq(float l_mode0_freq, unsigned long l_t);   // compatibility overload (timestamp ignored)
+        void setMode1Bpm(float l_mode1_bpm);                        // BPM for sync mode
+        void setMode1Rate(float l_mode1_rate);                      // LFO cycles per quarter note (see table below)
+        void setMode1Phase(float l_mode1_phase_offset);             // reserved, currently no effect
+        void sync(unsigned long l_t);                               // hard reset phase at timestamp t (use micros())
 
-        int getWaveForm();                                          // simple get functions as variables are private
+        int getWaveForm();
         int getAmpl();
         int getAmplOffset();
         bool getMode();
         float getMode0Freq();
         float getMode1Rate();
-        float getPhase();                                           // returns relative phase of output signal -> good for triggering LED
-        int getWave(unsigned long l_t);                             // main function that gives the waveformshape at time l_t -> use with getWave(micros())
-        // Bipolar Q15 wave (±32768 ≈ ±1.0), amplitude-scaled by setAmpl relative to dacSize-1.
-        int16_t getWaveQ15(unsigned long l_t);
-        // Octave-fraction Q24 product: (wave_q15 * depth_q24) >> 15. depth_q24 is full-scale travel.
-        static inline int32_t applyDepthQ24(int16_t wave_q15, int32_t depth_q24) {
+        float getPhase();                                           // normalized phase [0,1)
+
+#if MO_LFO_USE_Q15
+        // Bipolar Q15 wave (±32767 ≈ ±1.0), amplitude-scaled by setAmpl / setAmplQ15.
+        int16_t getWave(unsigned long l_t);
+        // Drop-in alias for synth code that already calls getWaveQ15().
+        int16_t getWaveQ15(unsigned long l_t) { return getWave(l_t); }
+        // Octave-fraction Q24 product: (wave_q15 * depth_q24) >> 15.
+        static inline int32_t applyDepthQ24(int16_t wave_q15, int32_t depth_q24)
+        {
             return (int32_t)(((int64_t)wave_q15 * (int64_t)depth_q24) >> 15);
         }
+#else
+        int getWave(unsigned long l_t);                             // unipolar [0, dacSize-1]
+#endif
 
     private:
-        int             _dacSize;                           // DAC size
-        int             _waveForm = 1;                      // 0 -> off, 1 -> saw, 2 -> triangle, 3 -> sin, 4 -> square [0,4]
-        int             _ampl = 0;                          // amplitude, scales from 0 to _dacSize
-        int             _ampl_offset = 0;                   // amplitude offset, scales from 0 to _dacSize
-        bool            _mode = 0;                          // sync mode: false -> free, true -> synced to track
-        float           _mode0_freq = 30;                   // frequency in Hz
-        float           _mode1_bpm = 120;                   // BPM of track
-        float           _mode1_rate = 1;                    // Rate to link to BPM of track
+        int             _dacSize;
+        int             _waveForm = 1;                      // 0..4
+        int             _ampl = 0;                          // DAC-count amplitude (for getAmpl / setAmpl bridge)
+        int             _ampl_offset = 0;                   // DAC mode offset; unused in Q15 hot path
+#if MO_LFO_USE_Q15
+        int16_t         _ampl_q15 = MO_LFO_Q15_ONE;         // cached Q15 amplitude
+#endif
+        bool            _mode = 0;                          // false -> free, true -> synced
+        float           _mode0_freq = 30;
+        float           _mode1_bpm = 120;
+        float           _mode1_rate = 1;
 
-        // Fixed-point phase accumulator (0..2^32-1 represents 0..1 cycle)
         uint32_t        _phase = 0;
-
-        // Phase increment per microsecond for free-running and synced modes
         uint32_t        _phase_inc_free = 0;
         uint32_t        _phase_inc_sync = 0;
-
-        // Last timestamp used for phase advancement
         unsigned long   _t_last = 0;
-
-        // Internal flag to detect first call to getWave()
         bool            _initialized = false;
 
-        // Internal helpers to compute phase increments
         void            _updatePhaseIncFree();
         void            _updatePhaseIncSync();
+#if MO_LFO_USE_Q15
+        void            _updateAmplQ15FromDac();
+#endif
 };
 
 #endif
 
 // -----------------------------------------------------
-// Additional explanation to function:
-//
-// void setMode1Rate(float l_mode1_rate);   
-// -> relevant only if _mode is 1
-// 
+// setMode1Rate table (mode 1 only):
 //
 //l_mode1_rate | lfo cycle duration
 //---------------------------------

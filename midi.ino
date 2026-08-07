@@ -124,12 +124,12 @@ void midi_cc_apply(uint8_t target, int16_t value) {
 
     case CC_LOCAL_ADSR1_TO_VCA_AMOUNT:  ADSR1toVCA = value; break;
 
-    // One CC carries one value, so the formulas are recomputed per write where the
-    // filter block frame recomputed once for four. Three float multiplies.
-    case CC_LOCAL_FILTER_CUTOFF:        CUTOFF     = (uint16_t)value; cv_update_mod_formulas(); break;
-    case CC_LOCAL_FILTER_RESONANCE:     RESONANCE  = (uint16_t)value; cv_update_mod_formulas(); break;
-    case CC_LOCAL_FILTER_ADSR2_TO_VCF:  ADSR2toVCF = value;           cv_update_mod_formulas(); break;
-    case CC_LOCAL_FILTER_LFO2_TO_VCF:   LFO2toVCF  = (uint16_t)value; cv_update_mod_formulas(); break;
+    // CUTOFF/RESONANCE are used live in update_CV_outs; only mod depths need scale refresh.
+    // Input 'd' refreshes once for the whole filter block (depths in the same payload).
+    case CC_LOCAL_FILTER_CUTOFF:        CUTOFF     = (uint16_t)value; break;
+    case CC_LOCAL_FILTER_RESONANCE:     RESONANCE  = (uint16_t)value; break;
+    case CC_LOCAL_FILTER_ADSR2_TO_VCF:  ADSR2toVCF = value;           cv_update_mod_scales(); break;
+    case CC_LOCAL_FILTER_LFO2_TO_VCF:   LFO2toVCF  = (uint16_t)value; cv_update_mod_scales(); break;
 
     // The voice engine uses PW[0] at quarter scale, as the 'f' frame does.
     case CC_LOCAL_PW_PW:                PW[0] = (uint16_t)value / 4; break;

@@ -20,25 +20,27 @@ static inline uint16_t cv_clamp_u12(int32_t v) {
 // Boot: build AS2164 VCA linearize table (same control points as Mainboard).
 void init_cv_out() {
   generateBezierArray({ 0, 4095 }, { 4095, 0 }, { 150, 1420 }, { -235, 815 }, 4096, AS2164_VCA_linearize_table);
-  cv_update_mod_formulas();
+  cv_update_mod_scales();
 #ifndef USE_FLOAT_CV_OUTS
   cv_update_vcf_drift_scale();
 #endif
 }
 
-// Recompute LFO1→VCA / EnvVCF→VCF / LFO2→VCF depth scalars.
-// The LFO scalars carry the negative sign that restores the Mainboard's LFO polarity.
-void cv_update_mod_formulas() {
+// Recompute LFO1→VCA / EnvVCF→VCF / LFO2→VCF depth scales.
+// The LFO scales carry the negative sign that restores the Mainboard's LFO polarity.
+void cv_update_mod_scales() {
 #ifdef USE_FLOAT_CV_OUTS
-  // LFO sources are Q15; ADSR float path still uses u12 levels.
-  ADSR2toVCF_formula = (1.0f / 512.0f) * (float)ADSR2toVCF;
-  LFO2toVCF_formula = -(1.0f / 512.0f) * (float)LFO2toVCF * (CV_LFO_REF_CC / 32768.0f);
-  LFO1toVCA_formula = -(1.0f / 512.0f) * (float)LFO1toVCA * (CV_LFO_REF_CC / 32768.0f);
+  // ADSR float path still uses u12 levels (peak ≈ depth*4095/512).
+  // LFO sources are Q15; /1024 keeps legacy peak (panel/512 * HALF/CC).
+  ADSR2toVCF_scale = (1.0f / 512.0f) * (float)ADSR2toVCF;
+  LFO2toVCF_scale = -(1.0f / 1024.0f) * (float)LFO2toVCF * (CV_LFO_REF_CC / 32768.0f);
+  LFO1toVCA_scale = -(1.0f / 1024.0f) * (float)LFO1toVCA * (CV_LFO_REF_CC / 32768.0f);
 #else
-  // Sources are Q15: (src_q15 * formula_q15) >> 15 → CV units at full scale.
-  ADSR2toVCF_formula_q15 = (int32_t)(((int64_t)ADSR2toVCF * 4095) / 512);
-  LFO2toVCF_formula_q15 = (int32_t)(-((int64_t)LFO2toVCF * 4095) / 512);
-  LFO1toVCA_formula_q15 = (int32_t)(-((int64_t)LFO1toVCA * 4095) / 512);
+  // Sources are Q15: (src_q15 * scale_q15) >> 15 → CV units at full scale.
+  // ADSR /512 vs LFO /1024: LFO preserves legacy bipolar peak (HALF/CC = 1/2).
+  ADSR2toVCF_scale_q15 = (int32_t)(((int64_t)ADSR2toVCF * 4095) / 512);
+  LFO2toVCF_scale_q15 = (int32_t)(-((int64_t)LFO2toVCF * 4095) / 1024);
+  LFO1toVCA_scale_q15 = (int32_t)(-((int64_t)LFO1toVCA * 4095) / 1024);
 #endif
 }
 
@@ -130,11 +132,11 @@ void update_CV_outs() {
   const int32_t matrix_cutoff = mod_sums[MOD_DEST_VCF_CUTOFF];
 
 #ifdef USE_FLOAT_CV_OUTS
-  const int16_t LFO1toVCA_calc = (int16_t)((float)LFO1Level * LFO1toVCA_formula);
-  const float LFO2toVCF_mod = (float)LFO2Level * LFO2toVCF_formula;
-  // Float A/B: keep u12 ADSR levels with (1/512)*depth formula.
-  const float ADSR2toVCFcalculated = (float)ADSR_VCF_Level * ADSR2toVCF_formula;
-  const float ADSR2toVCF2calculated = (float)ADSR_VCF2_Level * ADSR2toVCF_formula;
+  const int16_t LFO1toVCA_calc = (int16_t)((float)LFO1Level * LFO1toVCA_scale);
+  const float LFO2toVCF_mod = (float)LFO2Level * LFO2toVCF_scale;
+  // Float A/B: keep u12 ADSR levels with (1/512)*depth scale.
+  const float ADSR2toVCFcalculated = (float)ADSR_VCF_Level * ADSR2toVCF_scale;
+  const float ADSR2toVCF2calculated = (float)ADSR_VCF2_Level * ADSR2toVCF_scale;
   const float matrix_cutoff_f = (float)matrix_cutoff;
 
   for (byte i = 0; i < NUM_VOICES; i++) {
@@ -167,13 +169,13 @@ void update_CV_outs() {
   }
 #else
   const int16_t LFO1toVCA_calc =
-    (int16_t)(((int64_t)LFO1Level * (int64_t)LFO1toVCA_formula_q15) >> 15);
+    (int16_t)(((int64_t)LFO1Level * (int64_t)LFO1toVCA_scale_q15) >> 15);
   const int32_t LFO2toVCF_mod =
-    (int32_t)(((int64_t)LFO2Level * (int64_t)LFO2toVCF_formula_q15) >> 15);
+    (int32_t)(((int64_t)LFO2Level * (int64_t)LFO2toVCF_scale_q15) >> 15);
   const int32_t ADSR2toVCFcalculated =
-    (int32_t)(((int64_t)ADSR_VCF_Level_q15 * (int64_t)ADSR2toVCF_formula_q15) >> 15);
+    (int32_t)(((int64_t)ADSR_VCF_Level_q15 * (int64_t)ADSR2toVCF_scale_q15) >> 15);
   const int32_t ADSR2toVCF2calculated =
-    (int32_t)(((int64_t)ADSR_VCF2_Level_q15 * (int64_t)ADSR2toVCF_formula_q15) >> 15);
+    (int32_t)(((int64_t)ADSR_VCF2_Level_q15 * (int64_t)ADSR2toVCF_scale_q15) >> 15);
 
   for (byte i = 0; i < NUM_VOICES; i++) {
     int32_t vca_q15 = 32768;

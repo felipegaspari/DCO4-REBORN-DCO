@@ -112,7 +112,8 @@ static void input_handle_filter_block(char, const uint8_t* payload, uint8_t len)
   RESONANCE  = word(payload[2], payload[3]);
   ADSR2toVCF = (int16_t)word(payload[4], payload[5]);
   LFO2toVCF  = word(payload[6], payload[7]);
-  cv_update_mod_formulas();
+  // Scales depend on ADSR2toVCF / LFO2toVCF in this payload (not CUTOFF/RESONANCE).
+  cv_update_mod_scales();
 }
 
 static void input_handle_adsr1_to_vca(char, const uint8_t* payload, uint8_t len) {

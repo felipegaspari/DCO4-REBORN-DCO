@@ -669,16 +669,14 @@ inline void voice_task_fixed_point() {
       BENCH_END(vt_unison_mod);
 
       BENCH_BEGIN(vt_drift_mod);
-      // Drift: (LFO_DRIFT_LEVEL_q15 * scale) >> 15; scale preserves legacy CC-peak travel.
-      static constexpr int32_t DRIFT_UNIT_Q24 = (int32_t)(0.0000005f * (float)(1 << 24) + 0.5f);
-      const int32_t driftScale_q24 =
-        (int32_t)((int32_t)analogDrift * DRIFT_UNIT_Q24 * (int32_t)LFO_DRIFT_CC_HALF);
+      // Drift: (LFO_DRIFT_LEVEL_q15 * drift_pitch_scale_q24) >> 15 (scale from param apply).
+      const int32_t driftScale_q24 = drift_pitch_scale_q24;
       int64_t DETUNE_DRIFT_OSC1_q24 =
-        (analogDrift != 0) ? (((int64_t)LFO_DRIFT_LEVEL[DCO_A] * (int64_t)driftScale_q24) >> 15) : 0;
+        (driftScale_q24 != 0) ? (((int64_t)LFO_DRIFT_LEVEL[DCO_A] * (int64_t)driftScale_q24) >> 15) : 0;
       int64_t DETUNE_DRIFT_OSC2_q24 =
-        (analogDrift != 0) ? (((int64_t)LFO_DRIFT_LEVEL[DCO_B] * (int64_t)driftScale_q24) >> 15) : 0;
+        (driftScale_q24 != 0) ? (((int64_t)LFO_DRIFT_LEVEL[DCO_B] * (int64_t)driftScale_q24) >> 15) : 0;
       int64_t DETUNE_DRIFT_OSC3_q24 =
-        (analogDrift != 0) ? (((int64_t)LFO_DRIFT_LEVEL[DCO_C] * (int64_t)driftScale_q24) >> 15) : 0;
+        (driftScale_q24 != 0) ? (((int64_t)LFO_DRIFT_LEVEL[DCO_C] * (int64_t)driftScale_q24) >> 15) : 0;
       BENCH_END(vt_drift_mod);
 
       BENCH_BEGIN(vt_modifiers);
@@ -1126,7 +1124,6 @@ inline void voice_task_fixed_point() {
           BENCH_FEND(vt_pwm_calc);
 
           BENCH_BEGIN(vt_pw_update);
-          // PW_PWM[i] = (uint16_t)constrain(DIV_COUNTER_PW - 1 - /*((float)ADSR3Level[i] * ADSR3toPWM_formula)*/ - ((float)LFO2Level * LFO2toPWM_formula) - PW /*+ RANDOMNESS1 + RANDOMNESS2*/, 0, DIV_COUNTER_PW-1);
           pwm_set_chan_level(PW_PWM_SLICES[i], pwm_gpio_to_channel(PW_PINS[i]), get_PW_level_interpolated(PW_PWM[i], i));
           BENCH_END(vt_pw_update);
 
@@ -1446,12 +1443,10 @@ inline void voice_task_float() {
 
       BENCH_BEGIN(vt_drift_mod);
       // --- 2.6 Drift modifiers (float); LFO_DRIFT_LEVEL is Q15 ---
-      static constexpr float DRIFT_UNIT = 0.0000005f;
-      float driftScale =
-        (float)analogDrift * DRIFT_UNIT * (float)LFO_DRIFT_CC_HALF * (1.0f / 32768.0f);
-      float DETUNE_DRIFT_OSC1 = (analogDrift != 0) ? (float)LFO_DRIFT_LEVEL[DCO_A] * driftScale : 0.0f;
-      float DETUNE_DRIFT_OSC2 = (analogDrift != 0) ? (float)LFO_DRIFT_LEVEL[DCO_B] * driftScale : 0.0f;
-      float DETUNE_DRIFT_OSC3 = (analogDrift != 0) ? (float)LFO_DRIFT_LEVEL[DCO_C] * driftScale : 0.0f;
+      float driftScale = q24_to_float(drift_pitch_scale_q24) * (1.0f / 32768.0f);
+      float DETUNE_DRIFT_OSC1 = (drift_pitch_scale_q24 != 0) ? (float)LFO_DRIFT_LEVEL[DCO_A] * driftScale : 0.0f;
+      float DETUNE_DRIFT_OSC2 = (drift_pitch_scale_q24 != 0) ? (float)LFO_DRIFT_LEVEL[DCO_B] * driftScale : 0.0f;
+      float DETUNE_DRIFT_OSC3 = (drift_pitch_scale_q24 != 0) ? (float)LFO_DRIFT_LEVEL[DCO_C] * driftScale : 0.0f;
       BENCH_END(vt_drift_mod);
 
       BENCH_BEGIN(vt_modifiers);

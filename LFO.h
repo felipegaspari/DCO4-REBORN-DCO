@@ -1,6 +1,10 @@
 #ifndef __LFO_H__
 #define __LFO_H__
 
+// Hot path is bipolar Q15 (±32767 ≈ ±1.0). Must be set before mo-lfo.h.
+#ifndef MO_LFO_USE_Q15
+#define MO_LFO_USE_Q15 1
+#endif
 #include <mo-lfo.h>  // required for function generation
 
 // After Mainboard absorption, DCO is the sole LFO clock:
@@ -22,7 +26,8 @@ enum Lfo2PitchSlot : uint8_t {
   LFO2_PITCH_SLOT_COUNT = 2,
 };
 
-//static constexpr uint16_t PWM_CC = 4096;
+// Legacy CC peak constants — used only when baking param depths to full-scale Q24
+// (see params.ino LFO→pitch / drift_pitch_scale_q24). Live wave bus is Q15, not these counts.
 static constexpr uint16_t LFO1_CC = 3400;
 static constexpr uint16_t LFO1_CC_HALF = LFO1_CC / 2;
 static constexpr uint16_t LF01_CC_THIRD = LFO1_CC / 3;
@@ -31,6 +36,11 @@ static constexpr uint16_t LFO2_CC_HALF = LFO2_CC / 2;
 
 static constexpr uint16_t LFO_DRIFT_CC = 2000;
 static constexpr uint16_t LFO_DRIFT_CC_HALF = LFO_DRIFT_CC / 2;
+
+// Pitch drift: (LFO_DRIFT_LEVEL_q15 * drift_pitch_scale_q24) >> 15.
+// Precomputed in apply_param_analog_drift_amount (legacy unit * CC peak).
+static constexpr int32_t DRIFT_UNIT_Q24 = (int32_t)(0.0000005f * (float)(1 << 24) + 0.5f);
+int32_t drift_pitch_scale_q24 = 0;
 
 //////////////// LFO ian ////////////////////////////////////////
 
@@ -85,9 +95,6 @@ uint16_t LFO1SpeedVal;
 uint16_t LFO2SpeedVal;
 uint16_t LFO1toDCOVal;
 uint16_t LFO2toVCFVal;
-
-volatile float LFO2toPWM_formula;
-volatile int32_t LFO2toPWM_formula_q24;
 
 void LFO1();
 void LFO2();

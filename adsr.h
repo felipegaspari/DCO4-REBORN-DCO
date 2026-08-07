@@ -93,8 +93,6 @@ int32_t ADSR1toDETUNE1_scale_q24;
 int16_t ADSR1toPWM;
 // Full-scale PW delta (PWM counts) for (ADSR1Level_q15 * scale) >> 15.
 int32_t ADSR1toPWM_scale = 0;
-float ADSR1toPWM_formula;
-int32_t ADSR1toPWM_formula_q24;
 
 adsr adsr1_voice_0(ADSR_1_CC, ADSR1_curve1, ADSR1_curve2, false, 7, 7, 7);
 adsr adsr1_voice_1(ADSR_1_CC, ADSR1_curve1, ADSR1_curve2, false, 7, 7, 7);

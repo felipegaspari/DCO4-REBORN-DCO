@@ -334,6 +334,9 @@ static void apply_param_unison_detune(int16_t v) {
 // PARAM_ANALOG_DRIFT_AMOUNT: drift modulation depth.
 static void apply_param_analog_drift_amount(int16_t v) {
   analogDrift = v;
+  // Full-scale Q15 → same travel as legacy (cc_level * unit * analogDrift).
+  drift_pitch_scale_q24 =
+    (int32_t)((int32_t)analogDrift * DRIFT_UNIT_Q24 * (int32_t)LFO_DRIFT_CC_HALF);
 #ifndef USE_FLOAT_CV_OUTS
   cv_update_vcf_drift_scale();
 #endif
@@ -450,7 +453,7 @@ static void apply_param_filter_mode(int16_t v) {
 
 static void apply_param_lfo1_to_vca(int16_t v) {
   LFO1toVCA = (uint16_t)constrain((int)v, 0, 4095);
-  cv_update_mod_formulas();
+  cv_update_mod_scales();
 }
 
 // PARAM_LFO2_TO_PW: LFO2 → pulse-width depth (PWM counts at full-scale Q15).

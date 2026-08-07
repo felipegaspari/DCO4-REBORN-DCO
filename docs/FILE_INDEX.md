@@ -665,7 +665,7 @@ MIDI CC control surface: the `MIDI_CC_LINEAR` / `MIDI_CC_EXP_TIME` curves, the `
 - `midi_cc_handle()` — Find the controller in `midiCcMap[]`, scale it into `lo..hi`, apply the exp curve for envelope times, then `midi_cc_apply()`. Unmapped CCs ignored.
   - **Called from:** `handleControlChange()`.
   - **When:** MIDI callback.
-- `midi_cc_apply()` — Dispatch: a `CC_LOCAL_*` target writes its block global here (`cv_update_mod_formulas()` for the filter four, `PW[0] = v / 4`), anything else goes to `update_parameters()`.
+- `midi_cc_apply()` — Dispatch: a `CC_LOCAL_*` target writes its block global here (`cv_update_mod_scales()` for ADSR2toVCF / LFO2toVCF only; CUTOFF/RESONANCE assign without scale refresh; `PW[0] = v / 4`), anything else goes to `update_parameters()`.
   - **Called from:** `midi_cc_handle()`.
   - **When:** MIDI callback.
 - `handleProgramChange()` — Stub / empty as implemented.
@@ -700,7 +700,7 @@ Prototype. **No function definitions.**
 - `input_handle_adsr1()` / `input_handle_adsr2()` / `input_handle_adsr3()` — `'a'`/`'b'`/`'c'` → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times.
   - **Called from:** Serial2 parser command table (`inputSerialCommands[]`).
   - **When:** Serial2 RX.
-- `input_handle_filter_block()` — `'d'` → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_update_mod_formulas()`.
+- `input_handle_filter_block()` — `'d'` → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_update_mod_scales()` (needed for the two depth fields in the payload).
   - **Called from:** Serial2 parser.
   - **When:** Serial2 RX.
 - `input_handle_adsr1_to_vca()` — `'e'` → `ADSR1toVCA`.

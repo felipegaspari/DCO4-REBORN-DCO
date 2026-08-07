@@ -53,19 +53,19 @@ uint16_t DIST_MIX = 0;
 uint8_t FILTER_MODE = 0;
 
 #ifdef USE_FLOAT_CV_OUTS
-float ADSR2toVCF_formula = 0.0f;
-float LFO2toVCF_formula = 0.0f;
-float LFO1toVCA_formula = 0.0f;
+float ADSR2toVCF_scale = 0.0f;
+float LFO2toVCF_scale = 0.0f;
+float LFO1toVCA_scale = 0.0f;
 float VCFKeytrackModifier = 1.0f;
 float VCFKeytrackPerVoice[NUM_VOICES_TOTAL];
 float velocityToVCF = 0;
 float velocityToVCA = 0;
 volatile float VCF_DRIFT[NUM_VOICES_TOTAL];
 #else
-// Q15 multipliers (1.0 = 32768). Precomputed in cv_update_mod_formulas / param apply.
-int32_t ADSR2toVCF_formula_q15 = 0;
-int32_t LFO2toVCF_formula_q15 = 0;
-int32_t LFO1toVCA_formula_q15 = 0;
+// Q15 multipliers (1.0 = 32768). Precomputed in cv_update_mod_scales / param apply.
+int32_t ADSR2toVCF_scale_q15 = 0;
+int32_t LFO2toVCF_scale_q15 = 0;
+int32_t LFO1toVCA_scale_q15 = 0;
 int32_t VCFKeytrackModifier_q15 = 32768;
 int32_t VCFKeytrackPerVoice_q15[NUM_VOICES_TOTAL];
 int32_t velocityToVCF_q15 = 0;

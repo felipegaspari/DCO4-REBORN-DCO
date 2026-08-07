@@ -41,7 +41,9 @@ Bench banner prints `cv=FLOAT|FIXED` from `USE_FLOAT_CV_OUTS`.
 
 - `lerp_0_4095` — always-on (divide by 4096 via `>>12`)
 - 1 ms block: integer reso compensation; keytrack / drift under `#ifdef USE_FLOAT_CV_OUTS`
-- `cv_update_mod_formulas` / `cv_update_vcf_drift_scale` — float vs `_q15` under the same flag
+- `cv_update_mod_scales` / `cv_update_vcf_drift_scale` — float vs `_q15` under the same flag
+- Depth peaks at full-scale Q15: ADSR2→VCF uses `/512` (`depth * 4095 / 512`); LFO1→VCA / LFO2→VCF use `/1024` to keep the legacy bipolar peak (`panel/512 * HALF/CC`)
+- Scale refresh on boot, Input `'d'` (depths in payload), MIDI ADSR2toVCF / LFO2toVCF, and `PARAM_LFO1_TO_VCA` — not on CUTOFF/RESONANCE (those are read live)
 - `update_CV_outs` body — `#ifdef USE_FLOAT_CV_OUTS` … `#else` … fixed integer VCA/VCF combine + `cv_clamp_u12`
 - Fixed path keeps `matrix_cutoff` as `int32_t` through the VCF sum (no float promote)
 
@@ -67,6 +69,6 @@ Bench banner prints `cv=FLOAT|FIXED` from `USE_FLOAT_CV_OUTS`.
 
 ## 5. Soft CV state — [`../cv_state.h`](../cv_state.h)
 
-Under `USE_FLOAT_CV_OUTS`: float `*_formula`, `VCFKeytrackModifier` / `VCFKeytrackPerVoice[]`, `velocityToVCA/VCF`, `float VCF_DRIFT[]`.
+Under `USE_FLOAT_CV_OUTS`: float `*_scale`, `VCFKeytrackModifier` / `VCFKeytrackPerVoice[]`, `velocityToVCA/VCF`, `float VCF_DRIFT[]`.
 
-Else: `*_formula_q15`, `VCFKeytrackPerVoice_q15[]`, `velocityTo*_q15`, `vcf_drift_scale_q15`, `int16_t VCF_DRIFT[]`.
+Else: `*_scale_q15`, `VCFKeytrackPerVoice_q15[]`, `velocityTo*_q15`, `vcf_drift_scale_q15`, `int16_t VCF_DRIFT[]`.
