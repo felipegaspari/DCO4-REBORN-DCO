@@ -1,12 +1,14 @@
 #ifndef __LFO_H__
 #define __LFO_H__
 
-// Hot path is bipolar Q15 (±32767 ≈ ±1.0). Must be set before mo-lfo.h.
+// Bipolar Q15 bus (±32767 ≈ ±1.0). mo-lfo always exposes getWaveQ15/setAmplQ15;
+// MO_LFO_USE_Q15 is only a preferred-path hint (set here for the sketch TU).
+// Live waves are always full-scale Q15 — ctor dacSize does not affect getWaveQ15.
+// Depth scales below set musical travel; see docs/LFO.md.
 #ifndef MO_LFO_USE_Q15
 #define MO_LFO_USE_Q15 1
 #endif
-#include <mo-lfo.h>  // required for function generation
-
+#include <mo-lfo.h>
 // After Mainboard absorption, DCO is the sole LFO clock:
 //   LFO1 → pitch (volatile Q24 arrays) + EnvVCA depth (LFO1toVCA)
 //   LFO2 → OSC2/3 pitch (fine+coarse folded) + PW + EnvVCF depth (LFO2toVCF)
@@ -26,49 +28,63 @@ enum Lfo2PitchSlot : uint8_t {
   LFO2_PITCH_SLOT_COUNT = 2,
 };
 
-// Legacy CC peak constants — used only when baking param depths to full-scale Q24
-// (see params.ino LFO→pitch / drift_pitch_scale_q24). Live wave bus is Q15, not these counts.
-static constexpr uint16_t LFO1_CC = 3400;
-static constexpr uint16_t LFO1_CC_HALF = LFO1_CC / 2;
-static constexpr uint16_t LF01_CC_THIRD = LFO1_CC / 3;
-static constexpr uint16_t LFO2_CC = 1024;
-static constexpr uint16_t LFO2_CC_HALF = LFO2_CC / 2;
+// =============================================================================
+// Depth scales (tune musical travel — live wave is always full-scale Q15)
+// Hot:  mod_q24 = (wave_q15 * depth_q24) >> 15
+// Bake: depth_q24 = lfo_pitch_depth_q24(amt, SCALE)
+//       amt = expConverterFloat(panel) / 275000  (octave-fraction unit)
+// Larger SCALE → deeper mod at the same panel setting.
+// =============================================================================
 
-static constexpr uint16_t LFO_DRIFT_CC = 2000;
-static constexpr uint16_t LFO_DRIFT_CC_HALF = LFO_DRIFT_CC / 2;
+// LFO1 → pitch (LFO1toDCO + per-osc). Also used for LFO2 coarse (same travel as LFO1).
+static constexpr int32_t LFO1_PITCH_DEPTH_SCALE = 1700;
 
-// Pitch drift: (LFO_DRIFT_LEVEL_q15 * drift_pitch_scale_q24) >> 15.
-// Precomputed in apply_param_analog_drift_amount (legacy unit * CC peak).
-static constexpr int32_t DRIFT_UNIT_Q24 = (int32_t)(0.0000005f * (float)(1 << 24) + 0.5f);
+// LFO2 → fine pitch (OSC2 / OSC3).
+static constexpr int32_t LFO2_PITCH_DEPTH_SCALE = 512;
+
+// Analog drift → pitch:
+//   drift_pitch_scale_q24 = analogDrift * DRIFT_PITCH_UNIT_Q24 * DRIFT_PITCH_DEPTH_SCALE
+// Hot: (LFO_DRIFT_LEVEL_q15 * drift_pitch_scale_q24) >> 15
+static constexpr int32_t DRIFT_PITCH_DEPTH_SCALE = 1000;
+static constexpr int32_t DRIFT_PITCH_UNIT_Q24 =
+  (int32_t)(0.0000005f * (float)(1 << 24) + 0.5f);
+
+static inline int32_t lfo_pitch_depth_q24(float amt, int32_t depth_scale) {
+  return (int32_t)(amt * (float)depth_scale * (float)(1 << 24) + 0.5f);
+}
+
+// mo-lfo ctor dacSize is ignored on the Q15 path (getWaveQ15 / setAmplQ15).
+static constexpr int LFO_DAC_SIZE_UNUSED = 1;
+
+// Runtime drift pitch scale (baked in apply_param_analog_drift_amount).
 int32_t drift_pitch_scale_q24 = 0;
 
-//////////////// LFO ian ////////////////////////////////////////
+//////////////// LFO instances ////////////////////////////////////////
 
-lfo LFO1_class(LFO1_CC + 1);
-lfo LFO2_class(LFO2_CC);
+lfo LFO1_class(LFO_DAC_SIZE_UNUSED);
+lfo LFO2_class(LFO_DAC_SIZE_UNUSED);
 
 lfo LFO_DRIFT_CLASS[NUM_OSCILLATORS] = {
-  lfo(LFO_DRIFT_CC),
-  lfo(LFO_DRIFT_CC),
-  lfo(LFO_DRIFT_CC)
+  lfo(LFO_DAC_SIZE_UNUSED),
+  lfo(LFO_DAC_SIZE_UNUSED),
+  lfo(LFO_DAC_SIZE_UNUSED)
 };
 
 
 /////////////////////////////////////////////////////////////////
 byte LFO_DRIFT_WAVEFORM = 2;
 float LFO_DRIFT_SPEED_OFFSET[NUM_OSCILLATORS];
-float LFO_DRIFT_SPEED = 0.6;
-// Drift LFO levels as bipolar Q15 (Core0 write / Core1 read). Polarity matches legacy (half - wave).
+// Drift LFO levels as bipolar Q15 (Core0 write / Core1 read).
+// Polarity: negate Q15 for Mainboard polarity.
 volatile int16_t LFO_DRIFT_LEVEL[NUM_OSCILLATORS];
 
 
-// LFO1/LFO2 levels as bipolar Q15 (±32768 ≈ ±1.0). Core0 write / Core1 CV+matrix+PW read.
+// LFO1/LFO2 levels as bipolar Q15 (±32767 ≈ ±1.0). Core0 write / Core1 CV+matrix+PW read.
 volatile int16_t LFO1Level;
 byte LFO1Waveform = 3;
 float LFO1Speed = 50;
-float LFO1toDCO = 0;
-// Full-scale octave travel in Q24: (LFO*_Level_q15 * depth_q24) >> 15.
-// Param apply multiplies legacy amt by the old CC peak so musical depth is unchanged.
+// Full-scale octave travel in Q24: lfo::applyDepthQ24(level_q15, depth_q24).
+// Param apply: lfo_pitch_depth_q24(amt, LFO1_PITCH_DEPTH_SCALE).
 int32_t LFO1toDCO_q24 = 0;
 // Additive per-osc LFO1 pitch depths (each stacks on LFO1toDCO_q24 in LFO1()).
 int32_t LFO1toOSC1_q24 = 0;
@@ -77,16 +93,14 @@ int32_t LFO1toOSC3_q24 = 0;
 // Core 0 writes, Core 1 reads. Q24 log-frequency additive pitch modifiers.
 volatile int32_t lfo1_pitch_mod_q24[LFO1_PITCH_SLOT_COUNT];
 volatile int32_t lfo2_pitch_mod_q24[LFO2_PITCH_SLOT_COUNT];
-int16_t LFO1toDETUNE1;
-uint16_t LFO1toDETUNE2;
 
 volatile int16_t LFO2Level;
-byte LFO2Waveform;
+byte LFO2Waveform = 2;  // default triangle
 float LFO2Speed;
 // Per-osc LFO2 fine pitch depths (OSC2/3; param 0..255).
 int32_t LFO2toOSC2_q24 = 0;
 int32_t LFO2toOSC3_q24 = 0;
-// Coarse LFO2 pitch depths (0..511 param; depth pre-scaled to LFO1-equivalent travel).
+// Coarse LFO2 pitch depths (0..511; baked with LFO1_PITCH_DEPTH_SCALE).
 int32_t LFO2toOSC2_coarse_q24 = 0;
 int32_t LFO2toOSC3_coarse_q24 = 0;
 volatile uint16_t LFO2toPW;
@@ -94,7 +108,6 @@ volatile uint16_t LFO2toPW;
 uint16_t LFO1SpeedVal;
 uint16_t LFO2SpeedVal;
 uint16_t LFO1toDCOVal;
-uint16_t LFO2toVCFVal;
 
 void LFO1();
 void LFO2();

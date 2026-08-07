@@ -173,24 +173,13 @@ Related docs:
   - Works in free‑running or BPM‑synced mode; exposes phase and amplitude control.
   - Used as the basis for LFO1, LFO2 and per‑DCO drift LFOs.
 
-- **`LFO.h` / `LFO.ino`**  
-  - DCO4‑specific LFO layer around the library:
-    - Creates global LFO instances:
-      - `LFO1_class` – main detune LFO (high‑resolution CC range).
-      - `LFO2_class` – secondary LFO (e.g. PW modulation, OSC2 detune).
-      - `LFO_DRIFT_CLASS[8]` – per‑oscillator drift LFOs.
-    - Defines modulation ranges and scaling constants (`LFO1_CC`, `LFO2_CC`, `LFO_DRIFT_CC`, etc.).
-    - Exposes globals for UI and parameter mapping: `LFO1Level`, `LFO2Level`, waveforms, speeds, and modulation depths (`LFO1toDCO_q24`, `LFO1toOSC1/2/3_q24`, `LFO2toOSC2/3_q24`, `LFO2toOSC2/3_coarse_q24`, `LFO2toPW`, etc.).
-  - **LFO1 pitch routing:** `PARAM_LFO1_TO_DCO` (CC 65) is folded into each `lfo1_pitch_mod_q24[OSCn]` on Core 0 (`lfo1 × (LFO1toDCO + LFO1toOSCn)`). Per‑osc extras `PARAM_LFO1_TO_OSC1/2/3` (CC 14/15/19) add on top. LFO2 fine + coarse → `lfo2_pitch_mod_q24[]` on OSC2/3 (CC 67/68 fine 0..255, CC 119/120 coarse 0..511); depths stay separate at param apply, runtime folds like LFO1 (`lfo2 × (LFO2toOSCn_q24 + LFO2toOSCn_coarse_q24)`); coarse depth pre-scales LFO1-equivalent travel (`exp/275000 × LFO1_CC_HALF/LFO2_CC_HALF`).
-  - `init_LFOs()` / `init_LFO1()` / `init_LFO2()`:
-    - Configure waveforms, amplitudes, offsets and initial frequencies for the two main LFOs.
-  - `init_DRIFT_LFOs()` / `init_DRIFT_LFO()`:
-    - Initialize drift LFOs with per‑oscillator speed offsets (spread factor) using `expConverterFloat()`.
-  - `LFO1()` / `LFO2()`:
-    - Called from `loop()` on core 0 every ~50 µs (with drift).
-    - Compute bipolar LFO outputs into `lfo1_pitch_mod_q24[]` / `lfo2_pitch_mod_q24[]` (Q24 log-frequency additive modifiers).
-  - `DRIFT_LFOs()`:
-    - Updates `LFO_DRIFT_LEVEL[i]` for every DCO using a shared timestamp, producing per‑oscillator slow drift signals.
+- **`LFO.h` / `LFO.ino`** — full reference: [`LFO.md`](LFO.md).  
+  - Live bus is **full-scale Q15** (`getWaveQ15` / `setAmplQ15`); ctor `dacSize` is unused.
+  - Pitch/drift depth scales in `LFO.h` (`LFO1_PITCH_DEPTH_SCALE` 1700, `LFO2_PITCH_DEPTH_SCALE` 512, `DRIFT_PITCH_DEPTH_SCALE` 1000) + `lfo_pitch_depth_q24`.
+  - Instances: `LFO1_class`, `LFO2_class`, `LFO_DRIFT_CLASS[NUM_OSCILLATORS]`.
+  - Globals: `LFO1Level` / `LFO2Level` / `LFO_DRIFT_LEVEL[]` (Q15); pitch depths `LFO1toDCO_q24`, `LFO1toOSC*_q24`, `LFO2toOSC*_q24` (+ coarse), `LFO2toPW`.
+  - **LFO1 pitch routing:** `PARAM_LFO1_TO_DCO` folded into each `lfo1_pitch_mod_q24[OSCn]` (`applyDepthQ24` of `LFO1toDCO_q24 + LFO1toOSCn_q24`). Per‑osc extras `PARAM_LFO1_TO_OSC1/2/3`. LFO2 fine + coarse → `lfo2_pitch_mod_q24[]`; coarse uses `LFO1_PITCH_DEPTH_SCALE`.
+  - `init_*` / `LFO1` / `LFO2` / `DRIFT_LFOs` on Core 0 (~100 µs with LFO2 + drift).
 
 ---
 
@@ -298,7 +287,7 @@ Related docs:
   - Implements a **robust non‑blocking frame parser** for Serial2 (`serial_parser.h`), speaking the Input panel protocol (`serial_input_protocol.h`):
     - Commands:  
       - `'a'` / `'b'` / `'c'` – 4×16‑bit ADSR blocks (BE) → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times.  
-      - `'d'` – filter block → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_update_mod_scales()` (depths in payload).  
+      - `'d'` – filter block → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_bake_adsr2_to_vcf_scale()` + `cv_bake_lfo2_to_vcf_scale()`. Depth bake / peak math: [`CV_MOD_SCALES.md`](CV_MOD_SCALES.md).  
       - `'e'` – `ADSR1toVCA`.  
       - `'f'` – 16‑bit PW value (BE) → `PW[0]` at /4 scale.  
       - `'p'` – paramNumber + 16‑bit value (BE) → `update_parameters()`.  
@@ -371,7 +360,7 @@ Related docs:
 **Vendored in `_build_libs/`** (via `--libraries ./_build_libs`):
 
 - **`ADSR_Bezier`** — symlink to monorepo-root repo, branch **`main`**; used by `adsr.*` (see section 4).
-- **`mo-lfo`** — vendored copy; used by `LFO.*` (see section 4).
+- **`mo-lfo`** — vendored from repo-root `mo-lfo/` (always dual `getWave`/`getWaveQ15`); used by `LFO.*` (see section 4).
 - **`MIDI_Library`**, **`PID_v1`** — vendored copies.
 
 **Other dependencies** (Arduino core / sketchbook, not under `_build_libs`):

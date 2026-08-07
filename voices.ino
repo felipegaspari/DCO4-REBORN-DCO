@@ -1442,8 +1442,8 @@ inline void voice_task_float() {
       BENCH_END(vt_unison_mod);
 
       BENCH_BEGIN(vt_drift_mod);
-      // --- 2.6 Drift modifiers (float); LFO_DRIFT_LEVEL is Q15 ---
-      float driftScale = q24_to_float(drift_pitch_scale_q24) * (1.0f / 32768.0f);
+      // --- 2.6 Drift modifiers (float); LFO_DRIFT_LEVEL is mo-lfo Q15 ---
+      float driftScale = q24_to_float(drift_pitch_scale_q24) * (1.0f / 32767.0f);
       float DETUNE_DRIFT_OSC1 = (drift_pitch_scale_q24 != 0) ? (float)LFO_DRIFT_LEVEL[DCO_A] * driftScale : 0.0f;
       float DETUNE_DRIFT_OSC2 = (drift_pitch_scale_q24 != 0) ? (float)LFO_DRIFT_LEVEL[DCO_B] * driftScale : 0.0f;
       float DETUNE_DRIFT_OSC3 = (drift_pitch_scale_q24 != 0) ? (float)LFO_DRIFT_LEVEL[DCO_C] * driftScale : 0.0f;
@@ -1747,7 +1747,7 @@ inline void voice_task_float() {
           float adsr1_delta =
             ((float)ADSR1Level_q15[i] * (float)ADSR1toPWM_scale) * (1.0f / 32768.0f);
           float lfo2_delta =
-            ((float)LFO2Level * (float)local_LFO2toPW) * (1.0f / 32768.0f);
+            ((float)LFO2Level * (float)local_LFO2toPW) * (1.0f / 32767.0f);
           float pw_calc =
               (float)DIV_COUNTER_PW - 1.0f
             - (float)PW[0]

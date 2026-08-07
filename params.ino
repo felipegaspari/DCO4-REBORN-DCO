@@ -121,8 +121,7 @@ static void apply_param_osc3_detune_val(int16_t v) {
 
 static void apply_param_lfo2_to_osc_depth(int16_t v, int32_t& depth_q24) {
   float amt = (float)expConverterFloat((uint8_t)v, 500) / 275000.0f;
-  // Full-scale Q15 depth: legacy was (cc_level * amt_q24); peak cc = LFO2_CC_HALF.
-  depth_q24 = (int32_t)(amt * (float)LFO2_CC_HALF * (float)(1 << 24) + 0.5f);
+  depth_q24 = lfo_pitch_depth_q24(amt, LFO2_PITCH_DEPTH_SCALE);
 }
 
 // PARAM_LFO2_TO_OSC2: LFO2 → OSC2 pitch depth (Q24).
@@ -135,10 +134,10 @@ static void apply_param_lfo2_to_osc3(int16_t v) {
   apply_param_lfo2_to_osc_depth(v, LFO2toOSC3_q24);
 }
 
-// LFO2 coarse pitch depth (0..511, LFO1 curve; full-scale travel matches LFO1 peak).
+// LFO2 coarse pitch depth (0..511; same travel scale as LFO1 pitch).
 static void apply_param_lfo2_to_osc_coarse_depth(int16_t v, int32_t& depth_q24) {
   float amt = (float)expConverterFloat((uint16_t)v, 500) / 275000.0f;
-  depth_q24 = (int32_t)(amt * (float)LFO1_CC_HALF * (float)(1 << 24) + 0.5f);
+  depth_q24 = lfo_pitch_depth_q24(amt, LFO1_PITCH_DEPTH_SCALE);
 }
 
 static void apply_param_lfo2_to_osc2_coarse(int16_t v) {
@@ -336,9 +335,9 @@ static void apply_param_analog_drift_amount(int16_t v) {
   analogDrift = v;
   // Full-scale Q15 → same travel as legacy (cc_level * unit * analogDrift).
   drift_pitch_scale_q24 =
-    (int32_t)((int32_t)analogDrift * DRIFT_UNIT_Q24 * (int32_t)LFO_DRIFT_CC_HALF);
+    (int32_t)((int32_t)analogDrift * DRIFT_PITCH_UNIT_Q24 * DRIFT_PITCH_DEPTH_SCALE);
 #ifndef USE_FLOAT_CV_OUTS
-  cv_update_vcf_drift_scale();
+  vcf_drift_scale_q15 = (int32_t)analogDrift;
 #endif
 }
 
@@ -393,17 +392,16 @@ static void apply_param_subosc_divide(int16_t v) {
   pio_defer_request_subosc(divide);
 }
 
-// PARAM_LFO1_TO_DCO: LFO1 → DCO detune depth (float + full-scale Q24 for Q15 wave).
+// PARAM_LFO1_TO_DCO: LFO1 → DCO detune depth (full-scale Q24 for Q15 wave).
 static void apply_param_lfo1_to_dco(int16_t v) {
   LFO1toDCOVal = v;
   float lfo1_amt = (float)expConverterFloat(LFO1toDCOVal, 500) / 275000.0f;
-  LFO1toDCO = lfo1_amt;
-  LFO1toDCO_q24 = (int32_t)(lfo1_amt * (float)LFO1_CC_HALF * (float)(1 << 24) + 0.5f);
+  LFO1toDCO_q24 = lfo_pitch_depth_q24(lfo1_amt, LFO1_PITCH_DEPTH_SCALE);
 }
 
 static void apply_param_lfo1_to_osc_depth(int16_t v, int32_t& depth_q24) {
   float amt = (float)expConverterFloat((uint8_t)v, 500) / 275000.0f;
-  depth_q24 = (int32_t)(amt * (float)LFO1_CC_HALF * (float)(1 << 24) + 0.5f);
+  depth_q24 = lfo_pitch_depth_q24(amt, LFO1_PITCH_DEPTH_SCALE);
 }
 
 static void apply_param_lfo1_to_osc1(int16_t v) {
@@ -453,7 +451,7 @@ static void apply_param_filter_mode(int16_t v) {
 
 static void apply_param_lfo1_to_vca(int16_t v) {
   LFO1toVCA = (uint16_t)constrain((int)v, 0, 4095);
-  cv_update_mod_scales();
+  cv_bake_lfo1_to_vca_scale();
 }
 
 // PARAM_LFO2_TO_PW: LFO2 → pulse-width depth (PWM counts at full-scale Q15).

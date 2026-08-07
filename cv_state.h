@@ -62,7 +62,7 @@ float velocityToVCF = 0;
 float velocityToVCA = 0;
 volatile float VCF_DRIFT[NUM_VOICES_TOTAL];
 #else
-// Q15 multipliers (1.0 = 32768). Precomputed in cv_update_mod_scales / param apply.
+// Q15 multipliers (1.0 = 32768). Precomputed by cv_bake_*_scale / cv_update_mod_scales.
 int32_t ADSR2toVCF_scale_q15 = 0;
 int32_t LFO2toVCF_scale_q15 = 0;
 int32_t LFO1toVCA_scale_q15 = 0;

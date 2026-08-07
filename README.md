@@ -41,11 +41,20 @@ Vendored Arduino libraries used by the build (passed via `--libraries ./_build_l
 |---------|------|--------|
 | `ADSR_Bezier` | `_build_libs/ADSR_Bezier` → `../../ADSR_Bezier` | Symlink to monorepo root; track **`main`**. Toggle math backend in [`adsr.h`](adsr.h) via `ADSR_BEZIER_USE_FLOAT` (default `0` = fixed-point). |
 | `DCO_Noise` | `_build_libs/DCO_Noise` → `../../DCO_Noise` | Symlink to monorepo root; noise engines (`begin`/`next`). Fleet size in [`noise.h`](noise.h). |
-| `mo-lfo` | `_build_libs/mo-lfo` | Vendored copy |
+| `mo-lfo` | `_build_libs/mo-lfo` → `../../mo-lfo` | Symlink to monorepo root (dual `getWave`/`getWaveQ15` API). Arduino IDE: also symlink sketchbook `libraries/mo-lfo` → this tree and use `#include <mo-lfo.h>`. |
 | `MIDI_Library` | `_build_libs/MIDI_Library` | Vendored copy |
 | `PID_v1` | `_build_libs/PID_v1` | Vendored copy |
 
-**Monorepo layout:** clone `DCO3-MONOSYNTH` with sibling [`ADSR_Bezier`](../ADSR_Bezier/) and [`DCO_Noise`](../DCO_Noise/) at the repo root so the symlinks resolve.
+**Monorepo layout:** clone `DCO3-MONOSYNTH` with sibling [`ADSR_Bezier`](../ADSR_Bezier/), [`DCO_Noise`](../DCO_Noise/), and [`mo-lfo`](../mo-lfo/) at the repo root so the symlinks resolve.
+
+**Arduino IDE:** `_build_libs` is not on the IDE library path. For `mo-lfo` (has a `.cpp`), replace the sketchbook copy with a symlink to the monorepo tree (sketchbook here is `/media/NVME_DATA/Arduino`):
+
+```bash
+rm -rf /media/NVME_DATA/Arduino/libraries/mo-lfo
+ln -s /home/felipe/Documentos/DCO3-MONOSYNTH/mo-lfo /media/NVME_DATA/Arduino/libraries/mo-lfo
+```
+
+`LFO.h` must use `#include <mo-lfo.h>` (not a relative `_build_libs/...` path), or the `.cpp` is never linked.
 
 **Standalone DCO clone:** replace the symlink with a submodule:
 
@@ -64,6 +73,9 @@ See `docs/` — especially:
 
 - [`docs/PINOUT.md`](docs/PINOUT.md) — provisional hub + CV pin / UART map (Phase 0)
 - [`docs/MOD_MATRIX.md`](docs/MOD_MATRIX.md) — sparse mod matrix (levels / dual reso / Dist Drive)
+- [`docs/CV_MOD_SCALES.md`](docs/CV_MOD_SCALES.md) — VCA/VCF mod depth bakers, Q15 peak math (`/512` vs `/1024`), when to call
+- [`docs/LFO.md`](docs/LFO.md) — LFO Q15 bus; pitch/drift depth scales in `LFO.h`
+- [`docs/UPDATE_CV_OUTS_HOT_PATH.md`](docs/UPDATE_CV_OUTS_HOT_PATH.md) — `update_CV_outs` ~10 kHz call-graph map
 - [`docs/CHARACTER.md`](docs/CHARACTER.md) — Character / noise imperfection knobs, inject sites, and removal checklist
 - [`../VOICE-AUX/docs/I2S_NOISE.md`](../VOICE-AUX/docs/I2S_NOISE.md) — PCM5102 I2S noise listen on voice-aux (not on DCO)
 - [`docs/WAVE_MUX.md`](docs/WAVE_MUX.md) — per-osc Saw/Pulse/Tri via dual 595 + DG411

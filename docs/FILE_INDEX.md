@@ -6,6 +6,8 @@ Purpose of **every file**, and for each source function: **what it does**, **who
 - Engine flags: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
 - Hot-path profiling: [`BENCHMARKING.md`](BENCHMARKING.md)
 - Character / noise jitter: [`CHARACTER.md`](CHARACTER.md)
+- CV mod depth scales: [`CV_MOD_SCALES.md`](CV_MOD_SCALES.md)
+- LFO Q15 bus / pitch depth scales: [`LFO.md`](LFO.md)
 - Repo entry / doc index: [`../README.md`](../README.md)
 
 Headers with no bodies are marked **no function definitions**.  
@@ -364,6 +366,21 @@ Sparse mod matrix (8 slots). Docs: [`MOD_MATRIX.md`](MOD_MATRIX.md).
 - `mod_matrix_accumulate()` / `mod_matrix_apply_cv()` — Sum → level PWM + `RESONANCE_PWM[]` + Dist Drive / Dist Mix; cutoff sum in `update_CV_outs()`.
   - **Called from:** `update_CV_outs()`.
 
+### `cv_out.h` / `cv_out.ino` / `cv_state.h`
+
+Soft VCA/VCF/reso CV math (~10 kHz). Depth bakers and peak math: [`CV_MOD_SCALES.md`](CV_MOD_SCALES.md). Hot-path map: [`UPDATE_CV_OUTS_HOT_PATH.md`](UPDATE_CV_OUTS_HOT_PATH.md).
+
+**Functions**
+- `init_cv_out()` — AS2164 linearize table; `cv_update_mod_scales()`; fixed path sets `vcf_drift_scale_q15`.
+  - **Called from:** Core1 boot (with soft CV init).
+- `cv_bake_adsr2_to_vcf_scale()` / `cv_bake_lfo2_to_vcf_scale()` / `cv_bake_lfo1_to_vca_scale()` — Bake one panel depth → `*_scale(_q15)`.
+  - **Called from:** MIDI depth CCs; Input `'d'` (ADSR2+LFO2); `PARAM_LFO1_TO_VCA`; `cv_update_mod_scales`.
+- `cv_update_mod_scales()` — All three bakers (boot).
+  - **Called from:** `init_cv_out()`.
+- `update_CV_outs()` — Env + LFO scales + CUTOFF + drift + matrix → soft PWM levels.
+  - **Called from:** `loop1` play path.
+- `update_CV_outs_manual_calibration()` — Cal-branch CV writers.
+
 ### `amp_comp.h`
 
 Amp-comp tables, LUT, method select, dual precompute/facade.
@@ -436,33 +453,33 @@ Globals / instances. **No function definitions.**
 
 ### `LFO.h`
 
-Prototypes / instances. **No function definitions.**
+Live LFO instances + Q15 levels + pitch mod arrays. Pitch/drift depth scales (`LFO1_PITCH_DEPTH_SCALE`, `LFO2_PITCH_DEPTH_SCALE`, `DRIFT_PITCH_*`) and `lfo_pitch_depth_q24`. ctor dacSize unused. Docs: [`LFO.md`](LFO.md). **Inline helpers only (no `.ino` bodies).**
 
 ### `LFO.ino`
 
 **Functions**
-- `init_LFOs()` — Init LFO1 + LFO2.
+- `init_LFOs()` — Init LFO1 + LFO2 (`setAmplQ15(MO_LFO_Q15_ONE)`).
   - **Called from:** `setup()`.
   - **When:** Boot Core0.
-- `init_LFO1()` — Configure main detune LFO.
+- `init_LFO1()` — Configure main detune LFO (`LFO1Waveform`).
   - **Called from:** `init_LFOs()`.
   - **When:** Boot.
-- `init_LFO2()` — Configure secondary LFO.
+- `init_LFO2()` — Configure secondary LFO (`LFO2Waveform`).
   - **Called from:** `init_LFOs()`.
   - **When:** Boot.
 - `init_DRIFT_LFOs()` — Init all drift LFOs.
   - **Called from:** `setup()`.
   - **When:** Boot Core0.
-- `init_DRIFT_LFO()` — Init one drift LFO (uses `expConverterFloat`).
-  - **Called from:** `init_DRIFT_LFOs()`; also re-speed from param applies.
-  - **When:** Boot; Serial2 drift params.
-- `LFO1()` — Update LFO1 → `lfo1_pitch_mod_q24[]`.
+- `init_DRIFT_LFO(lfo&, byte)` — Init one drift LFO (uses `expConverterFloat`).
+  - **Called from:** `init_DRIFT_LFOs()`.
+  - **When:** Boot Core0.
+- `LFO1()` — `getWaveQ15` → `lfo1_pitch_mod_q24[]` via `applyDepthQ24`.
   - **Called from:** `loop()` when ~50 µs elapsed (with LFO2 + drift).
   - **When:** Realtime Core0.
-- `LFO2()` — Update LFO2 → `lfo2_pitch_mod_q24[]`.
+- `LFO2()` — `getWaveQ15` → `lfo2_pitch_mod_q24[]`.
   - **Called from:** `loop()` when ~50 µs elapsed.
   - **When:** Realtime Core0.
-- `DRIFT_LFOs()` — Update `LFO_DRIFT_LEVEL[]`.
+- `DRIFT_LFOs()` — Update `LFO_DRIFT_LEVEL[]` (negated Q15).
   - **Called from:** `loop()` when ~50 µs elapsed (with LFO1 + LFO2).
   - **When:** Realtime Core0.
 
@@ -665,7 +682,7 @@ MIDI CC control surface: the `MIDI_CC_LINEAR` / `MIDI_CC_EXP_TIME` curves, the `
 - `midi_cc_handle()` — Find the controller in `midiCcMap[]`, scale it into `lo..hi`, apply the exp curve for envelope times, then `midi_cc_apply()`. Unmapped CCs ignored.
   - **Called from:** `handleControlChange()`.
   - **When:** MIDI callback.
-- `midi_cc_apply()` — Dispatch: a `CC_LOCAL_*` target writes its block global here (`cv_update_mod_scales()` for ADSR2toVCF / LFO2toVCF only; CUTOFF/RESONANCE assign without scale refresh; `PW[0] = v / 4`), anything else goes to `update_parameters()`.
+- `midi_cc_apply()` — Dispatch: a `CC_LOCAL_*` target writes its block global here (`cv_bake_adsr2_to_vcf_scale` / `cv_bake_lfo2_to_vcf_scale` for the matching depth CC; CUTOFF/RESONANCE assign without scale bake; `PW[0] = v / 4`), anything else goes to `update_parameters()`.
   - **Called from:** `midi_cc_handle()`.
   - **When:** MIDI callback.
 - `handleProgramChange()` — Stub / empty as implemented.
@@ -700,7 +717,7 @@ Prototype. **No function definitions.**
 - `input_handle_adsr1()` / `input_handle_adsr2()` / `input_handle_adsr3()` — `'a'`/`'b'`/`'c'` → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times.
   - **Called from:** Serial2 parser command table (`inputSerialCommands[]`).
   - **When:** Serial2 RX.
-- `input_handle_filter_block()` — `'d'` → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_update_mod_scales()` (needed for the two depth fields in the payload).
+- `input_handle_filter_block()` — `'d'` → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_bake_adsr2_to_vcf_scale()` + `cv_bake_lfo2_to_vcf_scale()` (depths in payload).
   - **Called from:** Serial2 parser.
   - **When:** Serial2 RX.
 - `input_handle_adsr1_to_vca()` — `'e'` → `ADSR1toVCA`.

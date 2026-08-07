@@ -36,8 +36,8 @@ Depth is bipolar `int16` (typically ±4095 for full-scale swing). Hot path is **
 | 5 | Keytrack | `±32768` | `(note − 60) * 682`; note 0 → 0; independent of `VCFKeytrack` |
 | 6 | Random | `±32000` | DCO: S&H Q15 on note-on; aux: ~5 Hz free-run Q15 |
 | 7 | Aftertouch | `0..32766` | Channel AT `* 258` |
-| 8 | LFO1 | `±32768` | `LFO1Level` already Q15 from mo-lfo `getWaveQ15()` |
-| 9 | LFO2 | `±32768` | Same |
+| 8 | LFO1 | `±32767` | `LFO1Level` from mo-lfo `getWaveQ15()` |
+| 9 | LFO2 | `±32767` | `LFO2Level` from mo-lfo `getWaveQ15()` |
 | 10 | Pitch bend | `±32768` | `(bend − 8192) << 2` |
 | 11 | Mod wheel | `0..32766` | MIDI CC 1 `* 258` |
 | 12 | Noise 0 | `±32767` | Pass-through `noiseLevel[0]` (already Q15) |

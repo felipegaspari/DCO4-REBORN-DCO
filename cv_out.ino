@@ -4,7 +4,10 @@
 #include "include_all.h"
 #include <string.h>
 
-static constexpr float CV_LFO_REF_CC = 4095.0f;
+// Panel depth 0..512 → CV units. LFO Q15 peak uses *2 (legacy HALF/CC).
+static constexpr int32_t CV_U12_MAX = 4095;
+static constexpr int32_t CV_PANEL_DEPTH_FULL = 512;
+static constexpr int32_t CV_LFO_Q15_PEAK_DIV = CV_PANEL_DEPTH_FULL * 2;  // 1024
 
 // Always-on: divide by 4096 (>>12) instead of 4095.
 static inline uint16_t lerp_0_4095(uint16_t value, uint16_t y0, uint16_t y1) {
@@ -13,7 +16,7 @@ static inline uint16_t lerp_0_4095(uint16_t value, uint16_t y0, uint16_t y1) {
 
 static inline uint16_t cv_clamp_u12(int32_t v) {
   if (v < 0) return 0;
-  if (v > 4095) return 4095;
+  if (v > CV_U12_MAX) return (uint16_t)CV_U12_MAX;
   return (uint16_t)v;
 }
 
@@ -22,34 +25,50 @@ void init_cv_out() {
   generateBezierArray({ 0, 4095 }, { 4095, 0 }, { 150, 1420 }, { -235, 815 }, 4096, AS2164_VCA_linearize_table);
   cv_update_mod_scales();
 #ifndef USE_FLOAT_CV_OUTS
-  cv_update_vcf_drift_scale();
-#endif
-}
-
-// Recompute LFO1→VCA / EnvVCF→VCF / LFO2→VCF depth scales.
-// The LFO scales carry the negative sign that restores the Mainboard's LFO polarity.
-void cv_update_mod_scales() {
-#ifdef USE_FLOAT_CV_OUTS
-  // ADSR float path still uses u12 levels (peak ≈ depth*4095/512).
-  // LFO sources are Q15; /1024 keeps legacy peak (panel/512 * HALF/CC).
-  ADSR2toVCF_scale = (1.0f / 512.0f) * (float)ADSR2toVCF;
-  LFO2toVCF_scale = -(1.0f / 1024.0f) * (float)LFO2toVCF * (CV_LFO_REF_CC / 32768.0f);
-  LFO1toVCA_scale = -(1.0f / 1024.0f) * (float)LFO1toVCA * (CV_LFO_REF_CC / 32768.0f);
-#else
-  // Sources are Q15: (src_q15 * scale_q15) >> 15 → CV units at full scale.
-  // ADSR /512 vs LFO /1024: LFO preserves legacy bipolar peak (HALF/CC = 1/2).
-  ADSR2toVCF_scale_q15 = (int32_t)(((int64_t)ADSR2toVCF * 4095) / 512);
-  LFO2toVCF_scale_q15 = (int32_t)(-((int64_t)LFO2toVCF * 4095) / 1024);
-  LFO1toVCA_scale_q15 = (int32_t)(-((int64_t)LFO1toVCA * 4095) / 1024);
-#endif
-}
-
-#ifndef USE_FLOAT_CV_OUTS
-// At full-scale Q15 drift, VCF_DRIFT CV units ≈ analogDrift (matches legacy peak).
-void cv_update_vcf_drift_scale() {
+  // Full-scale Q15 drift → VCF_DRIFT CV units ≈ analogDrift (legacy peak).
   vcf_drift_scale_q15 = (int32_t)analogDrift;
-}
 #endif
+}
+
+// LFO scales carry the negative sign that restores the Mainboard's LFO polarity.
+void cv_bake_adsr2_to_vcf_scale() {
+#ifdef USE_FLOAT_CV_OUTS
+  // Float A/B: u12 ADSR levels × (depth / panel_full).
+  ADSR2toVCF_scale = (float)ADSR2toVCF / (float)CV_PANEL_DEPTH_FULL;
+#else
+  // Q15: (src_q15 * scale) >> 15 → depth * CV_U12_MAX / PANEL_DEPTH_FULL at +1.0.
+  ADSR2toVCF_scale_q15 =
+    (int32_t)(((int64_t)ADSR2toVCF * (int64_t)CV_U12_MAX) / CV_PANEL_DEPTH_FULL);
+#endif
+}
+
+void cv_bake_lfo2_to_vcf_scale() {
+#ifdef USE_FLOAT_CV_OUTS
+  LFO2toVCF_scale =
+    -(float)LFO2toVCF *
+    ((float)CV_U12_MAX / ((float)CV_LFO_Q15_PEAK_DIV * 32767.0f));
+#else
+  LFO2toVCF_scale_q15 =
+    (int32_t)(-((int64_t)LFO2toVCF * (int64_t)CV_U12_MAX) / CV_LFO_Q15_PEAK_DIV);
+#endif
+}
+
+void cv_bake_lfo1_to_vca_scale() {
+#ifdef USE_FLOAT_CV_OUTS
+  LFO1toVCA_scale =
+    -(float)LFO1toVCA *
+    ((float)CV_U12_MAX / ((float)CV_LFO_Q15_PEAK_DIV * 32767.0f));
+#else
+  LFO1toVCA_scale_q15 =
+    (int32_t)(-((int64_t)LFO1toVCA * (int64_t)CV_U12_MAX) / CV_LFO_Q15_PEAK_DIV);
+#endif
+}
+
+void cv_update_mod_scales() {
+  cv_bake_adsr2_to_vcf_scale();
+  cv_bake_lfo2_to_vcf_scale();
+  cv_bake_lfo1_to_vca_scale();
+}
 
 // Hot path (~10 kHz with ADSR): EnvVCA/EnvVCF + LFO + keytrack/vel → soft CV levels.
 void update_CV_outs() {
@@ -84,8 +103,8 @@ void update_CV_outs() {
     }
 
     if (analogDrift != 0) {
-      // LFO_DRIFT_LEVEL is Q15; full scale → ≈ analogDrift CV units.
-      const float drift_scale = (float)analogDrift * (1.0f / 32768.0f);
+      // LFO_DRIFT_LEVEL is mo-lfo Q15 (±32767); full scale → ≈ analogDrift CV units.
+      const float drift_scale = (float)analogDrift * (1.0f / 32767.0f);
       for (byte i = 0; i < NUM_VOICES; i++) {
         VCF_DRIFT[i] = (float)LFO_DRIFT_LEVEL[0] * drift_scale;
       }
