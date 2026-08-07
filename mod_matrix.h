@@ -65,6 +65,9 @@ void mod_matrix_set_mod_wheel(uint8_t value);
 // Sum active slots into dest_sums[0..MOD_DEST_COUNT-1].
 void mod_matrix_accumulate(int32_t dest_sums[MOD_DEST_COUNT]);
 
+// ±1023 pitch dest sum → Q24 octave (mul/shift, no hot /1023).
+int32_t mod_matrix_pitch_to_q24(int32_t pitch_s);
+
 // Apply level/reso/dist PWM from dest_sums; returns panel + matrix dist outputs.
 void mod_matrix_apply_cv(const int32_t dest_sums[MOD_DEST_COUNT], uint16_t* dist_drive_out,
                          uint16_t* dist_mix_out);

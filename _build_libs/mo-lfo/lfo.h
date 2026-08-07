@@ -50,6 +50,12 @@ class lfo
         float getMode1Rate();
         float getPhase();                                           // returns relative phase of output signal -> good for triggering LED
         int getWave(unsigned long l_t);                             // main function that gives the waveformshape at time l_t -> use with getWave(micros())
+        // Bipolar Q15 wave (±32768 ≈ ±1.0), amplitude-scaled by setAmpl relative to dacSize-1.
+        int16_t getWaveQ15(unsigned long l_t);
+        // Octave-fraction Q24 product: (wave_q15 * depth_q24) >> 15. depth_q24 is full-scale travel.
+        static inline int32_t applyDepthQ24(int16_t wave_q15, int32_t depth_q24) {
+            return (int32_t)(((int64_t)wave_q15 * (int64_t)depth_q24) >> 15);
+        }
 
     private:
         int             _dacSize;                           // DAC size

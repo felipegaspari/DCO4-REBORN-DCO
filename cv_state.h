@@ -5,8 +5,8 @@
 // Phase 2: EnvVCA/EnvVCF engines + soft CV levels (VCA_PWM/VCF_PWM).
 // Phase 3: PWM / 74HC595 writers (osc levels are PWM → VCAs; no I2C level DAC).
 //
-// USE_FLOAT_CV_OUTS (RP2350 default): float formulas / keytrack / drift / velocity.
-// Else (RP2040 default): Q15 / CV-domain integer counterparts — see cv_out.ino.
+// USE_FLOAT_CV_OUTS (A/B only): float formulas / keytrack / drift / velocity.
+// Else (shipping default both MCUs): Q15 / CV-domain integer counterparts — see cv_out.ino.
 
 #ifndef NUM_FILTERS
 #define NUM_FILTERS 2

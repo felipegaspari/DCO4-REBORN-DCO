@@ -48,14 +48,17 @@ lfo LFO_DRIFT_CLASS[NUM_OSCILLATORS] = {
 byte LFO_DRIFT_WAVEFORM = 2;
 float LFO_DRIFT_SPEED_OFFSET[NUM_OSCILLATORS];
 float LFO_DRIFT_SPEED = 0.6;
+// Drift LFO levels as bipolar Q15 (Core0 write / Core1 read). Polarity matches legacy (half - wave).
 volatile int16_t LFO_DRIFT_LEVEL[NUM_OSCILLATORS];
 
 
-volatile int16_t LFO1Level;  // Core0 write / Core1 CV read
+// LFO1/LFO2 levels as bipolar Q15 (±32768 ≈ ±1.0). Core0 write / Core1 CV+matrix+PW read.
+volatile int16_t LFO1Level;
 byte LFO1Waveform = 3;
 float LFO1Speed = 50;
 float LFO1toDCO = 0;
-// Q24 fixed-point version of LFO1->DCO modulation depth, kept in sync with LFO1toDCO.
+// Full-scale octave travel in Q24: (LFO*_Level_q15 * depth_q24) >> 15.
+// Param apply multiplies legacy amt by the old CC peak so musical depth is unchanged.
 int32_t LFO1toDCO_q24 = 0;
 // Additive per-osc LFO1 pitch depths (each stacks on LFO1toDCO_q24 in LFO1()).
 int32_t LFO1toOSC1_q24 = 0;

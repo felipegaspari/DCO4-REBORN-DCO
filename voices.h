@@ -56,7 +56,7 @@ float porta_note_step_f [NUM_OSCILLATORS];  // semitones per microsecond
 uint8_t highestNote = 124;
 
 static const int multiplierTableSize = 200;
-// Int-table scale only (FLOAT stores natural modifier/ratio and ignores this).
+// Legacy ×10000 scale for Q12 A/B only. RATIO_Q16 stores native Q16 (1.0 = 65536).
 const int32_t multiplierTableScale = 10000;
 
 // Pitch-multiplier storage: only the active PITCH_INTERP_MODE is allocated (see DCO.ino).
@@ -66,8 +66,8 @@ float   xMultiplierTableF[multiplierTableSize]; // modifier [-1,3]
 float   yMultiplierTableF[multiplierTableSize]; // frequency ratio
 float   slopeF[multiplierTableSize - 1];
 #else
-int32_t xMultiplierTable[multiplierTableSize];
-int32_t yMultiplierTable[multiplierTableSize];
+int32_t xMultiplierTable[multiplierTableSize]; // RATIO_Q16: natural Q16; Q12: ×10000 units
+int32_t yMultiplierTable[multiplierTableSize]; // RATIO_Q16: ratio Q16; Q12: ×10000 units
 int32_t x0Q16_tbl[multiplierTableSize];
 #if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
 int32_t slopeQ20[multiplierTableSize - 1];

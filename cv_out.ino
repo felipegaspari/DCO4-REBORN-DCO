@@ -1,11 +1,10 @@
 // Soft VCA/VCF/reso CV math (~10 kHz with ADSR). Always-on: Q15 matrix, lerp>>12, note-60.
-// USE_FLOAT_CV_OUTS: float VCA/VCF/keytrack/drift (RP2350 default).
-// Else: fixed Q15 / integer path (RP2040 default).
+// USE_FLOAT_CV_OUTS: float VCA/VCF/keytrack/drift (A/B override).
+// Else: fixed Q15 / integer path (shipping default both MCUs).
 #include "include_all.h"
 #include <string.h>
 
 static constexpr float CV_LFO_REF_CC = 4095.0f;
-static constexpr float CV_DRIFT_REF_CC = 1000.0f;
 
 // Always-on: divide by 4096 (>>12) instead of 4095.
 static inline uint16_t lerp_0_4095(uint16_t value, uint16_t y0, uint16_t y1) {
@@ -31,21 +30,22 @@ void init_cv_out() {
 // The LFO scalars carry the negative sign that restores the Mainboard's LFO polarity.
 void cv_update_mod_formulas() {
 #ifdef USE_FLOAT_CV_OUTS
+  // LFO sources are Q15; ADSR float path still uses u12 levels.
   ADSR2toVCF_formula = (1.0f / 512.0f) * (float)ADSR2toVCF;
-  LFO2toVCF_formula = -(1.0f / 512.0f) * (float)LFO2toVCF * (CV_LFO_REF_CC / (float)LFO2_CC);
-  LFO1toVCA_formula = -(1.0f / 512.0f) * (float)LFO1toVCA * (CV_LFO_REF_CC / (float)LFO1_CC);
+  LFO2toVCF_formula = -(1.0f / 512.0f) * (float)LFO2toVCF * (CV_LFO_REF_CC / 32768.0f);
+  LFO1toVCA_formula = -(1.0f / 512.0f) * (float)LFO1toVCA * (CV_LFO_REF_CC / 32768.0f);
 #else
-  // Q15: hot path does (level * formula_q15) >> 15.
-  ADSR2toVCF_formula_q15 = (int32_t)ADSR2toVCF * 64;  // * 32768 / 512
-  LFO2toVCF_formula_q15 = (int32_t)(-(int64_t)LFO2toVCF * 4095 * 32768 / ((int64_t)512 * LFO2_CC));
-  LFO1toVCA_formula_q15 = (int32_t)(-(int64_t)LFO1toVCA * 4095 * 32768 / ((int64_t)512 * LFO1_CC));
+  // Sources are Q15: (src_q15 * formula_q15) >> 15 → CV units at full scale.
+  ADSR2toVCF_formula_q15 = (int32_t)(((int64_t)ADSR2toVCF * 4095) / 512);
+  LFO2toVCF_formula_q15 = (int32_t)(-((int64_t)LFO2toVCF * 4095) / 512);
+  LFO1toVCA_formula_q15 = (int32_t)(-((int64_t)LFO1toVCA * 4095) / 512);
 #endif
 }
 
 #ifndef USE_FLOAT_CV_OUTS
-// VCF_DRIFT ≈ LFO_DRIFT_LEVEL[0] * analogDrift / 1000 (see float path constants).
+// At full-scale Q15 drift, VCF_DRIFT CV units ≈ analogDrift (matches legacy peak).
 void cv_update_vcf_drift_scale() {
-  vcf_drift_scale_q15 = ((int32_t)analogDrift * 32768) / 1000;
+  vcf_drift_scale_q15 = (int32_t)analogDrift;
 }
 #endif
 
@@ -82,9 +82,10 @@ void update_CV_outs() {
     }
 
     if (analogDrift != 0) {
+      // LFO_DRIFT_LEVEL is Q15; full scale → ≈ analogDrift CV units.
+      const float drift_scale = (float)analogDrift * (1.0f / 32768.0f);
       for (byte i = 0; i < NUM_VOICES; i++) {
-        VCF_DRIFT[i] = (float)LFO_DRIFT_LEVEL[0] *
-                       (0.002f * (CV_DRIFT_REF_CC / (float)LFO_DRIFT_CC)) * (float)analogDrift;
+        VCF_DRIFT[i] = (float)LFO_DRIFT_LEVEL[0] * drift_scale;
       }
     } else {
       for (byte i = 0; i < NUM_VOICES; i++) {
@@ -121,11 +122,7 @@ void update_CV_outs() {
   int32_t mod_sums[MOD_DEST_COUNT];
   if (!manualCalibrationFlag) {
     mod_matrix_accumulate(mod_sums);
-    int32_t pitch_s = mod_sums[MOD_DEST_PITCH];
-    if (pitch_s > MOD_PITCH_DEPTH_FULL) pitch_s = MOD_PITCH_DEPTH_FULL;
-    if (pitch_s < -MOD_PITCH_DEPTH_FULL) pitch_s = -MOD_PITCH_DEPTH_FULL;
-    matrix_pitch_mod_q24 =
-      (int32_t)(((int64_t)pitch_s << 24) / (int64_t)MOD_PITCH_DEPTH_FULL);
+    matrix_pitch_mod_q24 = mod_matrix_pitch_to_q24(mod_sums[MOD_DEST_PITCH]);
   } else {
     memset(mod_sums, 0, sizeof(mod_sums));
     matrix_pitch_mod_q24 = 0;
@@ -135,6 +132,7 @@ void update_CV_outs() {
 #ifdef USE_FLOAT_CV_OUTS
   const int16_t LFO1toVCA_calc = (int16_t)((float)LFO1Level * LFO1toVCA_formula);
   const float LFO2toVCF_mod = (float)LFO2Level * LFO2toVCF_formula;
+  // Float A/B: keep u12 ADSR levels with (1/512)*depth formula.
   const float ADSR2toVCFcalculated = (float)ADSR_VCF_Level * ADSR2toVCF_formula;
   const float ADSR2toVCF2calculated = (float)ADSR_VCF2_Level * ADSR2toVCF_formula;
   const float matrix_cutoff_f = (float)matrix_cutoff;
@@ -173,9 +171,9 @@ void update_CV_outs() {
   const int32_t LFO2toVCF_mod =
     (int32_t)(((int64_t)LFO2Level * (int64_t)LFO2toVCF_formula_q15) >> 15);
   const int32_t ADSR2toVCFcalculated =
-    (int32_t)(((int64_t)ADSR_VCF_Level * (int64_t)ADSR2toVCF_formula_q15) >> 15);
+    (int32_t)(((int64_t)ADSR_VCF_Level_q15 * (int64_t)ADSR2toVCF_formula_q15) >> 15);
   const int32_t ADSR2toVCF2calculated =
-    (int32_t)(((int64_t)ADSR_VCF2_Level * (int64_t)ADSR2toVCF_formula_q15) >> 15);
+    (int32_t)(((int64_t)ADSR_VCF2_Level_q15 * (int64_t)ADSR2toVCF_formula_q15) >> 15);
 
   for (byte i = 0; i < NUM_VOICES; i++) {
     int32_t vca_q15 = 32768;

@@ -25,24 +25,16 @@
 // ENGINE — board defaults (Arduino core: PICO_RP2350 / else)
 // =============================================================================
 #if defined(PICO_RP2350)
-// RP2350 has an FPU: float voice + float amp-comp dual-build (LUT + Q8 for A/B).
-#ifndef USE_FLOAT_VOICE_TASK
-#define USE_FLOAT_VOICE_TASK
+// RP2350: ship fixed Q24/Q16 voice + Q15 CV (same buses as RP2040). Float paths remain
+// available via overrides below for A/B. FPU is unused on the live hot path by default.
+#ifndef AMP_COMP_METHOD_DEFAULT
+#define AMP_COMP_METHOD_DEFAULT 2  // FIXED
 #endif
 #ifndef PITCH_INTERP_MODE
-#define PITCH_INTERP_MODE PITCH_INTERP_FLOAT_FAST
-#endif
-#ifndef USE_FLOAT_AMP_COMP
-#define USE_FLOAT_AMP_COMP
-#endif
-#ifndef AMP_COMP_METHOD_DEFAULT
-#define AMP_COMP_METHOD_DEFAULT 0  // FLOAT_QUAD (0); LUT=1, FIXED=2 — cmds 20–22
+#define PITCH_INTERP_MODE PITCH_INTERP_RATIO_Q16
 #endif
 #ifndef HIGH_PRECISION_CLKDIV
-#define HIGH_PRECISION_CLKDIV 1  // fixed-voice clkdiv only; ignored by float voice
-#endif
-#ifndef USE_FLOAT_CV_OUTS
-#define USE_FLOAT_CV_OUTS  // float VCA/VCF/keytrack/drift in update_CV_outs
+#define HIGH_PRECISION_CLKDIV 1  // fixed-voice clkdiv; ~4µs/voice 64-bit
 #endif
 #else
 // RP2040 / fallback: fixed voice + lean Q8 amp (no float amp tables / LUT RAM).
@@ -61,19 +53,16 @@
 // =============================================================================
 // ENGINE — overrides (uncomment to force; after board defaults)
 // =============================================================================
-// #undef USE_FLOAT_VOICE_TASK          // fixed voice_task_fixed_point on RP2350
-// #define USE_FLOAT_VOICE_TASK         // float voice on RP2040 (soft-float; slow)
-// #undef USE_FLOAT_AMP_COMP            // lean Q8 amp only (no float Hz tables / LUT)
-// #define USE_FLOAT_AMP_COMP           // float amp dual-build on RP2040 (large RAM)
-// #undef USE_FLOAT_CV_OUTS             // fixed VCA/VCF path on RP2350 (A/B / shipping)
-// #define USE_FLOAT_CV_OUTS            // float VCA/VCF path on RP2040 (soft-float; slow)
+// #define USE_FLOAT_VOICE_TASK         // float voice (needs FPU; soft-float on RP2040)
+// #define USE_FLOAT_AMP_COMP           // float amp dual-build (large RAM)
+// #define USE_FLOAT_CV_OUTS            // float VCA/VCF path (soft-float tax on RP2040)
 // #define HIGH_PRECISION_CLKDIV 0      // fast fixed clkdiv; ignored if float voice
 // #define AMP_COMP_METHOD_DEFAULT 1    // 0 FLOAT_QUAD / 1 LUT / 2 FIXED; needs USE_FLOAT_AMP_COMP for 0/1
 // Pitch A/B (ids above; default already set — #undef then redefine):
 // #undef PITCH_INTERP_MODE
-// #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT       // walk find A/B
-// #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT_FAST  // trunc+clamp±1 (RP2350 default)
-// #define PITCH_INTERP_MODE PITCH_INTERP_RATIO_Q16
+// #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT       // walk find A/B (needs float voice)
+// #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT_FAST  // trunc+clamp±1 (needs float voice)
+// #define PITCH_INTERP_MODE PITCH_INTERP_RATIO_Q16   // shipping default both MCUs
 // #define PITCH_INTERP_MODE PITCH_INTERP_Q12
 
 // =============================================================================

@@ -18,7 +18,6 @@ void init_DRIFT_LFO(lfo &LFO, int CC, byte LFONumber) {
   LFO.setAmpl(CC);                                      // establecer amplitud máxima
   LFO.setAmplOffset(0);                                 // sin offset a la amplitud
   LFO.setMode(0);                                       // establecer modo de sincronización a modo0 -> sin sincronización a BPM
-  //LFO.setMode0Freq(LFO_DRIFT_SPEED_OFFSET[LFONumber]);  // establecer LFO a 0.5 Hz
   LFO.setMode0Freq(LFO_DRIFT_SPEED_OFFSET[LFONumber], micros());
 }
 
@@ -41,27 +40,30 @@ void init_LFO2() {
   LFO2_class.setMode0Freq(5);   // set LFO to 30 Hz
 }
 
-// Update LFO1 per-osc pitch mods (LFO1toDCO + per-osc extra, one product each). ~50 µs.
+// Update LFO1 Q15 level + per-osc pitch mods (depth_q24 is full-scale octave travel). ~50 µs.
 inline void LFO1() {
-  LFO1Level = LFO1_class.getWave(micros()) - LFO1_CC_HALF;
-  const int32_t lfo1 = LFO1Level;
-  lfo1_pitch_mod_q24[LFO1_PITCH_OSC1] = lfo1 * (LFO1toDCO_q24 + LFO1toOSC1_q24);
-  lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] = lfo1 * (LFO1toDCO_q24 + LFO1toOSC2_q24);
-  lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] = lfo1 * (LFO1toDCO_q24 + LFO1toOSC3_q24);
+  LFO1Level = LFO1_class.getWaveQ15(micros());
+  lfo1_pitch_mod_q24[LFO1_PITCH_OSC1] =
+    lfo::applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC1_q24);
+  lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] =
+    lfo::applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC2_q24);
+  lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] =
+    lfo::applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC3_q24);
 }
 
-// Update LFO2 pitch mods for OSC2/3 (fine + coarse folded). ~50 µs.
+// Update LFO2 Q15 level + OSC2/3 pitch mods (fine + coarse folded). ~50 µs.
 inline void LFO2() {
-  LFO2Level = LFO2_class.getWave(micros()) - LFO2_CC_HALF;
-  const int32_t lfo2 = LFO2Level;
-  lfo2_pitch_mod_q24[LFO2_PITCH_OSC2] = lfo2 * (LFO2toOSC2_q24 + LFO2toOSC2_coarse_q24);
-  lfo2_pitch_mod_q24[LFO2_PITCH_OSC3] = lfo2 * (LFO2toOSC3_q24 + LFO2toOSC3_coarse_q24);
+  LFO2Level = LFO2_class.getWaveQ15(micros());
+  lfo2_pitch_mod_q24[LFO2_PITCH_OSC2] =
+    lfo::applyDepthQ24(LFO2Level, LFO2toOSC2_q24 + LFO2toOSC2_coarse_q24);
+  lfo2_pitch_mod_q24[LFO2_PITCH_OSC3] =
+    lfo::applyDepthQ24(LFO2Level, LFO2toOSC3_q24 + LFO2toOSC3_coarse_q24);
 }
 
-// Update per-oscillator drift LFO levels into LFO_DRIFT_LEVEL[]. Called with LFO2 ~every 50 µs.
+// Update per-oscillator drift LFO levels as Q15 (legacy polarity: half - wave). ~50 µs.
 inline void DRIFT_LFOs() {
   unsigned long currentMicros = micros();
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
-    LFO_DRIFT_LEVEL[i] = LFO_DRIFT_CC_HALF - LFO_DRIFT_CLASS[i].getWave(currentMicros);
+    LFO_DRIFT_LEVEL[i] = (int16_t)(-LFO_DRIFT_CLASS[i].getWaveQ15(currentMicros));
   }
 }

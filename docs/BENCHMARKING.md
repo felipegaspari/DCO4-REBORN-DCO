@@ -77,6 +77,31 @@ Fields: `mcu` (board package), `voice` / `amp` / `cv` (`USE_FLOAT_VOICE_TASK` / 
 
 **`update_CV_outs`:** after CV absorption + mod matrix, this probe can dominate Core1 on RP2040 (soft-float) and still matter on RP2350. Compare `update_CV_outs` `%win` and period-only `loop1` mean/max before/after CV/matrix changes; older doc samples (~3 µs / ~3%win) are **stale**. A/B with `#undef USE_FLOAT_CV_OUTS` on RP2350 (`cv=FIXED`).
 
+### Q15 / fixed-point migration baseline
+
+Before or after flipping engine defaults, capture a **period-only** dump and a **full MAIN** dump on the target MCU with the same preset and play pattern. Record at least:
+
+| Probe | Why |
+|-------|-----|
+| `loop1 period` mean/max | Overall Core1 budget |
+| `update_CV_outs` `%win` | CV + matrix path |
+| `voice_task` `%win` | Pitch / clkdiv / amp / PW |
+| `ADSR_update` `%win` | Envelope hot path |
+| Banner `voice=` / `cv=` / `pitch=` | Compile-time engine |
+
+Save the USB text (or screenshot) as the pre/post reference. Cmds **28/29** (pitch interp) remain the cents/speed check when changing multiplier tables.
+
+### Musical verify after Q15 / Q24-Q16 migration
+
+Play-test (same preset before/after):
+
+1. **LFO1 → pitch** and **LFO2 fine/coarse** — depth at mid/full should match prior feel (param depths were rescaled for Q15×Q24→`>>15`).
+2. **LFO2 → PW** and **ADSR → PW** — pulse width travel at full mod.
+3. **EnvVCA / EnvVCF + LFO1→VCA / LFO2→VCF** — CV depth and polarity.
+4. **Matrix** LFO/ADSR/noise sources and pitch dest (±1 oct at depth 1023).
+5. **Analog drift** pitch + VCF drift amount.
+6. **Pitch cents** — held notes across the keyboard; optional cmd **29** accuracy report.
+
 ```
 -- Core 1  (window 1002.113 ms) --
 probe                       count      mean       min       max      total   %win

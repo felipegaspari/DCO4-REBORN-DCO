@@ -8,9 +8,11 @@ static uint8_t mod_wheel = 0;
 
 volatile int32_t matrix_pitch_mod_q24 = 0;
 
-// Q15 ≈ level * 32768 / LFO*_CC_HALF via (level * MUL) >> 16.
-static constexpr uint32_t MOD_LFO1_TO_Q15_MUL = (32768u << 16) / (uint32_t)LFO1_CC_HALF;
-static constexpr uint32_t MOD_LFO2_TO_Q15_MUL = (32768u << 16) / (uint32_t)LFO2_CC_HALF;
+// Reciprocal of MOD_PITCH_DEPTH_FULL for Q24 octave: (pitch_s << 24) / 1023
+// ≈ pitch_s * (2^24 / 1023). Constant = round(2^32 / 1023) used as (s * C) >> 32 after <<24...
+// Simpler: (pitch_s * MOD_PITCH_TO_Q24_MUL) >> 15 with MUL = round(2^24 * 32768 / 1023).
+static constexpr int32_t MOD_PITCH_TO_Q24_MUL =
+  (int32_t)(((int64_t)1 << 24) * 32768 / (int64_t)MOD_PITCH_DEPTH_FULL);
 
 static inline uint16_t mod_clamp_u16(int32_t v) {
   if (v < 0) return 0;
@@ -72,12 +74,11 @@ void mod_matrix_set_mod_wheel(uint8_t value) {
   mod_wheel = value;
 }
 
-// Source as Q15 (±32768 ≈ ±1.0). Mul/shift — no float, avoid hot /4095 on M0+.
+// Source as Q15 (±32768 ≈ ±1.0). LFO/ADSR/noise are already Q15 pass-through.
 static int32_t mod_matrix_read_source_q15(uint8_t src) {
   switch (src) {
     case MOD_SRC_ADSR3:
-      // (level * 32768) / 4095 ≈ level << 3 (max error 8 Q15 LSBs at full scale).
-      return (int32_t)ADSR1Level[0] << 3;
+      return (int32_t)ADSR1Level_q15[0];
     case MOD_SRC_ADSR4:
     case MOD_SRC_LFO3:
     case MOD_SRC_LFO4:
@@ -95,9 +96,9 @@ static int32_t mod_matrix_read_source_q15(uint8_t src) {
     case MOD_SRC_AFTERTOUCH:
       return (int32_t)mod_aftertouch * 258;
     case MOD_SRC_LFO1:
-      return (int32_t)(((int64_t)LFO1Level * (int64_t)MOD_LFO1_TO_Q15_MUL) >> 16);
+      return (int32_t)LFO1Level;
     case MOD_SRC_LFO2:
-      return (int32_t)(((int64_t)LFO2Level * (int64_t)MOD_LFO2_TO_Q15_MUL) >> 16);
+      return (int32_t)LFO2Level;
     case MOD_SRC_PITCH_BEND:
       return ((int32_t)midi_pitch_bend - 8192) << 2;
     case MOD_SRC_MOD_WHEEL:
@@ -108,7 +109,6 @@ static int32_t mod_matrix_read_source_q15(uint8_t src) {
     case MOD_SRC_NOISE3: {
       const uint8_t i = (uint8_t)(src - MOD_SRC_NOISE0);
       if (i >= NUM_NOISE_GENS) return 0;
-      // Already Q15 from noise engines.
       return (int32_t)noiseLevel[i];
     }
     default:
@@ -127,6 +127,18 @@ void mod_matrix_accumulate(int32_t dest_sums[MOD_DEST_COUNT]) {
     const int32_t src_q15 = mod_matrix_read_source_q15(s.source);
     dest_sums[s.dest] += (int32_t)(((int64_t)src_q15 * (int64_t)s.depth) >> 15);
   }
+}
+
+// Convert clamped pitch dest sum (±1023) to Q24 octave without a hot divide.
+static inline int32_t mod_pitch_sum_to_q24(int32_t pitch_s) {
+  if (pitch_s > MOD_PITCH_DEPTH_FULL) pitch_s = MOD_PITCH_DEPTH_FULL;
+  if (pitch_s < -MOD_PITCH_DEPTH_FULL) pitch_s = -MOD_PITCH_DEPTH_FULL;
+  return (int32_t)(((int64_t)pitch_s * (int64_t)MOD_PITCH_TO_Q24_MUL) >> 15);
+}
+
+// Convert clamped pitch dest sum (±1023) to Q24 octave without a hot divide.
+int32_t mod_matrix_pitch_to_q24(int32_t pitch_s) {
+  return mod_pitch_sum_to_q24(pitch_s);
 }
 
 void mod_matrix_apply_cv(const int32_t dest_sums[MOD_DEST_COUNT], uint16_t* dist_drive_out,

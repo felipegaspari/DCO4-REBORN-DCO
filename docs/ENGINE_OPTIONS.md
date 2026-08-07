@@ -12,7 +12,7 @@ There is **no** `USE_FLOAT_ENGINE` umbrella; voice and amp are separate compile 
 
 | Target | Board defaults (`PICO_RP2350` / else) | Why |
 |--------|--------------------------------------|-----|
-| **RP2350** (FPU) | `USE_FLOAT_VOICE_TASK` + `PITCH_INTERP_FLOAT_FAST` + `USE_FLOAT_AMP_COMP` + `USE_FLOAT_CV_OUTS`; amp method `FLOAT_QUAD`; HP clkdiv `1` | Float pitch / clkdiv / amp / CV is natural |
+| **RP2350** | No float voice/amp/CV by default; `PITCH_INTERP_RATIO_Q16`; amp `FIXED`; HP clkdiv `1` | Same Q24/Q16/Q15 buses as RP2040; float overrides remain for A/B |
 | **RP2040** (no FPU) | No float voice/amp/CV flags; `PITCH_INTERP_RATIO_Q16`; amp method `FIXED`; HP clkdiv `1` | Soft-float is expensive; lean Q8 amp; **fixed** `update_CV_outs` |
 
 Overrides (after board defaults) can `#undef` / `#define` those flags. See the commented examples in `DCO.ino`.
@@ -54,7 +54,7 @@ NOTE_RETRIG_MODE_DEFAULT
 | `USE_FLOAT_VOICE_TASK` | Compiles `voice_task_float()`; omits fixed `voice_task_fixed_point()`. Float portamento in `voices.h`. |
 | `PITCH_INTERP_MODE` | Pitch table path (ids above). Board default: `FLOAT_FAST` on RP2350, `RATIO_Q16` on RP2040. |
 | `USE_FLOAT_AMP_COMP` | **Compile-time** float amp dual-build: Hz tables, LUT (~42 KB), float precompute + Q8 seed. Not the same as method (see §7). |
-| `USE_FLOAT_CV_OUTS` | Float VCA/VCF/keytrack/drift/velocity math in `update_CV_outs`. Off → Q15/integer path. **Always-on** (both builds): Q15 mod matrix, `lerp>>12`, `note-60` keytrack, PWM wrap LUT. RP2350 default on; RP2040 default off (soft-float tax). |
+| `USE_FLOAT_CV_OUTS` | Float VCA/VCF/keytrack/drift/velocity math in `update_CV_outs`. Off → Q15/integer path. **Always-on** (both builds): Q15 mod matrix, `lerp>>12`, `note-60` keytrack, PWM wrap LUT. **Default off** on both MCUs (enable only for A/B). |
 | `AMP_COMP_METHOD_DEFAULT` | Live method when float amp is built: `0 FLOAT_QUAD` / `1 LUT` / `2 FIXED` (runtime cmds 20–22). |
 | `HIGH_PRECISION_CLKDIV` | Fixed-voice clkdiv only (`1` = 64-bit ~4 µs; `0` = fast ~1 µs). Ignored by float voice. |
 
@@ -115,7 +115,7 @@ There is **no** selectable `PITCH_INTERP_Q20` or `PITCH_INTERP_Q8`: Q20 slope li
 
 | Board | Default mode |
 |--------|----------------|
-| `PICO_RP2350` | `PITCH_INTERP_FLOAT_FAST` (with float voice) |
+| `PICO_RP2350` | `PITCH_INTERP_RATIO_Q16` (native Q16 x/y tables) |
 | else (RP2040 / fallback) | `PITCH_INTERP_RATIO_Q16` |
 
 **Guards:** `FLOAT` / `FLOAT_FAST` without float voice → `#error`. Float voice may use any mode (fixed interpolators convert scaled `float x → Q16` then back to a float ratio for A/B).

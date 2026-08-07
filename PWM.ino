@@ -105,7 +105,8 @@ static uint16_t level_wrap_for_slice[8] = { 0 };
 static inline uint16_t scale_level_cv_to_wrap(uint16_t level_cv, uint8_t slice) {
   const uint16_t wrap = level_wrap_for_slice[slice & 7];
   if (wrap) {
-    return (uint16_t)(((uint32_t)level_cv * wrap) / DIV_COUNTER_CV);
+    // ÷4096 via >>12 (same as lerp_0_4095); avoids hot /4095 on M0+.
+    return (uint16_t)(((uint32_t)level_cv * (uint32_t)wrap) >> 12);
   }
   return level_cv;
 }
@@ -151,8 +152,8 @@ void write_cv_pwm_raw(uint16_t cutoff, const uint16_t resonance[NUM_FILTERS], ui
 
     uint16_t reso_level = resonance[i];
     if (RESO_PWM_SLICES[i] == RANGE_PWM_SLICES[1]) {
-      // Shared wrap DIV_COUNTER with RANGE OSC2 — scale 0..4095 → 0..DIV_COUNTER.
-      reso_level = (uint16_t)(((uint32_t)resonance[i] * DIV_COUNTER) / DIV_COUNTER_CV);
+      // Shared wrap DIV_COUNTER with RANGE OSC2 — scale 0..4095 → 0..DIV_COUNTER via >>12.
+      reso_level = (uint16_t)(((uint32_t)resonance[i] * (uint32_t)DIV_COUNTER) >> 12);
     }
     pwm_set_chan_level(RESO_PWM_SLICES[i], RESO_PWM_CHANS[i], reso_level);
   }

@@ -265,6 +265,72 @@ int lfo::getWave(unsigned long l_t)
     return result;
 }
 
+int16_t lfo::getWaveQ15(unsigned long l_t)
+{
+    // Full-scale bipolar Q15 from the same phase engine as getWave().
+    // Amplitude scales with setAmpl relative to (_dacSize - 1); offset is ignored (bipolar bus).
+    if (!_initialized)
+    {
+        _t_last = l_t;
+        _initialized = true;
+    }
+
+    uint32_t dt = (uint32_t)(l_t - _t_last);
+    _t_last = l_t;
+
+    uint32_t phase_inc = _mode ? _phase_inc_sync : _phase_inc_free;
+    _phase += phase_inc * dt;
+
+    const int ampl_max = (_dacSize > 1) ? (_dacSize - 1) : 1;
+    int32_t amp_q15 = 32768;
+    if (_ampl < ampl_max && ampl_max > 0)
+        amp_q15 = ((int32_t)_ampl * 32768) / ampl_max;
+    if (amp_q15 > 32768) amp_q15 = 32768;
+    if (amp_q15 < 0) amp_q15 = 0;
+
+    if (_waveForm == 0 || amp_q15 == 0)
+        return 0;
+
+    uint16_t ramp16 = (uint16_t)(_phase >> 16);
+    int32_t unit_q15 = 0; // ±32768 before amplitude scale
+
+    switch (_waveForm)
+    {
+        case 1: // Saw descending +1 → -1
+        {
+            // Map ramp 0..65535 → +32768..-32768
+            unit_q15 = 32768 - (int32_t)ramp16;
+            break;
+        }
+        case 2: // Triangle
+        {
+            uint16_t tri16 = (ramp16 & 0x8000u) ? (uint16_t)(0xFFFFu - ramp16) : ramp16; // 0..32767
+            // 0..32767 → -32768..+32768
+            unit_q15 = ((int32_t)tri16 * 2) - 32768;
+            break;
+        }
+        case 3: // Sin
+        {
+            uint16_t idx = (uint16_t)(ramp16 >> (16 - LFO_SINE_TABLE_BITS));
+            // s_sineTable is ±32767; treat as Q15
+            unit_q15 = (int32_t)s_sineTable[idx];
+            if (unit_q15 >= 32767) unit_q15 = 32768;
+            break;
+        }
+        case 4: // Square
+        default:
+        {
+            unit_q15 = (ramp16 & 0x8000u) ? -32768 : 32768;
+            break;
+        }
+    }
+
+    int32_t out = (int32_t)(((int64_t)unit_q15 * amp_q15) >> 15);
+    if (out > 32768) out = 32768;
+    if (out < -32768) out = -32768;
+    return (int16_t)out;
+}
+
 // -----------------------------------------------
 // Internal helpers
 // -----------------------------------------------

@@ -397,9 +397,7 @@ inline void voice_task_fixed_point() {
 
   last_midi_pitch_bend = midi_pitch_bend;
 
-  // Hoist PWM parameters out of the loop. This is critical for performance,
-  // as it reads the volatile LFO2toPW variable only once per task run.
-  const int16_t local_ADSR1toPWM = ADSR1toPWM;
+  // Hoist volatile PW depth once per task (ADSR uses precomputed ADSR1toPWM_scale).
   const int16_t local_LFO2toPW = LFO2toPW;
 
   // Latch note-on edges for every voice slot (para may set flags on 1/2).
@@ -671,12 +669,16 @@ inline void voice_task_fixed_point() {
       BENCH_END(vt_unison_mod);
 
       BENCH_BEGIN(vt_drift_mod);
-      // Fixed-point drift modifiers in Q24: LFO_LEVEL * (0.0000005 * analogDrift)
+      // Drift: (LFO_DRIFT_LEVEL_q15 * scale) >> 15; scale preserves legacy CC-peak travel.
       static constexpr int32_t DRIFT_UNIT_Q24 = (int32_t)(0.0000005f * (float)(1 << 24) + 0.5f);
-      int32_t driftScale_q24 = (int32_t)((int32_t)analogDrift * DRIFT_UNIT_Q24);
-      int64_t DETUNE_DRIFT_OSC1_q24 = (analogDrift != 0) ? ((int64_t)LFO_DRIFT_LEVEL[DCO_A] * (int64_t)driftScale_q24) : 0;
-      int64_t DETUNE_DRIFT_OSC2_q24 = (analogDrift != 0) ? ((int64_t)LFO_DRIFT_LEVEL[DCO_B] * (int64_t)driftScale_q24) : 0;
-      int64_t DETUNE_DRIFT_OSC3_q24 = (analogDrift != 0) ? ((int64_t)LFO_DRIFT_LEVEL[DCO_C] * (int64_t)driftScale_q24) : 0;
+      const int32_t driftScale_q24 =
+        (int32_t)((int32_t)analogDrift * DRIFT_UNIT_Q24 * (int32_t)LFO_DRIFT_CC_HALF);
+      int64_t DETUNE_DRIFT_OSC1_q24 =
+        (analogDrift != 0) ? (((int64_t)LFO_DRIFT_LEVEL[DCO_A] * (int64_t)driftScale_q24) >> 15) : 0;
+      int64_t DETUNE_DRIFT_OSC2_q24 =
+        (analogDrift != 0) ? (((int64_t)LFO_DRIFT_LEVEL[DCO_B] * (int64_t)driftScale_q24) >> 15) : 0;
+      int64_t DETUNE_DRIFT_OSC3_q24 =
+        (analogDrift != 0) ? (((int64_t)LFO_DRIFT_LEVEL[DCO_C] * (int64_t)driftScale_q24) >> 15) : 0;
       BENCH_END(vt_drift_mod);
 
       BENCH_BEGIN(vt_modifiers);
@@ -700,14 +702,26 @@ inline void voice_task_fixed_point() {
       //   freq  *= interpolatePitchMultiplier(freqModifiers)/multiplierTableScale;
       //   freq2 *= OSC2_detune * interpolatePitchMultiplier(freq2Modifiers)/multiplierTableScale;
       //   freq3 *= OSC3_detune * interpolatePitchMultiplier(freq3Modifiers)/multiplierTableScale;
-      // High-resolution fixed-point x with truncation toward zero (matches original float cast):
-      // xQ16 = trunc((q24 * scale) / 2^8) to carry 16 fractional bits of table-units
-      int64_t x1_q24s = (freqModifiers_q24 * (int64_t)multiplierTableScale);   // Q24 * int -> Q24
-      int64_t x2_q24s = (freq2Modifiers_q24 * (int64_t)multiplierTableScale);  // Q24 * int -> Q24
+#if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
+      // Native Q16 modifier domain: xQ16 = trunc(modifiers_q24 / 2^8) (1.0 → 65536).
+      int32_t xScaled1_Q16 =
+        (freqModifiers_q24 >= 0) ? (int32_t)(freqModifiers_q24 >> 8)
+                                 : (int32_t)(-((-freqModifiers_q24) >> 8));
+      int32_t xScaled2_Q16 =
+        (freq2Modifiers_q24 >= 0) ? (int32_t)(freq2Modifiers_q24 >> 8)
+                                  : (int32_t)(-((-freq2Modifiers_q24) >> 8));
+      int32_t xScaled3_Q16 =
+        (freq3Modifiers_q24 >= 0) ? (int32_t)(freq3Modifiers_q24 >> 8)
+                                  : (int32_t)(-((-freq3Modifiers_q24) >> 8));
+#else
+      // Q12 A/B: legacy ×10000 table-units as Q16.
+      int64_t x1_q24s = (freqModifiers_q24 * (int64_t)multiplierTableScale);
+      int64_t x2_q24s = (freq2Modifiers_q24 * (int64_t)multiplierTableScale);
       int64_t x3_q24s = (freq3Modifiers_q24 * (int64_t)multiplierTableScale);
       int32_t xScaled1_Q16 = (x1_q24s >= 0) ? (int32_t)(x1_q24s >> 8) : (int32_t)(-((-x1_q24s) >> 8));
       int32_t xScaled2_Q16 = (x2_q24s >= 0) ? (int32_t)(x2_q24s >> 8) : (int32_t)(-((-x2_q24s) >> 8));
       int32_t xScaled3_Q16 = (x3_q24s >= 0) ? (int32_t)(x3_q24s >> 8) : (int32_t)(-((-x3_q24s) >> 8));
+#endif
       BENCH_END(vt_freq_scale_x);
 
       BENCH_BEGIN(vt_ratio_interp);
@@ -971,14 +985,15 @@ inline void voice_task_fixed_point() {
         Serial.printf("  Q24_ONE_EPS:               %.6f\n", (double)Q24_ONE_EPS / (double)(1 << 24));
         Serial.printf("  modifiersBase_q24:         %.6f\n", (double)modifiersBase_q24 / (double)(1 << 24));
         Serial.println("OSC2 LFO2 pitch (fine + coarse):");
-        Serial.printf("  lfo2_fine OSC2:            %.6f\n", (double)LFO2Level * (double)LFO2toOSC2_q24 / (double)(1 << 24));
-        Serial.printf("  lfo2_coarse OSC2:          %.6f\n", (double)LFO2Level * (double)LFO2toOSC2_coarse_q24 / (double)(1 << 24));
+        Serial.printf("  lfo2_fine OSC2:            %.6f\n",
+                      (double)lfo::applyDepthQ24(LFO2Level, LFO2toOSC2_q24) / (double)(1 << 24));
+        Serial.printf("  lfo2_coarse OSC2:          %.6f\n",
+                      (double)lfo::applyDepthQ24(LFO2Level, LFO2toOSC2_coarse_q24) / (double)(1 << 24));
         Serial.printf("  freq2Modifiers_q24:        %.6f\n", (double)freq2Modifiers_q24 / (double)(1 << 24));
         Serial.println("---");
 
         Serial.println("OSC1 Multiplier Table Inputs:");
-        Serial.printf("  x1_q24s (table-units*Q24): %.6f\n", (double)x1_q24s / (double)(1 << 24));
-        Serial.printf("  xScaled1_Q16:              %ld (int)\n", (long)xScaled1_Q16);
+        Serial.printf("  xScaled1_Q16 (natural):    %.6f\n", (double)xScaled1_Q16 / 65536.0);
         Serial.printf("  ratio1_Q16:                %.6f\n", (double)ratio1_Q16 / (double)(1 << 16));
         Serial.println("----------------------------------------------------\n");
 
@@ -1098,8 +1113,10 @@ inline void voice_task_fixed_point() {
           // Optimized: This version avoids storing large intermediate products.
           // The multiplication and shift are combined into one expression per modulator,
           // allowing the compiler to make better use of registers.
-          int32_t adsr1_delta = ((int32_t)ADSR1Level[i] * local_ADSR1toPWM) >> 11;
-          int32_t lfo2_delta = ((int32_t)LFO2Level * local_LFO2toPW) >> 9;
+          int32_t adsr1_delta =
+            (int32_t)(((int64_t)ADSR1Level_q15[i] * (int64_t)ADSR1toPWM_scale) >> 15);
+          int32_t lfo2_delta =
+            (int32_t)(((int64_t)LFO2Level * (int64_t)local_LFO2toPW) >> 15);
           int32_t pw_calc = (int32_t)DIV_COUNTER_PW - 1 - lfo2_delta - PW[0] + adsr1_delta
                             + character_pw_delta();
 
@@ -1172,8 +1189,7 @@ inline void voice_task_float() {
 
     last_midi_pitch_bend = midi_pitch_bend;
   
-    // Cache PWM sources like original
-    const int16_t local_ADSR1toPWM = ADSR1toPWM;
+    // Cache volatile PW depth (ADSR uses ADSR1toPWM_scale).
     const int16_t local_LFO2toPW   = LFO2toPW;
 
     // Latch note-on edges for every voice slot (para may set flags on 1/2).
@@ -1429,9 +1445,10 @@ inline void voice_task_float() {
       BENCH_END(vt_unison_mod);
 
       BENCH_BEGIN(vt_drift_mod);
-      // --- 2.6 Drift modifiers (float) ---
-      static constexpr float DRIFT_UNIT = 0.0000005f; // from original
-      float driftScale = (float)analogDrift * DRIFT_UNIT;
+      // --- 2.6 Drift modifiers (float); LFO_DRIFT_LEVEL is Q15 ---
+      static constexpr float DRIFT_UNIT = 0.0000005f;
+      float driftScale =
+        (float)analogDrift * DRIFT_UNIT * (float)LFO_DRIFT_CC_HALF * (1.0f / 32768.0f);
       float DETUNE_DRIFT_OSC1 = (analogDrift != 0) ? (float)LFO_DRIFT_LEVEL[DCO_A] * driftScale : 0.0f;
       float DETUNE_DRIFT_OSC2 = (analogDrift != 0) ? (float)LFO_DRIFT_LEVEL[DCO_B] * driftScale : 0.0f;
       float DETUNE_DRIFT_OSC3 = (analogDrift != 0) ? (float)LFO_DRIFT_LEVEL[DCO_C] * driftScale : 0.0f;
@@ -1458,9 +1475,8 @@ inline void voice_task_float() {
 
       BENCH_BEGIN(vt_freq_scale_x);
       // --- 2.7 Multiplier table & ratio interpolation (float version) ---
-      // FLOAT / FLOAT_FAST use natural modifiers; fixed A/B modes need table-unit scale → Q16.
-#if PITCH_INTERP_MODE != PITCH_INTERP_FLOAT && \
-    PITCH_INTERP_MODE != PITCH_INTERP_FLOAT_FAST
+#if PITCH_INTERP_MODE == PITCH_INTERP_Q12
+      // Q12 A/B: legacy ×10000 table-units → Q16.
       float x1 = freqModifiers1 * (float)multiplierTableScale;
       float x2 = freqModifiers2 * (float)multiplierTableScale;
       float x3 = freqModifiers3 * (float)multiplierTableScale;
@@ -1477,10 +1493,10 @@ inline void voice_task_float() {
       float ratio2 = interpolateRatioFloat_cached_fast(freqModifiers2, DCO_B);
       float ratio3 = interpolateRatioFloat_cached_fast(freqModifiers3, DCO_C);
 #elif PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
-      // A/B: fixed ratio interpolator inside float voice (float x → Q16 → float ratio).
-      int32_t x1_Q16 = (int32_t)lroundf(x1 * 65536.0f);
-      int32_t x2_Q16 = (int32_t)lroundf(x2 * 65536.0f);
-      int32_t x3_Q16 = (int32_t)lroundf(x3 * 65536.0f);
+      // Native Q16 tables: natural modifier → Q16 → float ratio.
+      int32_t x1_Q16 = (int32_t)lroundf(freqModifiers1 * 65536.0f);
+      int32_t x2_Q16 = (int32_t)lroundf(freqModifiers2 * 65536.0f);
+      int32_t x3_Q16 = (int32_t)lroundf(freqModifiers3 * 65536.0f);
       static constexpr float Q16_TO_F = 1.0f / 65536.0f;
       float ratio1 = (float)interpolateRatioQ16_cached(x1_Q16, DCO_A) * Q16_TO_F;
       float ratio2 = (float)interpolateRatioQ16_cached(x2_Q16, DCO_B) * Q16_TO_F;
@@ -1733,8 +1749,10 @@ inline void voice_task_float() {
         const bool pulseOn = waveEnable[0][1] || waveEnable[1][1] || waveEnable[2][1];
         if (pulseOn) {
           BENCH_FBEGIN(vt_pwm_calc);
-          float adsr1_delta = ((float)ADSR1Level[i] * (float)local_ADSR1toPWM) / 2048.0f; // 2^11
-          float lfo2_delta  = ((float)LFO2Level    * (float)local_LFO2toPW)   / 512.0f;   // 2^9
+          float adsr1_delta =
+            ((float)ADSR1Level_q15[i] * (float)ADSR1toPWM_scale) * (1.0f / 32768.0f);
+          float lfo2_delta =
+            ((float)LFO2Level * (float)local_LFO2toPW) * (1.0f / 32768.0f);
           float pw_calc =
               (float)DIV_COUNTER_PW - 1.0f
             - (float)PW[0]
@@ -2213,33 +2231,33 @@ inline int32_t interpolatePitchMultiplierIntQ16_cached(int32_t xQ16, int dcoInde
 #endif // Q12
 
 #if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
+// xQ16 and tables are natural Q16 (1.0 = 65536). Returns frequency ratio as Q16.
 inline int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex) {
-  int32_t xInt = xQ16 >> 16;
-  if (xInt <= xMultiplierTable[0]) {
-    uint64_t num0 = ((uint64_t)(uint32_t)yMultiplierTable[0] << 16) + 5000u;
-    return (int32_t)((num0 * 0xD1B71759ULL) >> 45);
+  if (xQ16 <= xMultiplierTable[0]) {
+    return yMultiplierTable[0];
   }
-  if (xInt >= xMultiplierTable[multiplierTableSize - 1]) {
-    uint64_t numN = ((uint64_t)(uint32_t)yMultiplierTable[multiplierTableSize - 1] << 16) + 5000u;
-    return (int32_t)((numN * 0xD1B71759ULL) >> 45);
+  if (xQ16 >= xMultiplierTable[multiplierTableSize - 1]) {
+    return yMultiplierTable[multiplierTableSize - 1];
   }
   int low = interpSegCache[dcoIndex];
-  if (low < 0 || low > multiplierTableSize - 2 || !(xMultiplierTable[low] <= xInt && xInt < xMultiplierTable[low + 1])) {
+  if (low < 0 || low > multiplierTableSize - 2 ||
+      !(xMultiplierTable[low] <= xQ16 && xQ16 < xMultiplierTable[low + 1])) {
     if (low >= 0 && low < multiplierTableSize - 1) {
-      if (xInt >= xMultiplierTable[low + 1]) {
-        while (low < multiplierTableSize - 2 && xInt >= xMultiplierTable[low + 1]) low++;
-      } else if (xInt < xMultiplierTable[low]) {
-        while (low > 0 && xInt < xMultiplierTable[low]) low--;
+      if (xQ16 >= xMultiplierTable[low + 1]) {
+        while (low < multiplierTableSize - 2 && xQ16 >= xMultiplierTable[low + 1]) low++;
+      } else if (xQ16 < xMultiplierTable[low]) {
+        while (low > 0 && xQ16 < xMultiplierTable[low]) low--;
       }
     }
-    if (!(low >= 0 && low < multiplierTableSize - 1 && xMultiplierTable[low] <= xInt && xInt < xMultiplierTable[low + 1])) {
+    if (!(low >= 0 && low < multiplierTableSize - 1 &&
+          xMultiplierTable[low] <= xQ16 && xQ16 < xMultiplierTable[low + 1])) {
       int l = 0, h = multiplierTableSize - 1;
       while (l <= h) {
         int m = (l + h) >> 1;
-        if (xMultiplierTable[m] <= xInt && xInt < xMultiplierTable[m + 1]) {
+        if (xMultiplierTable[m] <= xQ16 && xQ16 < xMultiplierTable[m + 1]) {
           low = m;
           break;
-        } else if (xInt < xMultiplierTable[m]) {
+        } else if (xQ16 < xMultiplierTable[m]) {
           h = m - 1;
         } else {
           l = m + 1;
@@ -2250,13 +2268,11 @@ inline int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex) {
     }
     interpSegCache[dcoIndex] = (int16_t)low;
   }
-  int32_t x0 = xMultiplierTable[low];
-  int32_t y0 = yMultiplierTable[low];
-  int32_t slope = slopeQ20[low];
-  int32_t deltaQ16 = xQ16 - (x0 << 16);
-  int32_t yTab = y0 + (int32_t)((((int64_t)deltaQ16 * (int64_t)slope) + (1LL << 35)) >> 36);
-  uint64_t num = ((uint64_t)(uint32_t)yTab << 16) + 5000u;
-  return (int32_t)((num * 0xD1B71759ULL) >> 45);
+  const int32_t x0 = xMultiplierTable[low];
+  const int32_t y0 = yMultiplierTable[low];
+  const int32_t delta = xQ16 - x0;
+  // slopeQ20 = (dy << 20) / dx  →  y = y0 + (delta * slope) >> 20
+  return y0 + (int32_t)((((int64_t)delta * (int64_t)slopeQ20[low]) + (1LL << 19)) >> 20);
 }
 #endif // PITCH_INTERP_RATIO_Q16
 
@@ -2378,7 +2394,13 @@ void initMultiplierTables() {
     // Natural domain: x = modifier [-1,3], y = frequency ratio (no int-table scale).
     xMultiplierTableF[i] = (float)x;
     yMultiplierTableF[i] = y_value;
+#elif PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
+    // Native Q16: x and y store natural units (1.0 = 65536). No ×10000.
+    xMultiplierTable[i] = (int32_t)(x * 65536.0 + (x >= 0.0 ? 0.5 : -0.5));
+    yMultiplierTable[i] = (int32_t)((double)y_value * 65536.0 + 0.5);
+    x0Q16_tbl[i] = xMultiplierTable[i];
 #else
+    // Q12 A/B: legacy ×10000 table-units.
     xMultiplierTable[i] = (int32_t)(x * (double)multiplierTableScale);
     yMultiplierTable[i] = (int32_t)(y_value * (double)multiplierTableScale);
     x0Q16_tbl[i]        = xMultiplierTable[i] << 16;

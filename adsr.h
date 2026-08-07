@@ -10,13 +10,10 @@ uint16_t linToExpLookup[LIN_TO_EXP_TABLE_SIZE];
 uint16_t linToLogLookup[LIN_TO_EXP_TABLE_SIZE];
 uint16_t maxADSRControlValue = ADSR_1_DACSIZE;
 
-// ADSR Bezier library (provides curve tables and ADSR class)
+// ADSR Bezier library (provides curve tables and ADSR class).
+// Hot path always uses Q24 phase / Q16 amp; Q15 mod tap via levelQ15()/getWaveQ15().
 #ifndef ADSR_BEZIER_USE_FLOAT
-#if defined(PICO_RP2350)
-#define ADSR_BEZIER_USE_FLOAT 1
-#else
 #define ADSR_BEZIER_USE_FLOAT 0
-#endif
 #endif
 
 #ifndef ADSR_BEZIER_USE_MICROS
@@ -33,6 +30,11 @@ uint16_t ADSR1Level[NUM_VOICES_TOTAL];
 uint16_t ADSR_VCA_Level[NUM_VOICES_TOTAL];
 uint16_t ADSR_VCF_Level;
 uint16_t ADSR_VCF2_Level;
+// Q15 mod taps (0..32768); DAC paths keep the u12/u12-ish levels above.
+int16_t ADSR1Level_q15[NUM_VOICES_TOTAL];
+int16_t ADSR_VCA_Level_q15[NUM_VOICES_TOTAL];
+int16_t ADSR_VCF_Level_q15;
+int16_t ADSR_VCF2_Level_q15;
 
 static constexpr uint16_t ADSR_1_CC = 4000;
 static constexpr uint16_t ADSR_CV_CC = 4095;  // EnvVCA/EnvVCF domain (Mainboard CV scale)
@@ -89,6 +91,8 @@ float ADSR1toDETUNE1_formula;
 int32_t ADSR1toDETUNE1_scale_q24;
 
 int16_t ADSR1toPWM;
+// Full-scale PW delta (PWM counts) for (ADSR1Level_q15 * scale) >> 15.
+int32_t ADSR1toPWM_scale = 0;
 float ADSR1toPWM_formula;
 int32_t ADSR1toPWM_formula_q24;
 
