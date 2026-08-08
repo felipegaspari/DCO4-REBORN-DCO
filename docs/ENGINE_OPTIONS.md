@@ -105,11 +105,11 @@ Defined in `DCO.ino`:
 | Mode | Value | Hot-path function | Storage | Engine |
 |------|-------|-------------------|---------|--------|
 | `PITCH_INTERP_FLOAT` | 0 | `interpolateRatioFloat_cached` (walk+bsearch) | `x/yMultiplierTableF`, `slopeF` | Float voice **required**; walk A/B |
-| `PITCH_INTERP_RATIO_Q16` | 1 | `interpolateRatioQ16_cached` | int `x/y` tables, **`slopeQ20`** + fused `y→ratio` | Fixed voice default, or float voice A/B |
-| `PITCH_INTERP_Q12` | 2 | `interpolatePitchMultiplierIntQ16_cached` + reciprocal | int tables, `slopeQ12` | Slope A/B only |
+| `PITCH_INTERP_RATIO_Q16` | 1 | `interpolateRatioQ16_cached` | int `x/y` **native Q16**, **`slopeQ16`** | Fixed voice default, or float voice A/B |
+| `PITCH_INTERP_Q12` | 2 | `interpolatePitchMultiplierIntQ16_cached` + reciprocal | int tables ×10000, `slopeQ12` | Slope A/B only |
 | `PITCH_INTERP_FLOAT_FAST` | 3 | `interpolateRatioFloat_cached_fast` (trunc+clamp±1, `noinline`) | same float tables as FLOAT | Float voice **required**; RP2350 default |
 
-There is **no** selectable `PITCH_INTERP_Q20` or `PITCH_INTERP_Q8`: Q20 slope lives inside `RATIO_Q16`; Q8 pitch slope A/B was removed. Accuracy bench cmd 29 still uses a private Q20 `y` lerp as the int reference.
+There is **no** selectable `PITCH_INTERP_Q20` or `PITCH_INTERP_Q8`. Live `RATIO_Q16` uses **Q16 slopes** (32-bit lerp when the stock table fits). Accuracy bench cmd 29 may still use a private higher-res reference.
 
 **Defaults** (set inside each MCU branch in **ENGINE — board defaults**, `#ifndef`):
 
@@ -125,15 +125,15 @@ There is **no** selectable `PITCH_INTERP_Q20` or `PITCH_INTERP_Q8`: Q20 slope li
 **Fixed-voice flow** (`!USE_FLOAT_VOICE_TASK`):
 
 1. Portamento → current frequency in **Q24 Hz** (`Hz × 2^24`).
-2. Sum pitch modifiers in **Q24** (pitch bend, LFO1 FIFO, unison, ADSR→detune, drift, OSC2 detune, epsilon ≈ 1.00001).
-3. Scale modifiers × `multiplierTableScale` (10000) into **table-units Q16**.
-4. Interpolate → **ratio Q16** (`RATIO_Q16` fuses y→ratio; `Q12` returns table `y` then reciprocal-multiply).
-5. `freq_q24 = (portamento_cur_freq_q24 * ratioQ16) >> 16` (OSC2 also folds detune into the Q16 factor).
+2. Sum pitch modifiers in **Q24** (pitch bend, LFO, unison, ADSR→detune, drift, matrix, epsilon ≈ 1.00001).
+3. **`RATIO_Q16`:** `xQ16 = trunc(modifiers_q24 / 2^8)` (native domain; **no** ×10000). **`Q12` only:** scale × `multiplierTableScale` (10000) into legacy table-units Q16.
+4. Interpolate → **ratio Q16** (`RATIO_Q16` table `y` is already frequency ratio; `Q12` returns table `y` then reciprocal-multiply ÷10000).
+5. `freq_q24 = (portamento_cur_freq_q24 * ratioQ16) >> 16` (OSC2/3 also fold detune into the Q16 factor).
 
 | Mode | Slope / precision notes |
 |------|-------------------------|
-| `RATIO_Q16` | Production int path: `slopeQ20` + fused `y → ratio Q16` (`/10000` ≈ `* 0xD1B71759 >> 45`) |
-| `Q12` | Slope A/B; return `y` then reciprocal |
+| `RATIO_Q16` | Production: native Q16 x/y, `slopeQ16` lerp |
+| `Q12` | Legacy ×10000 tables; return `y` then reciprocal |
 
 Override examples (float voice): `#undef PITCH_INTERP_MODE` then `#define PITCH_INTERP_MODE PITCH_INTERP_FLOAT` (walk A/B) or `PITCH_INTERP_RATIO_Q16`. Float porta / clkdiv stay float; only the table interpolator changes.
 
@@ -164,7 +164,7 @@ Active when `USE_FLOAT_VOICE_TASK` is defined.
 |-------|-----------|
 | Portamento | Separate float state in `voices.h` (`porta_*_f`): TIME = linear Hz; SLEW = linear semitones via `noteIndex_to_freqFloat` |
 | Pitch bend / LFO / ADSR / drift | Computed in float; many depths still arrive as Q24 from core 0 / params and are scaled by `1/2^24` each frame |
-| Multiplier table | Default `interpolateRatioFloat_cached` (`FLOAT`, natural modifier→ratio). Override to `RATIO_Q16` / `Q12` for compile-time A/B (`×10000` → Q16 glue, then float ratio). |
+| Multiplier table | Default `interpolateRatioFloat_cached` (`FLOAT`, natural modifier→ratio). Override to `RATIO_Q16` (native Q16) / `Q12` (×10000 glue) for compile-time A/B. |
 | Clkdiv | Always `sysClock_Hz / freqHz` (float), then OSR / phase math |
 | Amp-comp | `get_chan_level_for_engine(freqHz, dco)` → `get_chan_level_float` when float amp-comp is on |
 | PW | Float intermediates, then integer `get_PW_level_interpolated` (shared) |
@@ -222,7 +222,7 @@ Speed/accuracy one-shots: `#define AMP_COMP_BENCHMARK` + `RUNNING_AVERAGE`, debu
 | float Hz | `float` | Float voice path; float amp-comp; `sNotePitches[]` |
 | Q24 Hz | `int64_t` / `int32_t`, `Hz × 2^24` | Fixed portamento / final freq; LFO/ADSR/pitchbend depths |
 | Q16 semitone | `int32_t`, note × `2^16` | Fixed slew portamento |
-| Q16 table / ratio | `int32_t` | Pitch table `x`; multiplier ratio after `/10000` |
+| Q16 table / ratio | `int32_t` | Pitch table `x` and frequency ratio (`RATIO_Q16` native; `Q12` after `/10000`) |
 | Q4 Hz | `uint32_t`, `Hz × 16` | Fast fixed clkdiv (`HIGH_PRECISION_CLKDIV 0`) |
 | Q8 Hz | `int32_t`, `Hz × 256` | Fixed amp-comp frequency domain |
 | Q12 `t` | `T_FRAC = 12` | Fixed amp-comp quadratic parameter |

@@ -1,8 +1,19 @@
 #include "include_all.h"
+#include <limits.h>
 
 // Enable/disable detailed DCO debug report (including OSC1 frequency stages)
 #define DCO_DEBUG_REPORT 0
 
+#if HIGH_PRECISION_CLKDIV
+// HP1: (sys<<24)/freq_q24 via Q8 Hz → 64/32 div (not 64/64).
+static inline uint32_t hp1_total_cycles_q8(uint32_t sys_hz, int64_t freq_q24) {
+  if (freq_q24 <= 0) return 0;
+  uint32_t freq_q8 = (uint32_t)((freq_q24 + (int64_t)(1 << 15)) >> 16);
+  if (freq_q8 == 0) freq_q8 = 1;
+  uint64_t num = ((uint64_t)sys_hz << 8) + (uint64_t)(freq_q8 / 2u);
+  return (uint32_t)(num / freq_q8);
+}
+#endif
 
 #ifdef CLKDIV_BENCHMARK
 // Float vs double comparison for the clock-divider math. Both candidates run on the same
@@ -96,7 +107,6 @@ static inline void clkdiv_bench_sample(float freqA_Hz, float freqB_Hz) {
 
 // Boot init: seed notes, build pitch tables, apply voice mode, run one voice_task_main().
 void init_voices() {
-
   for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
     VOICE_NOTES[i] = DCO_calibration_start_note;
   }
@@ -463,7 +473,6 @@ inline void voice_task_fixed_point() {
       const uint8_t DCO_B = 1;
       const uint8_t DCO_C = 2;
 
-      // Serial.println("VOICE TASK 2");
       ////***********************    PORTAMENTO CODE   ****************************************/////
       BENCH_BEGIN(vt_portamento);
       if (portaTime > 0 /*&& portamento_start != 0 && portamento_stop != 0*/) {
@@ -479,20 +488,20 @@ inline void voice_task_fixed_point() {
         // Mono: one edge restarts all three oscs. Para: each note_on_flag_flag[k] restarts osc k only.
         // TIME = fixed duration any interval; SLEW = constant semitone rate (time ∝ interval).
         if (voiceMode == 0) {
-        if (note_on_flag_flag[i]) {
-          portamentoStartMicros[i] = now_us;
-          portamentoTimer[i] = 0;
+          if (note_on_flag_flag[i]) {
+            portamentoStartMicros[i] = now_us;
+            portamentoTimer[i] = 0;
 
-          int32_t targetNoteA_q16 = ((int32_t)note1) << 16;
-          int32_t targetNoteB_q16 = ((int32_t)note2) << 16;
-          int32_t targetNoteC_q16 = ((int32_t)note3) << 16;
-          porta_setup_glide_q16(DCO_A, porta_resolve_start_note_q16(DCO_A, targetNoteA_q16),
-                                targetNoteA_q16, portaMode);
-          porta_setup_glide_q16(DCO_B, porta_resolve_start_note_q16(DCO_B, targetNoteB_q16),
-                                targetNoteB_q16, portaMode);
-          porta_setup_glide_q16(DCO_C, porta_resolve_start_note_q16(DCO_C, targetNoteC_q16),
-                                targetNoteC_q16, portaMode);
-        }
+            int32_t targetNoteA_q16 = ((int32_t)note1) << 16;
+            int32_t targetNoteB_q16 = ((int32_t)note2) << 16;
+            int32_t targetNoteC_q16 = ((int32_t)note3) << 16;
+            porta_setup_glide_q16(DCO_A, porta_resolve_start_note_q16(DCO_A, targetNoteA_q16),
+                                  targetNoteA_q16, portaMode);
+            porta_setup_glide_q16(DCO_B, porta_resolve_start_note_q16(DCO_B, targetNoteB_q16),
+                                  targetNoteB_q16, portaMode);
+            porta_setup_glide_q16(DCO_C, porta_resolve_start_note_q16(DCO_C, targetNoteC_q16),
+                                  targetNoteC_q16, portaMode);
+          }
         } else {
           // Paraphonic: restart porta per voice slot → osc k (1:1).
           const uint8_t targetNotes[3] = { note1, note2, note3 };
@@ -541,6 +550,13 @@ inline void voice_task_fixed_point() {
           curA = portamento_cur_freq_q24[DCO_A];
           curB = portamento_cur_freq_q24[DCO_B];
           curC = portamento_cur_freq_q24[DCO_C];
+        } else if (porta_note_cur_q16[DCO_A] == porta_note_stop_q16[DCO_A] &&
+                   porta_note_cur_q16[DCO_B] == porta_note_stop_q16[DCO_B] &&
+                   porta_note_cur_q16[DCO_C] == porta_note_stop_q16[DCO_C]) {
+          // Glide done, portaTime still > 0: reuse stop Hz (no int64 advance / table lerp).
+          curA = portamento_stop_q24[DCO_A];
+          curB = portamento_stop_q24[DCO_B];
+          curC = portamento_stop_q24[DCO_C];
         } else {
           int32_t elapsedA = (voiceMode == 0) ? (int32_t)portamentoTimer[i] : (int32_t)portamentoTimer[0];
           int32_t elapsedB = (voiceMode == 0) ? elapsedA : (int32_t)portamentoTimer[1];
@@ -571,7 +587,7 @@ inline void voice_task_fixed_point() {
           porta_note_cur_q16[DCO_B] = (int32_t)curNoteB_q16;
           porta_note_cur_q16[DCO_C] = (int32_t)curNoteC_q16;
 
-          // At stop: use stop Hz (never live note1 — that raced with note_on_flag).
+          // At stop: latched stop Hz. Mid-glide: noteQ16_to_freqQ24 (frac==0 → single table load).
           if (curNoteA_q16 == (int64_t)porta_note_stop_q16[DCO_A]) {
             curA = portamento_stop_q24[DCO_A];
           } else {
@@ -627,7 +643,6 @@ inline void voice_task_fixed_point() {
       } else {
         BENCH_PATH_INC(porta_steady_slew);
       }
-
 #if DCO_DEBUG_REPORT
       // Debug: OSC1 base frequency after portamento, before modifiers (in Hz)
       dbg_freq_base_Hz = (float)portamento_cur_freq_q24[DCO_A] / (float)(1 << 24);
@@ -636,32 +651,33 @@ inline void voice_task_fixed_point() {
       ////***********************    PORTAMENTO CODE  END    ****************************************/////
 
       BENCH_BEGIN(vt_adsr_mod);
-      // Fixed-point ADSR modifier in Q24: ((linToLog * ADSR1toDETUNE1) / 1080000)
-      int64_t ADSRModifier_q24 = 0;
-      if (ADSR1toDETUNE1 != 0) {
-        // Use precomputed Q24 scale: ADSR1toDETUNE1_scale_q24 = round(ADSR1toDETUNE1 * 2^24 / 1080000)
-        ADSRModifier_q24 = (int64_t)linToLogLookup[ADSR1Level[i]] * (int32_t)ADSR1toDETUNE1_scale_q24;
+      // Same as LFO/drift: linear Q15 env × baked depth_q24 (exp is on the knob).
+      int32_t ADSRModifier_q24 = 0;
+      if (ADSR1toDETUNE1_scale_q24 != 0) {
+        ADSRModifier_q24 = applyDepthQ24(ADSR1Level_q15[i], ADSR1toDETUNE1_scale_q24);
       }
       // ADSR3→pitch select:
       //   0 = OSC1, 1 = OSC2, 2 = OSC1+OSC2 (legacy), 3 = OSC3, 4 = all three
-      int64_t ADSRModifierOSC1_q24 = (ADSR3ToOscSelect == 0 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier_q24 : 0;
-      int64_t ADSRModifierOSC2_q24 = (ADSR3ToOscSelect == 1 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier_q24 : 0;
-      int64_t ADSRModifierOSC3_q24 = (ADSR3ToOscSelect == 3 || ADSR3ToOscSelect == 4) ? ADSRModifier_q24 : 0;
+      int32_t ADSRModifierOSC1_q24 = (ADSR3ToOscSelect == 0 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier_q24 : 0;
+      int32_t ADSRModifierOSC2_q24 = (ADSR3ToOscSelect == 1 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier_q24 : 0;
+      int32_t ADSRModifierOSC3_q24 = (ADSR3ToOscSelect == 3 || ADSR3ToOscSelect == 4) ? ADSRModifier_q24 : 0;
       BENCH_END(vt_adsr_mod);
 
       BENCH_BEGIN(vt_unison_mod);
       // Fixed-point unison modifier in Q24: 0.0001 * unisonDetune * step
+      // unisonDetune is uint8_t; product fits int32 (no int64 on M0+).
       static constexpr int32_t UNISON_SCALE_Q24 = (int32_t)(0.0001f * (float)(1 << 24) + 0.5f);
       // Per-osc spread (matches float path): OSC1=0, OSC2=+1, OSC3=-1.
       static constexpr int32_t OSC_UNISON_STEP[3] = { 0, 1, -1 };
-      int64_t unisonMODIFIER_OSC1_q24 = (int64_t)unisonDetune * (int64_t)UNISON_SCALE_Q24 * (int64_t)OSC_UNISON_STEP[0];
-      int64_t unisonMODIFIER_OSC2_q24 = (int64_t)unisonDetune * (int64_t)UNISON_SCALE_Q24 * (int64_t)OSC_UNISON_STEP[1];
-      int64_t unisonMODIFIER_OSC3_q24 = (int64_t)unisonDetune * (int64_t)UNISON_SCALE_Q24 * (int64_t)OSC_UNISON_STEP[2];
+      const int32_t unisonBase = (int32_t)unisonDetune * UNISON_SCALE_Q24;
+      int32_t unisonMODIFIER_OSC1_q24 = unisonBase * OSC_UNISON_STEP[0];
+      int32_t unisonMODIFIER_OSC2_q24 = unisonBase * OSC_UNISON_STEP[1];
+      int32_t unisonMODIFIER_OSC3_q24 = unisonBase * OSC_UNISON_STEP[2];
 #if NUM_VOICES_TOTAL > 1
       // Classic poly voice-index alternating pattern on top of per-osc spread.
       int32_t voiceMag = (i >> 1) + 1;
       int32_t voiceSign = ((i & 0x01) == 0) ? 1 : -1;
-      int64_t voiceUnison_q24 = (int64_t)unisonDetune * (int64_t)UNISON_SCALE_Q24 * (int64_t)(voiceSign * voiceMag);
+      int32_t voiceUnison_q24 = unisonBase * (voiceSign * voiceMag);
       unisonMODIFIER_OSC1_q24 += voiceUnison_q24;
       unisonMODIFIER_OSC2_q24 += voiceUnison_q24;
       unisonMODIFIER_OSC3_q24 += voiceUnison_q24;
@@ -669,28 +685,29 @@ inline void voice_task_fixed_point() {
       BENCH_END(vt_unison_mod);
 
       BENCH_BEGIN(vt_drift_mod);
-      // Drift: (LFO_DRIFT_LEVEL_q15 * drift_pitch_scale_q24) >> 15 (scale from param apply).
+      // Drift: applyDepthQ24 avoids int64 mul on M0+ (same as LFO pitch depths).
       const int32_t driftScale_q24 = drift_pitch_scale_q24;
-      int64_t DETUNE_DRIFT_OSC1_q24 =
-        (driftScale_q24 != 0) ? (((int64_t)LFO_DRIFT_LEVEL[DCO_A] * (int64_t)driftScale_q24) >> 15) : 0;
-      int64_t DETUNE_DRIFT_OSC2_q24 =
-        (driftScale_q24 != 0) ? (((int64_t)LFO_DRIFT_LEVEL[DCO_B] * (int64_t)driftScale_q24) >> 15) : 0;
-      int64_t DETUNE_DRIFT_OSC3_q24 =
-        (driftScale_q24 != 0) ? (((int64_t)LFO_DRIFT_LEVEL[DCO_C] * (int64_t)driftScale_q24) >> 15) : 0;
+      int32_t DETUNE_DRIFT_OSC1_q24 =
+        (driftScale_q24 != 0) ? applyDepthQ24(LFO_DRIFT_LEVEL[DCO_A], driftScale_q24) : 0;
+      int32_t DETUNE_DRIFT_OSC2_q24 =
+        (driftScale_q24 != 0) ? applyDepthQ24(LFO_DRIFT_LEVEL[DCO_B], driftScale_q24) : 0;
+      int32_t DETUNE_DRIFT_OSC3_q24 =
+        (driftScale_q24 != 0) ? applyDepthQ24(LFO_DRIFT_LEVEL[DCO_C], driftScale_q24) : 0;
       BENCH_END(vt_drift_mod);
 
       BENCH_BEGIN(vt_modifiers);
       // Combine modifiers in Q24 (faithful to original float path)
       // Unison is applied per-osc below; shared part is pitchbend + epsilon only (LFO1 per osc).
       // Character pitch jitter stacks after matrix when scale nonzero.
-      int64_t modifiersBase_q24 =
-        (int64_t)calcPitchbend_q24 + (int64_t)Q24_ONE_EPS + (int64_t)matrix_pitch_mod_q24;
+      // Q24 octave-fraction sums fit int32 for normal depths (no int64).
+      int32_t modifiersBase_q24 =
+        calcPitchbend_q24 + Q24_ONE_EPS + matrix_pitch_mod_q24;
       if (char_pitch_scale_q15) {
-        modifiersBase_q24 += (int64_t)character_pitch_delta_q24();
+        modifiersBase_q24 += character_pitch_delta_q24();
       }
-      int64_t freqModifiers_q24 = ADSRModifierOSC1_q24 + DETUNE_DRIFT_OSC1_q24 + modifiersBase_q24 + unisonMODIFIER_OSC1_q24 + (int64_t)lfo1_pitch_mod_q24[LFO1_PITCH_OSC1];
-      int64_t freq2Modifiers_q24 = ADSRModifierOSC2_q24 + DETUNE_DRIFT_OSC2_q24 + modifiersBase_q24 + unisonMODIFIER_OSC2_q24 + (int64_t)lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] + (int64_t)lfo2_pitch_mod_q24[LFO2_PITCH_OSC2];
-      int64_t freq3Modifiers_q24 = ADSRModifierOSC3_q24 + DETUNE_DRIFT_OSC3_q24 + modifiersBase_q24 + unisonMODIFIER_OSC3_q24 + (int64_t)lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] + (int64_t)lfo2_pitch_mod_q24[LFO2_PITCH_OSC3];
+      int32_t freqModifiers_q24 = ADSRModifierOSC1_q24 + DETUNE_DRIFT_OSC1_q24 + modifiersBase_q24 + unisonMODIFIER_OSC1_q24 + lfo1_pitch_mod_q24[LFO1_PITCH_OSC1];
+      int32_t freq2Modifiers_q24 = ADSRModifierOSC2_q24 + DETUNE_DRIFT_OSC2_q24 + modifiersBase_q24 + unisonMODIFIER_OSC2_q24 + lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] + lfo2_pitch_mod_q24[LFO2_PITCH_OSC2];
+      int32_t freq3Modifiers_q24 = ADSRModifierOSC3_q24 + DETUNE_DRIFT_OSC3_q24 + modifiersBase_q24 + unisonMODIFIER_OSC3_q24 + lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] + lfo2_pitch_mod_q24[LFO2_PITCH_OSC3];
       BENCH_END(vt_modifiers);
 
       BENCH_BEGIN(vt_freq_scale_x);
@@ -774,17 +791,20 @@ inline void voice_task_fixed_point() {
 #endif
 
 
-      // Per-cycle: no caching; compute dividers directly from current Q18 frequency
-
       BENCH_END(vt_freq_scale_post);
-      // Convert from Q24 fixed-point to a compact Q4 (Hz * 2^4) representation.
-      // freq_q24_X is Hz * 2^24, so shifting right by 20 yields Hz * 2^4.
-      uint32_t freqA_Q4 = (uint32_t)((freq_q24_A + (1LL << 19)) >> 20);  // round to nearest
-      uint32_t freqB_Q4 = (uint32_t)((freq_q24_B + (1LL << 19)) >> 20);  // round to nearest
+
+      // freq→divider inputs + dividers (was unattributed between post and clkdiv).
+      BENCH_BEGIN(vt_clk_div);
+
+#if !HIGH_PRECISION_CLKDIV
+      // Q4 only used by the non-HP divider path.
+      uint32_t freqA_Q4 = (uint32_t)((freq_q24_A + (1LL << 19)) >> 20);
+      uint32_t freqB_Q4 = (uint32_t)((freq_q24_B + (1LL << 19)) >> 20);
       uint32_t freqC_Q4 = (uint32_t)((freq_q24_C + (1LL << 19)) >> 20);
       if (freqA_Q4 == 0) freqA_Q4 = 1;
       if (freqB_Q4 == 0) freqB_Q4 = 1;
       if (freqC_Q4 == 0) freqC_Q4 = 1;
+#endif
 
       PIO pioN_A = pio[VOICE_TO_PIO[DCO_A]];
       PIO pioN_B = pio[VOICE_TO_PIO[DCO_B]];
@@ -793,66 +813,46 @@ inline void voice_task_fixed_point() {
       uint8_t smBN = VOICE_TO_SM[DCO_B];
       uint8_t smCN = VOICE_TO_SM[DCO_C];
 
-      // voice_task_3_time = micros() - voice_task_start_time;
-
-      BENCH_BEGIN(vt_clk_div);
-
       register uint32_t clk_div1, clk_div2, clk_div3;
 
       uint8_t arbitrary_measured_correction_value = 0; // 60 is a measured correction for the PIO
-      
+
       uint32_t phaseDelay = 0;
 
       uint32_t total_cycles1, total_cycles2, total_cycles3;
+      // One load of cached clk_sys (see sys_clock_hz_refresh); never call clock_get_hz here.
+      const uint32_t sys_hz = sysClock_Hz;
 
-#if HIGH_PRECISION_CLKDIV
-      // High-precision path: use full Q24 frequency with 64-bit intermediate divide.
-      if (freq_q24_A > 0) {
-        uint64_t num1 = ((uint64_t)sysClock_Hz << 24) + (uint64_t)(freq_q24_A / 2);
-        total_cycles1 = (uint32_t)(num1 / (uint64_t)freq_q24_A);
-      } else {
-        total_cycles1 = 0;
-      }
-
-      if (freq_q24_B > 0) {
-        uint64_t num2 = ((uint64_t)sysClock_Hz << 24) + (uint64_t)(freq_q24_B / 2);
-        total_cycles2 = (uint32_t)(num2 / (uint64_t)freq_q24_B);
-      } else {
-        total_cycles2 = 0;
-      }
-
-      if (freq_q24_C > 0) {
-        uint64_t num3 = ((uint64_t)sysClock_Hz << 24) + (uint64_t)(freq_q24_C / 2);
-        total_cycles3 = (uint32_t)(num3 / (uint64_t)freq_q24_C);
-      } else {
-        total_cycles3 = 0;
-      }
-#else
-      // --- Oscillator 1: Fixed-point Calculation (no float / 64-bit divide) ---
-      // freqA_Q4 represents Hz * 2^4, so multiply sysClock_Hz by 2^4 and divide.
-      total_cycles1 = (sysClock_Hz * 16u + (freqA_Q4 / 2u)) / freqA_Q4;  // rounded
-
-      // --- Oscillator 2: Fixed-point Calculation (no float / 64-bit divide) ---
-      total_cycles2 = (sysClock_Hz * 16u + (freqB_Q4 / 2u)) / freqB_Q4;  // rounded
-
-      // --- Oscillator 3: Fixed-point Calculation (no float / 64-bit divide) ---
-      total_cycles3 = (sysClock_Hz * 16u + (freqC_Q4 / 2u)) / freqC_Q4;
-#endif
-
-      // Period model per oscillator: period = Y + weight*clk_div + overhead. The weight
-      // and overhead depend on which program the SM runs (the polled sync program spends
-      // two cycles per iteration in its final chunk).
+      // Period model per oscillator: period = Y + weight*clk_div + overhead.
       const uint32_t wA = osc_ramp_weight(DCO_A), kA = osc_period_overhead(DCO_A);
       const uint32_t wB = osc_ramp_weight(DCO_B), kB = osc_period_overhead(DCO_B);
       const uint32_t wC = osc_ramp_weight(DCO_C), kC = osc_period_overhead(DCO_C);
+      const uint32_t yA = osc_last_y[DCO_A];
+      const uint32_t yB = osc_last_y[DCO_B];
+      const uint32_t yC = osc_last_y[DCO_C];
 
+#if HIGH_PRECISION_CLKDIV
+      // Q8 Hz denom → 64/32 soft div (avoids 64/64 on M0+; ±1/256 Hz vs full Q24).
+      total_cycles1 = hp1_total_cycles_q8(sys_hz, freq_q24_A);
+      total_cycles2 = hp1_total_cycles_q8(sys_hz, freq_q24_B);
+      total_cycles3 = hp1_total_cycles_q8(sys_hz, freq_q24_C);
       total_cycles1 += arbitrary_measured_correction_value;
       total_cycles2 += arbitrary_measured_correction_value;
       total_cycles3 += arbitrary_measured_correction_value;
-
-      clk_div1 = pio_clk_div_for_y(total_cycles1, osc_last_y[DCO_A], wA, kA);
-      clk_div2 = pio_clk_div_for_y(total_cycles2, osc_last_y[DCO_B], wB, kB);
-      clk_div3 = pio_clk_div_for_y(total_cycles3, osc_last_y[DCO_C], wC, kC);
+      clk_div1 = pio_clk_div_for_y(total_cycles1, yA, wA, kA);
+      clk_div2 = pio_clk_div_for_y(total_cycles2, yB, wB, kB);
+      clk_div3 = pio_clk_div_for_y(total_cycles3, yC, wC, kC);
+#else
+      total_cycles1 = (sys_hz * 16u + (freqA_Q4 / 2u)) / freqA_Q4;
+      total_cycles2 = (sys_hz * 16u + (freqB_Q4 / 2u)) / freqB_Q4;
+      total_cycles3 = (sys_hz * 16u + (freqC_Q4 / 2u)) / freqC_Q4;
+      total_cycles1 += arbitrary_measured_correction_value;
+      total_cycles2 += arbitrary_measured_correction_value;
+      total_cycles3 += arbitrary_measured_correction_value;
+      clk_div1 = pio_clk_div_for_y(total_cycles1, yA, wA, kA);
+      clk_div2 = pio_clk_div_for_y(total_cycles2, yB, wB, kB);
+      clk_div3 = pio_clk_div_for_y(total_cycles3, yC, wC, kC);
+#endif
       BENCH_END(vt_clk_div);
 
       // Measured apart from the divider math because it only runs with sync on and a
@@ -895,17 +895,10 @@ inline void voice_task_fixed_point() {
 
       uint16_t chanLevel, chanLevel2, chanLevel3;
 
-      // Derive Q16 from Q24 for amp-comp, then to Hz*2^FREQ_FRAC_BITS (get_chan_level does not need higher precision)
-      int32_t freq_q16_A = (int32_t)((freq_q24_A + (1LL << 7)) >> 8);
-      int32_t freq_q16_B = (int32_t)((freq_q24_B + (1LL << 7)) >> 8);
-      int32_t freq_q16_C = (int32_t)((freq_q24_C + (1LL << 7)) >> 8);
-      const int Q16_TO_FREQ_SHIFT = (16 - FREQ_FRAC_BITS);
-      int32_t freqFx_A = (freq_q16_A >= 0) ? (freq_q16_A >> Q16_TO_FREQ_SHIFT)
-                                           : -((-freq_q16_A) >> Q16_TO_FREQ_SHIFT);
-      int32_t freqFx_B = (freq_q16_B >= 0) ? (freq_q16_B >> Q16_TO_FREQ_SHIFT)
-                                           : -((-freq_q16_B) >> Q16_TO_FREQ_SHIFT);
-      int32_t freqFx_C = (freq_q16_C >= 0) ? (freq_q16_C >> Q16_TO_FREQ_SHIFT)
-                                           : -((-freq_q16_C) >> Q16_TO_FREQ_SHIFT);
+      // Q24 Hz → Q8 Hz (FREQ_FRAC_BITS); one rounded shift (was Q24→Q16→Q8).
+      int32_t freqFx_A = (int32_t)((freq_q24_A + (1LL << 15)) >> 16);
+      int32_t freqFx_B = (int32_t)((freq_q24_B + (1LL << 15)) >> 16);
+      int32_t freqFx_C = (int32_t)((freq_q24_C + (1LL << 15)) >> 16);
       switch (syncMode) {
         case 0:
           chanLevel = get_chan_level_lookup_fast(freqFx_A, DCO_A);
@@ -984,9 +977,9 @@ inline void voice_task_fixed_point() {
         Serial.printf("  modifiersBase_q24:         %.6f\n", (double)modifiersBase_q24 / (double)(1 << 24));
         Serial.println("OSC2 LFO2 pitch (fine + coarse):");
         Serial.printf("  lfo2_fine OSC2:            %.6f\n",
-                      (double)lfo::applyDepthQ24(LFO2Level, LFO2toOSC2_q24) / (double)(1 << 24));
+                      (double)applyDepthQ24(LFO2Level, LFO2toOSC2_q24) / (double)(1 << 24));
         Serial.printf("  lfo2_coarse OSC2:          %.6f\n",
-                      (double)lfo::applyDepthQ24(LFO2Level, LFO2toOSC2_coarse_q24) / (double)(1 << 24));
+                      (double)applyDepthQ24(LFO2Level, LFO2toOSC2_coarse_q24) / (double)(1 << 24));
         Serial.printf("  freq2Modifiers_q24:        %.6f\n", (double)freq2Modifiers_q24 / (double)(1 << 24));
         Serial.println("---");
 
@@ -1111,10 +1104,11 @@ inline void voice_task_fixed_point() {
           // Optimized: This version avoids storing large intermediate products.
           // The multiplication and shift are combined into one expression per modulator,
           // allowing the compiler to make better use of registers.
+          // int32: |q15|*|scale| and |LFO|*|LFO2toPW| fit before >> 15 (no int64 on M0+).
           int32_t adsr1_delta =
-            (int32_t)(((int64_t)ADSR1Level_q15[i] * (int64_t)ADSR1toPWM_scale) >> 15);
+            ((int32_t)ADSR1Level_q15[i] * ADSR1toPWM_scale) >> 15;
           int32_t lfo2_delta =
-            (int32_t)(((int64_t)LFO2Level * (int64_t)local_LFO2toPW) >> 15);
+            ((int32_t)LFO2Level * (int32_t)local_LFO2toPW) >> 15;
           int32_t pw_calc = (int32_t)DIV_COUNTER_PW - 1 - lfo2_delta - PW[0] + adsr1_delta
                             + character_pw_delta();
 
@@ -1322,6 +1316,12 @@ inline void voice_task_float() {
           curA = porta_freq_cur_f[DCO_A];
           curB = porta_freq_cur_f[DCO_B];
           curC = porta_freq_cur_f[DCO_C];
+        } else if (porta_note_cur_f[DCO_A] == porta_note_stop_f[DCO_A] &&
+                   porta_note_cur_f[DCO_B] == porta_note_stop_f[DCO_B] &&
+                   porta_note_cur_f[DCO_C] == porta_note_stop_f[DCO_C]) {
+          curA = porta_freq_stop_f[DCO_A];
+          curB = porta_freq_stop_f[DCO_B];
+          curC = porta_freq_stop_f[DCO_C];
         } else {
           int32_t elapsedA = (voiceMode == 0) ? (int32_t)portamentoTimer[i] : (int32_t)portamentoTimer[0];
           int32_t elapsedB = (voiceMode == 0) ? elapsedA : (int32_t)portamentoTimer[1];
@@ -1422,10 +1422,8 @@ inline void voice_task_float() {
       // --- 2.4 ADSR detune (float equivalent of Q24) ---
       BENCH_BEGIN(vt_adsr_mod);
       float ADSRModifier = 0.0f;
-      if (ADSR1toDETUNE1 != 0) {
-        float env = (float)linToLogLookup[ADSR1Level[i]];  // original int table
-        float scale = q24_to_float(ADSR1toDETUNE1_scale_q24);
-        ADSRModifier = env * scale;
+      if (ADSR1toDETUNE1_scale_q24 != 0) {
+        ADSRModifier = q24_to_float(applyDepthQ24(ADSR1Level_q15[i], ADSR1toDETUNE1_scale_q24));
       }
       float ADSRModifierOSC1 = (ADSR3ToOscSelect == 0 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier : 0.0f;
       float ADSRModifierOSC2 = (ADSR3ToOscSelect == 1 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier : 0.0f;
@@ -1528,9 +1526,10 @@ inline void voice_task_float() {
       BENCH_BEGIN(vt_clk_div);
 
       float correction = 0.0f;   // keep your measured correction if needed
-      float totalCycles1_f = (float)sysClock_Hz / freqA_Hz + correction;
-      float totalCycles2_f = (float)sysClock_Hz / freqB_Hz + correction;
-      float totalCycles3_f = (float)sysClock_Hz / freqC_Hz + correction;
+      const uint32_t sys_hz = sysClock_Hz;
+      float totalCycles1_f = (float)sys_hz / freqA_Hz + correction;
+      float totalCycles2_f = (float)sys_hz / freqB_Hz + correction;
+      float totalCycles3_f = (float)sys_hz / freqC_Hz + correction;
 
       // Round to whole cycles here, then share the integer period model with the
       // fixed-point engine so both tune identically. fminf guards the cast: a zero
@@ -1897,11 +1896,8 @@ void setSyncMode() {
 /**
  * @brief Fast amplitude compensation lookup (Q8 Hz) for fixed path / AMP_COMP_FIXED.
  *
- * Uses a deterministic window selection rule that matches the float path:
- * for each oscillator we choose the *first* window i such that
- *   freqRow[i] <= x < freqRow[i+2]
- * scanning from low to high. Always compiled so float-engine builds can
- * select FIXED for A/B and benchmarks.
+ * Window rule matches float: first i with freqRow[i] <= x < freqRow[i+2].
+ * Find: per-osc ampWinCache → walk → full scan (same as FLOAT_QUAD).
  */
 uint16_t get_chan_level_lookup_fast(int32_t x, uint8_t voiceN) {
   const int32_t* freqRow   = ampCompFrequencyArray[voiceN];
@@ -1913,29 +1909,66 @@ uint16_t get_chan_level_lookup_fast(int32_t x, uint8_t voiceN) {
   const int32_t* bRow      = bQWIN_fast[voiceN];
   const uint16_t* cRow     = cQWIN[voiceN];
 
-  if (x <= freqRow[0]) return (uint16_t)ampRow[0];
+  if (x <= freqRow[0]) {
+    BENCH_PATH_INC(amp_clamp);
+    return (uint16_t)ampRow[0];
+  }
 
   // Domain ceiling: at/above AMP_COMP_MAX_HZ the cal sentinel is full RANGE.
   // Without this, x == MAX_Q matches no window (exclusive upper bound) and the
   // fallback window-0 path clamps t∈[0,1] to the first segment — ~12k PWM off
   // float, which extrapolates absolute Hz on that window to ~DIV_COUNTER.
-  if (x >= AMP_COMP_MAX_HZ_Q) return (uint16_t)DIV_COUNTER;
+  if (x >= AMP_COMP_MAX_HZ_Q) {
+    BENCH_PATH_INC(amp_clamp);
+    return (uint16_t)DIV_COUNTER;
+  }
 
   // Real plateau only: precompute leaves plateauStartFreqQ at AMP_COMP_MAX_HZ_Q
   // when none was found (same role as plateauStartIndex < 0 in the original code).
   // Do not use plateauStartIndex here — dual-build restores that for the float path.
   if (plateauStartFreqQ[voiceN] < AMP_COMP_MAX_HZ_Q &&
       x >= plateauStartFreqQ[voiceN]) {
+    BENCH_PATH_INC(amp_clamp);
     return (uint16_t)DIV_COUNTER;
   }
 
   const int maxWindow = ampCompTableSize - 2;
-  int window = 0;
-  for (int i = 0; i <= maxWindow; ++i) {
-    if (x >= freqRow[i] && x < freqRow[i + 2]) {
-      window = i;
-      break;
+  int window = ampWinCache[voiceN];
+
+  if (window >= 0 && window <= maxWindow &&
+      x >= freqRow[window] && x < freqRow[window + 2]) {
+    BENCH_PATH_INC(amp_hit);
+  } else {
+    int cand = window;
+    if (cand < 0 || cand > maxWindow) cand = 0;
+    uint32_t steps = 0;
+    if (x >= freqRow[cand + 2]) {
+      while (cand < maxWindow && x >= freqRow[cand + 2]) {
+        ++cand;
+        ++steps;
+      }
+    } else if (x < freqRow[cand]) {
+      while (cand > 0 && x < freqRow[cand]) {
+        --cand;
+        ++steps;
+      }
     }
+    if (cand >= 0 && cand <= maxWindow &&
+        x >= freqRow[cand] && x < freqRow[cand + 2]) {
+      window = cand;
+      BENCH_PATH_INC(amp_miss_walk);
+      bench_path_amp_walk_steps(steps);
+    } else {
+      window = 0;
+      for (int i = 0; i <= maxWindow; ++i) {
+        if (x >= freqRow[i] && x < freqRow[i + 2]) {
+          window = i;
+          break;
+        }
+      }
+      BENCH_PATH_INC(amp_miss_scan);
+    }
+    ampWinCache[voiceN] = (int16_t)window;
   }
 
   int32_t dx = x - xBaseRow[window];
@@ -1946,13 +1979,19 @@ uint16_t get_chan_level_lookup_fast(int32_t x, uint8_t voiceN) {
   const uint32_t inv_q28 = invRow_q28[window];
   uint32_t t_q = (uint32_t)(((uint64_t)dx * inv_q28) >> (28 - T_FRAC));
 
-  int64_t a = aRow[window];
-  int64_t b = bRow[window];
-  int32_t c = cRow[window];
+  const int32_t a = aRow[window];
+  const int32_t b = bRow[window];
+  const int32_t c = (int32_t)cRow[window];
 
   uint32_t t2 = (uint32_t)(((uint32_t)t_q * t_q) >> T_FRAC);
-  int32_t term_a = (int32_t)((a * t2) >> T_FRAC);
-  int32_t term_b = (int32_t)((b * t_q) >> T_FRAC);
+  int32_t term_a, term_b;
+  if (amp_quad_muls_i32) {
+    term_a = (a * (int32_t)t2) >> T_FRAC;
+    term_b = (b * (int32_t)t_q) >> T_FRAC;
+  } else {
+    term_a = (int32_t)(((int64_t)a * (int64_t)t2) >> T_FRAC);
+    term_b = (int32_t)(((int64_t)b * (int64_t)t_q) >> T_FRAC);
+  }
 
   int32_t y_q = term_a + term_b + (c << T_FRAC);
   int32_t y = (y_q + (1 << (T_FRAC - 1))) >> T_FRAC;
@@ -2227,47 +2266,49 @@ inline int32_t interpolatePitchMultiplierIntQ16_cached(int32_t xQ16, int dcoInde
 
 #if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
 // xQ16 and tables are natural Q16 (1.0 = 65536). Returns frequency ratio as Q16.
+// Miss path: O(1) trunc±1 (same idea as FLOAT_FAST) — avoids walk under LFO thrash.
 inline int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex) {
-  if (xQ16 <= xMultiplierTable[0]) {
+  // Endpoints match initMultiplierTables (-1 / 3) in Q16.
+  static constexpr int32_t kPitchX0_Q16 = -65536; // -1.0
+  static constexpr int32_t kPitchX1_Q16 = 196608; // 3.0
+  if (xQ16 <= kPitchX0_Q16) {
+    BENCH_PATH_INC(ratio_clamp);
     return yMultiplierTable[0];
   }
-  if (xQ16 >= xMultiplierTable[multiplierTableSize - 1]) {
+  if (xQ16 >= kPitchX1_Q16) {
+    BENCH_PATH_INC(ratio_clamp);
     return yMultiplierTable[multiplierTableSize - 1];
   }
+  const int lastSeg = multiplierTableSize - 2;
   int low = interpSegCache[dcoIndex];
-  if (low < 0 || low > multiplierTableSize - 2 ||
-      !(xMultiplierTable[low] <= xQ16 && xQ16 < xMultiplierTable[low + 1])) {
-    if (low >= 0 && low < multiplierTableSize - 1) {
-      if (xQ16 >= xMultiplierTable[low + 1]) {
-        while (low < multiplierTableSize - 2 && xQ16 >= xMultiplierTable[low + 1]) low++;
-      } else if (xQ16 < xMultiplierTable[low]) {
-        while (low > 0 && xQ16 < xMultiplierTable[low]) low--;
-      }
+  if (low >= 0 && low <= lastSeg &&
+      xMultiplierTable[low] <= xQ16 && xQ16 < xMultiplierTable[low + 1]) {
+    BENCH_PATH_INC(ratio_hit);
+  } else {
+    // cand ≈ (x - (-1)) * (N/4); N=200 → *50, then >>16 for Q16.
+    static constexpr int kPitchInvDx = multiplierTableSize / 4; // 50
+    int cand = (int)(((int64_t)(xQ16 - kPitchX0_Q16) * (int64_t)kPitchInvDx) >> 16);
+    if (cand < 0) cand = 0;
+    else if (cand > lastSeg) cand = lastSeg;
+    uint32_t steps = 0;
+    if (cand < lastSeg && xQ16 >= xMultiplierTable[cand + 1]) {
+      ++cand;
+      steps = 1;
+    } else if (cand > 0 && xQ16 < xMultiplierTable[cand]) {
+      --cand;
+      steps = 1;
     }
-    if (!(low >= 0 && low < multiplierTableSize - 1 &&
-          xMultiplierTable[low] <= xQ16 && xQ16 < xMultiplierTable[low + 1])) {
-      int l = 0, h = multiplierTableSize - 1;
-      while (l <= h) {
-        int m = (l + h) >> 1;
-        if (xMultiplierTable[m] <= xQ16 && xQ16 < xMultiplierTable[m + 1]) {
-          low = m;
-          break;
-        } else if (xQ16 < xMultiplierTable[m]) {
-          h = m - 1;
-        } else {
-          l = m + 1;
-        }
-      }
-      if (low < 0) low = 0;
-      if (low > multiplierTableSize - 2) low = multiplierTableSize - 2;
-    }
+    low = cand;
+    BENCH_PATH_INC(ratio_miss_direct);
+    bench_path_walk_steps(steps);
     interpSegCache[dcoIndex] = (int16_t)low;
   }
   const int32_t x0 = xMultiplierTable[low];
   const int32_t y0 = yMultiplierTable[low];
   const int32_t delta = xQ16 - x0;
-  // slopeQ20 = (dy << 20) / dx  →  y = y0 + (delta * slope) >> 20
-  return y0 + (int32_t)((((int64_t)delta * (int64_t)slopeQ20[low]) + (1LL << 19)) >> 20);
+  // slopeQ16 = (dy << 16) / dx  →  y = y0 + (delta * slope) >> 16
+  // Boot proves |delta_max*slope| fits int32 (Q20 product does not).
+  return y0 + (((delta * slopeQ16[low]) + (1 << 15)) >> 16);
 }
 #endif // PITCH_INTERP_RATIO_Q16
 
@@ -2276,20 +2317,31 @@ inline int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex) {
 // Walk + bsearch find (A/B vs FLOAT_FAST).
 inline float interpolateRatioFloat_cached(float x, int dcoIndex) {
   if (x <= xMultiplierTableF[0]) {
+    BENCH_PATH_INC(ratio_clamp);
     return yMultiplierTableF[0];
   }
   if (x >= xMultiplierTableF[multiplierTableSize - 1]) {
+    BENCH_PATH_INC(ratio_clamp);
     return yMultiplierTableF[multiplierTableSize - 1];
   }
 
   int low = interpSegCache[dcoIndex];
-  if (low < 0 || low > multiplierTableSize - 2 ||
-      !(xMultiplierTableF[low] <= x && x < xMultiplierTableF[low + 1])) {
+  if (low >= 0 && low <= multiplierTableSize - 2 &&
+      xMultiplierTableF[low] <= x && x < xMultiplierTableF[low + 1]) {
+    BENCH_PATH_INC(ratio_hit);
+  } else {
+    uint32_t steps = 0;
     if (low >= 0 && low < multiplierTableSize - 1) {
       if (x >= xMultiplierTableF[low + 1]) {
-        while (low < multiplierTableSize - 2 && x >= xMultiplierTableF[low + 1]) ++low;
+        while (low < multiplierTableSize - 2 && x >= xMultiplierTableF[low + 1]) {
+          ++low;
+          steps++;
+        }
       } else if (x < xMultiplierTableF[low]) {
-        while (low > 0 && x < xMultiplierTableF[low]) --low;
+        while (low > 0 && x < xMultiplierTableF[low]) {
+          --low;
+          steps++;
+        }
       }
     }
     if (!(low >= 0 && low < multiplierTableSize - 1 &&
@@ -2309,6 +2361,10 @@ inline float interpolateRatioFloat_cached(float x, int dcoIndex) {
       }
       if (low < 0) low = 0;
       if (low > multiplierTableSize - 2) low = multiplierTableSize - 2;
+      BENCH_PATH_INC(ratio_miss_bsearch);
+    } else {
+      BENCH_PATH_INC(ratio_miss_direct);
+      bench_path_walk_steps(steps);
     }
     interpSegCache[dcoIndex] = (int16_t)low;
   }
@@ -2403,12 +2459,22 @@ void initMultiplierTables() {
   }
 
 #if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
+  // Q20×(dx-1) overflows int32 on upper segments (~7.5e9). Q16 matches Q20 y on
+  // this 200-knot set and keeps |delta*slope| in signed 32-bit for MULS lerp.
   for (int i = 0; i < (multiplierTableSize - 1); ++i) {
     int32_t dx = xMultiplierTable[i + 1] - xMultiplierTable[i];
     if (dx == 0) dx = 1;
     int32_t dy = yMultiplierTable[i + 1] - yMultiplierTable[i];
-    int64_t numSlope = ((int64_t)dy << 20) + (dx > 0 ? dx / 2 : -dx / 2);
-    slopeQ20[i] = (int32_t)(numSlope / (int64_t)dx);
+    int64_t numSlope = ((int64_t)dy << 16) + (dx > 0 ? dx / 2 : -dx / 2);
+    slopeQ16[i] = (int32_t)(numSlope / (int64_t)dx);
+    const int32_t delta_max = (dx > 0) ? (dx - 1) : 0;
+    const int64_t prod = (int64_t)delta_max * (int64_t)slopeQ16[i];
+    // One-time boot proof only (no live branch). Stock table always fits.
+    if (prod > (int64_t)INT32_MAX || prod < (int64_t)INT32_MIN) {
+#if defined(RUNNING_AVERAGE)
+      bench_out_printf("ratio slopeQ16*delta overflows int32 at seg %d\n", i);
+#endif
+    }
   }
 #elif PITCH_INTERP_MODE == PITCH_INTERP_Q12
   for (int i = 0; i < (multiplierTableSize - 1); ++i) {

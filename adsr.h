@@ -5,13 +5,14 @@
 
 #define ARRAY_SIZE 512
 
-#define LIN_TO_EXP_TABLE_SIZE ADSR_1_DACSIZE + 1
-uint16_t linToExpLookup[LIN_TO_EXP_TABLE_SIZE];
-uint16_t linToLogLookup[LIN_TO_EXP_TABLE_SIZE];
-uint16_t maxADSRControlValue = ADSR_1_DACSIZE;
-
 // ADSR Bezier library (provides curve tables and ADSR class).
-// Hot path always uses Q24 phase / Q16 amp; Q15 mod tap via levelQ15()/getWaveQ15().
+// Hot path: Q24 phase A/B (uint64) / Q16 amp; native Q15 (ADSR_BEZIER_NATIVE_Q15=1).
+// Set ADSR_BEZIER_PHASE_SHIFT 22 for fast uint32 path after listen A/B.
+#ifndef ADSR_BEZIER_PHASE_SHIFT
+#define ADSR_BEZIER_PHASE_SHIFT 22
+#endif
+// RP2040: keep FLOAT=0 (no FPU; soft-float index would be slower).
+// Each getWave() uses its own micros(); EnvVCF2 is sampled (reserved for later).
 #ifndef ADSR_BEZIER_USE_FLOAT
 #define ADSR_BEZIER_USE_FLOAT 0
 #endif
@@ -20,24 +21,42 @@ uint16_t maxADSRControlValue = ADSR_1_DACSIZE;
 #define ADSR_BEZIER_USE_MICROS 1
 #endif
 
+#ifndef ADSR_BEZIER_NATIVE_Q15
+#define ADSR_BEZIER_NATIVE_Q15 1
+#endif
+
+// NATIVE=1: internal peak 32768 (dyadic setter scales). Set 0 to A/B peak=32767.
+#ifndef ADSR_BEZIER_Q15_DYADIC
+#define ADSR_BEZIER_Q15_DYADIC 1
+#endif
+
+// Ignored when NATIVE_Q15=1 (primary output is already Q15).
+#ifndef ADSR_BEZIER_UPDATE_Q15_CACHE
+#define ADSR_BEZIER_UPDATE_Q15_CACHE 1
+#endif
+
 #include "_build_libs/ADSR_Bezier/ADSR_Bezier.h"
 
 
 volatile byte noteStart[NUM_VOICES_TOTAL];
 volatile byte noteEnd[NUM_VOICES_TOTAL];
 
+// Legacy u12/DAC mirrors (optional; consumers use *_q15). Not refreshed under NATIVE_Q15.
 uint16_t ADSR1Level[NUM_VOICES_TOTAL];
 uint16_t ADSR_VCA_Level[NUM_VOICES_TOTAL];
 uint16_t ADSR_VCF_Level;
 uint16_t ADSR_VCF2_Level;
-// Q15 mod taps (0..32768); DAC paths keep the u12/u12-ish levels above.
+// Primary mod taps (0..ADSR_Q15_ONE).
 int16_t ADSR1Level_q15[NUM_VOICES_TOTAL];
 int16_t ADSR_VCA_Level_q15[NUM_VOICES_TOTAL];
 int16_t ADSR_VCF_Level_q15;
 int16_t ADSR_VCF2_Level_q15;
 
 static constexpr uint16_t ADSR_1_CC = 4000;
-static constexpr uint16_t ADSR_CV_CC = 4095;  // EnvVCA/EnvVCF domain (Mainboard CV scale)
+// Max CV code / levelDac export for EnvVCA/EnvVCF (legal u12 peak).
+static constexpr uint16_t ADSR_CV_CC = 4095;
+// Panel→Q15 divisor (1<<12); use with >>12 — not a storable CV level.
+static constexpr uint16_t ADSR_CV_SCALE = 4096;
 
 float ADSRMaxLevel = ADSR_1_CC;
 
@@ -47,9 +66,9 @@ uint16_t ADSRMinLevel = 0;
 int8_t ADSR3ToOscSelect = 2;
 
 uint16_t ADSR1_attack = 0;
-uint16_t ADSR1_decay;
-uint16_t ADSR1_sustain;
-uint16_t ADSR1_release;
+uint16_t ADSR1_decay = 0;
+uint16_t ADSR1_sustain = 4095;
+uint16_t ADSR1_release = 0;
 
 // Core 0 marks dirty on write; Core 1 applies to voices every ~5 ms.
 #define ADSR_DIRTY_DCO_A   (1u << 0)
@@ -86,7 +105,7 @@ float ADSR_VCF_curve2 = 0.997f;
 bool ADSRRestart = true;
 
 int16_t ADSR1toDETUNE1;
-
+// Q24 pitch depth: exp-baked to ADSR_PITCH_MAX_OCTAVES at full CW (see LFO.h / LFO.md).
 int32_t ADSR1toDETUNE1_scale_q24;
 
 int16_t ADSR1toPWM;

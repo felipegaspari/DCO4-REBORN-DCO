@@ -1,7 +1,6 @@
 
-// Linear → logarithmic mapping (0..maxValue). Used by init_ADSR for linToLogLookup.
+// Linear → logarithmic mapping (0..maxValue). Kept for reuse; pitch ADSR no longer calls it.
 uint16_t linearToLogarithmic(uint16_t linearValue, float base, uint16_t maxValue) {
-  if (linearValue < 0) linearValue = 0;
   if (linearValue > maxValue) linearValue = maxValue;
 
   float normalizedValue = (float)linearValue / (float)maxValue;
@@ -13,7 +12,7 @@ uint16_t linearToLogarithmic(uint16_t linearValue, float base, uint16_t maxValue
 }
 
 // Linear 0..4095 → exponential 0..maxValue. Same curve the Input board applies to the
-// envelope A/D/R faders before sending them (auxiliary.h / linToExpLookup), so a MIDI CC
+// envelope A/D/R faders before sending them (auxiliary.h), so a MIDI CC
 // lands in the exp domain the 'a'-'c' block frames carry.
 uint16_t linearToExponential(uint16_t linearValue, float base, uint16_t maxValue) {
   if (linearValue > 4095) linearValue = 4095;

@@ -49,6 +49,11 @@ int64_t  bQWIN      [NUM_OSCILLATORS][ampCompTableSize - 1]; // Q(T_FRAC)
 uint16_t cQWIN      [NUM_OSCILLATORS][ampCompTableSize - 1];
 int32_t  aQWIN_fast [NUM_OSCILLATORS][ampCompTableSize - 1];
 int32_t  bQWIN_fast [NUM_OSCILLATORS][ampCompTableSize - 1];
+// Set in precomputeCoefficients: |a|*4096 and |b|*4096 fit signed 32-bit MULS.
+bool amp_quad_muls_i32 = false;
+
+// Last quadratic window per osc for FIXED / FLOAT_QUAD find (-1 = cold).
+int16_t  ampWinCache[NUM_OSCILLATORS];
 
 // High-precision float coefficients (Hz-domain): y = a*x^2 + b*x + c
 // Used by both fixed-point (for reference) and float amp-comp paths.
@@ -64,8 +69,6 @@ float    ampCompFrequencyHz[NUM_OSCILLATORS][ampCompTableSize + 1];
 // LUT at integer Hz matches float quadratic exactly; lookup uses nearest Hz.
 // Selectable for speed A/B; live default is FIXED.
 uint16_t ampCompLut[NUM_OSCILLATORS][AMP_COMP_MAX_HZ + 1];
-// Last quadratic window per osc for get_chan_level_float_quad (-1 = cold).
-int16_t  ampWinCache[NUM_OSCILLATORS];
 #endif
 
 // ---------------------------------------------------------------------------
@@ -254,6 +257,22 @@ static void precomputeCoefficients(bool rewritePlateaus = true) {
       bQWIN_fast[j][i] = (int32_t)bFastLL;
     }
   }
+
+  // t_q / t2 are Q12 in [0, 4096]. int32 MULS only if |coeff|*4096 fits signed 32-bit.
+  bool ok = true;
+  const int64_t t_max = (int64_t)(1 << T_FRAC);
+  for (int j = 0; j < NUM_OSCILLATORS && ok; ++j) {
+    for (int i = 0; i < ampCompTableSize - 1; ++i) {
+      const int64_t pa = (int64_t)aQWIN_fast[j][i] * t_max;
+      const int64_t pb = (int64_t)bQWIN_fast[j][i] * t_max;
+      if (pa > (int64_t)INT32_MAX || pa < (int64_t)INT32_MIN ||
+          pb > (int64_t)INT32_MAX || pb < (int64_t)INT32_MIN) {
+        ok = false;
+        break;
+      }
+    }
+  }
+  amp_quad_muls_i32 = ok;
 }
 
 /**
@@ -431,10 +450,10 @@ static inline void precompute_amp_comp_for_engine() {
   memcpy(plateauStartFreqQ, plateauQSave, sizeof(plateauQSave));
 
   fill_amp_comp_lut_from_quad();
-  for (int o = 0; o < NUM_OSCILLATORS; ++o) ampWinCache[o] = -1;
 #else
   precomputeCoefficients(/*rewritePlateaus=*/true);
 #endif
+  for (int o = 0; o < NUM_OSCILLATORS; ++o) ampWinCache[o] = -1;
 }
 
 // Unified lookup facade: always take frequency in Hz.

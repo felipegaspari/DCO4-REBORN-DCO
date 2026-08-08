@@ -8,7 +8,7 @@ Readable map of the ~10 kHz CV path after the dual-MCU optimization. Live source
 
 **Flag-gated:** `USE_FLOAT_CV_OUTS` — float VCA/VCF/keytrack/drift/velocity (A/B only) vs fixed Q15 / integer path (**default off** on both MCUs → `cv=FIXED`). See [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md). LFO/ADSR mod sources are Q15 pass-through.
 
-**RP2040 A/B (directional, 250 MHz):** post-opt `update_CV_outs` mean ~27 µs with `cv=FIXED` vs ~53 µs with `cv=FLOAT`; keep FIXED for shipping. Details / reading rules: [`BENCHMARKING.md`](BENCHMARKING.md).
+**RP2040 A/B (directional, 250 MHz):** latest `cv=FIXED` `update_CV_outs` mean ~13 µs / ~7%win (earlier post-opt FIXED was ~27 µs / ~13%win; `cv=FLOAT` A/B ~53 µs / ~20%win). Keep FIXED for shipping. Details / reading rules: [`BENCHMARKING.md`](BENCHMARKING.md).
 
 ## Call graph
 
@@ -53,7 +53,7 @@ Bench banner prints `cv=FLOAT|FIXED` from `USE_FLOAT_CV_OUTS`. Manual calibratio
 
 ## Hot-path math (fixed / shipping)
 
-Identities match the `#else` path in [`cv_out.ino`](../cv_out.ino) (`USE_FLOAT_CV_OUTS` off). Q15 multiply: `(a * b) >> 15`. Clamp: `cv_clamp_u12` → 0..4095.
+Identities match the `#else` path in [`cv_out.ino`](../cv_out.ino) (`USE_FLOAT_CV_OUTS` off). Q15 multiply: `(a * b) >> 15`. Clamp: `cv_clamp_u12` → 0..4095 (`CV_U12_MAX`). Divisors use `CV_U12_SCALE=4096` (`>>12` / Q15→u12).
 
 ### Helpers
 
@@ -113,17 +113,18 @@ ADSR2_mod  = (ADSR_VCF2_Level_q15 * ADSR2toVCF_scale_q15) >> 15   // filter 1
 matrix_cutoff = mod_sums[MOD_DEST_VCF_CUTOFF]   // from accumulate
 ```
 
-**Domain note:** EnvVCA for the VCA sum is still **u12** `ADSR_VCA_Level[i]`. EnvVCF contributions use **Q15** taps. LFO1/LFO2 are Q15 bipolar.
+**Domain note:** EnvVCA silent-gate uses **`ADSR_VCA_Level_q15`**. Export to u12 is `(q15 * 4096) >> 15` (`CV_U12_SCALE`, ≡ `q15 >> 3`) then LFO1 (CV-scaled) is added. Clamps stay **`CV_U12_MAX = 4095`**. EnvVCF uses Q15 taps. DCO ships `ADSR_BEZIER_NATIVE_Q15=1`.
 
 ### VCA (each voice)
 
 ```text
-if ADSR_VCA_Level[i] == 0:
+if ADSR_VCA_Level_q15[i] == 0:
   LFO1_current = 0                    // mute LFO into VCA when env idle
 else:
   LFO1_current = LFO1_mod
 
-vca_pre = ADSR_VCA_Level[i] + LFO1_current
+env_u12 = (ADSR_VCA_Level_q15[i] * CV_U12_SCALE) >> 15   // SCALE=4096
+vca_pre = env_u12 + LFO1_current
 
 if velocityToVCAVal == 0:
   vca_vel_q15 = 32768

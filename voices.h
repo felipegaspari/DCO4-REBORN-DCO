@@ -70,7 +70,9 @@ int32_t xMultiplierTable[multiplierTableSize]; // RATIO_Q16: natural Q16; Q12: �
 int32_t yMultiplierTable[multiplierTableSize]; // RATIO_Q16: ratio Q16; Q12: ×10000 units
 int32_t x0Q16_tbl[multiplierTableSize];
 #if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
-int32_t slopeQ20[multiplierTableSize - 1];
+// Q16 slope: (dy<<16)/dx. Q20×delta overflows int32 on this table; Q16×delta fits
+// so live lerp can use 32-bit MULS (no soft __aeabi_lmul).
+int32_t slopeQ16[multiplierTableSize - 1];
 #elif PITCH_INTERP_MODE == PITCH_INTERP_Q12
 int32_t slopeQ12[multiplierTableSize - 1];
 #endif

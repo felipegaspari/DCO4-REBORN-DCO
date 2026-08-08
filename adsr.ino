@@ -1,39 +1,56 @@
-// Boot: build Bézier/log tables and apply initial A/D/S/R to EnvDCO + EnvVCA + EnvVCF.
-void init_ADSR() {
-  adsrBezierInitTables(ADSR_1_CC, ARRAY_SIZE, _curve_tables);
+// Panel sustain (MIDI/CC domain) → library setSustain units.
+// NATIVE_Q15=1: 0..ADSR_Q15_PEAK. NATIVE_Q15=0: DAC counts (panel_full == peak).
+static inline int adsr_sustain_for_set(uint16_t panel, uint16_t panel_full) {
+#if ADSR_BEZIER_NATIVE_Q15
+  if (panel_full == 0) return 0;
+  // CV panel scale 4096 → (panel * ADSR_Q15_PEAK) >> 12 (no divide).
+  if (panel_full == ADSR_CV_SCALE)
+    return (int)(((uint32_t)panel * (uint32_t)ADSR_Q15_PEAK) >> 12);
+  return (int)(((uint32_t)panel * (uint32_t)ADSR_Q15_PEAK) / (uint32_t)panel_full);
+#else
+  (void)panel_full;
+  return (int)panel;
+#endif
+}
 
-  for (int i = 0; i < LIN_TO_EXP_TABLE_SIZE; i++) {
-    linToLogLookup[i] = linearToLogarithmic(i, 10, maxADSRControlValue);
-  }
+// Boot: build Bézier tables and apply initial A/D/S/R to EnvDCO + EnvVCA + EnvVCF.
+void init_ADSR() {
+#if ADSR_BEZIER_NATIVE_Q15
+  adsrBezierInitTables((float)ADSR_Q15_PEAK, ARRAY_SIZE, _curve_tables);
+#else
+  adsrBezierInitTables(ADSR_1_CC, ARRAY_SIZE, _curve_tables);
+#endif
 
   for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
     ADSRVoices[i].adsr1_voice.setAttack(ADSR1_attack);
     ADSRVoices[i].adsr1_voice.setDecay(ADSR1_decay);
-    ADSRVoices[i].adsr1_voice.setSustain(ADSR1_sustain);
+    ADSRVoices[i].adsr1_voice.setSustain(adsr_sustain_for_set(ADSR1_sustain, ADSR_CV_SCALE));
     ADSRVoices[i].adsr1_voice.setRelease(ADSR1_release);
     ADSRVoices[i].adsr1_voice.setResetAttack(ADSRRestart);
 
     ADSRVoices[i].adsr_vca_voice.setAttack(ADSR_VCA_attack);
     ADSRVoices[i].adsr_vca_voice.setDecay(ADSR_VCA_decay);
-    ADSRVoices[i].adsr_vca_voice.setSustain(ADSR_VCA_sustain);
+    ADSRVoices[i].adsr_vca_voice.setSustain(adsr_sustain_for_set(ADSR_VCA_sustain, ADSR_CV_SCALE));
     ADSRVoices[i].adsr_vca_voice.setRelease(ADSR_VCA_release);
     ADSRVoices[i].adsr_vca_voice.setResetAttack(VCAADSRRestart);
   }
 
   adsr_vcf_voice.setAttack(ADSR_VCF_attack);
   adsr_vcf_voice.setDecay(ADSR_VCF_decay);
-  adsr_vcf_voice.setSustain(ADSR_VCF_sustain);
+  adsr_vcf_voice.setSustain(adsr_sustain_for_set(ADSR_VCF_sustain, ADSR_CV_SCALE));
   adsr_vcf_voice.setRelease(ADSR_VCF_release);
   adsr_vcf_voice.setResetAttack(VCFADSRRestart);
 
   adsr_vcf2_voice.setAttack(ADSR_VCF_attack);
   adsr_vcf2_voice.setDecay(ADSR_VCF_decay);
-  adsr_vcf2_voice.setSustain(ADSR_VCF_sustain);
+  adsr_vcf2_voice.setSustain(adsr_sustain_for_set(ADSR_VCF_sustain, ADSR_CV_SCALE));
   adsr_vcf2_voice.setRelease(ADSR_VCF_release);
   adsr_vcf2_voice.setResetAttack(VCFADSRRestart);
 }
 
 // ~10 kHz: note edges → EnvDCO + EnvVCA + EnvVCF; sample levels.
+// Each noteOn/noteOff/getWave reads micros()/millis() itself — do not share one
+// timestamp across edges + getWave (unsigned delta underflow skips A/R).
 inline void ADSR_update() {
   for (int i = 0; i < NUM_VOICES; i++) {
     if (noteEnd[i] == 1) {
@@ -45,28 +62,36 @@ inline void ADSR_update() {
     } else if (noteStart[i] == 1) {
       // A/D/R (and sustain) stay current via ADSR_set_parameters / init / curve helpers.
       // Re-set* here used to cost ~9x 64-bit divides per note and spiked ADSR_update max.
-      ADSRVoices[i].adsr1_voice.noteOff();
+      // noteOn() retriggers attack; do not noteOff() first (phantom RELEASE from _notes_pressed==0).
       ADSRVoices[i].adsr1_voice.noteOn();
-
-      ADSRVoices[i].adsr_vca_voice.noteOff();
       ADSRVoices[i].adsr_vca_voice.noteOn();
-
-      adsr_vcf_voice.noteOff();
       adsr_vcf_voice.noteOn();
-      adsr_vcf2_voice.noteOff();
       adsr_vcf2_voice.noteOn();
 
       noteStart[i] = 0;
     }
+#if ADSR_BEZIER_NATIVE_Q15
+    // getWave returns Q15; do not call levelDac() here (divide; u12 mirrors unused).
+    ADSR1Level_q15[i] = (int16_t)ADSRVoices[i].adsr1_voice.getWave();
+    ADSR_VCA_Level_q15[i] = (int16_t)ADSRVoices[i].adsr_vca_voice.getWave();
+#else
     ADSR1Level[i] = ADSRVoices[i].adsr1_voice.getWave();
     ADSR1Level_q15[i] = ADSRVoices[i].adsr1_voice.levelQ15();
     ADSR_VCA_Level[i] = ADSRVoices[i].adsr_vca_voice.getWave();
     ADSR_VCA_Level_q15[i] = ADSRVoices[i].adsr_vca_voice.levelQ15();
-    ADSR_VCF_Level = adsr_vcf_voice.getWave();
-    ADSR_VCF_Level_q15 = adsr_vcf_voice.levelQ15();
-    ADSR_VCF2_Level = adsr_vcf2_voice.getWave();
-    ADSR_VCF2_Level_q15 = adsr_vcf2_voice.levelQ15();
+#endif
   }
+  // Shared EnvVCF / EnvVCF2: once per tick (not inside the voice loop).
+#if ADSR_BEZIER_NATIVE_Q15
+  ADSR_VCF_Level_q15 = (int16_t)adsr_vcf_voice.getWave();
+  ADSR_VCF2_Level_q15 = (int16_t)adsr_vcf2_voice.getWave();
+#else
+  ADSR_VCF_Level = adsr_vcf_voice.getWave();
+  ADSR_VCF_Level_q15 = adsr_vcf_voice.levelQ15();
+  ADSR_VCF2_Level = adsr_vcf2_voice.getWave();
+  ADSR_VCF2_Level_q15 = adsr_vcf2_voice.levelQ15();
+#endif
+
   ADSR_set_parameters();
 }
 
@@ -89,8 +114,9 @@ inline void ADSR_set_parameters() {
       ADSRVoices[i].adsr1_voice.setDecay(ADSR1_decay);
   }
   if (ch & ADSR_DIRTY_DCO_S) {
+    const int s = adsr_sustain_for_set(ADSR1_sustain, ADSR_CV_SCALE);
     for (int i = 0; i < NUM_VOICES; i++)
-      ADSRVoices[i].adsr1_voice.setSustain(ADSR1_sustain);
+      ADSRVoices[i].adsr1_voice.setSustain(s);
   }
   if (ch & ADSR_DIRTY_DCO_R) {
     for (int i = 0; i < NUM_VOICES; i++)
@@ -106,8 +132,9 @@ inline void ADSR_set_parameters() {
       ADSRVoices[i].adsr_vca_voice.setDecay(ADSR_VCA_decay);
   }
   if (ch & ADSR_DIRTY_VCA_S) {
+    const int s = adsr_sustain_for_set(ADSR_VCA_sustain, ADSR_CV_SCALE);
     for (int i = 0; i < NUM_VOICES; i++)
-      ADSRVoices[i].adsr_vca_voice.setSustain(ADSR_VCA_sustain);
+      ADSRVoices[i].adsr_vca_voice.setSustain(s);
   }
   if (ch & ADSR_DIRTY_VCA_R) {
     for (int i = 0; i < NUM_VOICES; i++)
@@ -123,8 +150,9 @@ inline void ADSR_set_parameters() {
     adsr_vcf2_voice.setDecay(ADSR_VCF_decay);
   }
   if (ch & ADSR_DIRTY_VCF_S) {
-    adsr_vcf_voice.setSustain(ADSR_VCF_sustain);
-    adsr_vcf2_voice.setSustain(ADSR_VCF_sustain);
+    const int s = adsr_sustain_for_set(ADSR_VCF_sustain, ADSR_CV_SCALE);
+    adsr_vcf_voice.setSustain(s);
+    adsr_vcf2_voice.setSustain(s);
   }
   if (ch & ADSR_DIRTY_VCF_R) {
     adsr_vcf_voice.setRelease(ADSR_VCF_release);
@@ -151,11 +179,12 @@ void ADSR_VCF_set_restart() {
 
 // EnvVCA attack curve → engine; timing params must be re-applied after a curve change.
 void ADSR_VCA_change_attack_curve(uint8_t adsrCurveAttack) {
+  const int s = adsr_sustain_for_set(ADSR_VCA_sustain, ADSR_CV_SCALE);
   for (int i = 0; i < NUM_VOICES; i++) {
     ADSRVoices[i].adsr_vca_voice.adsrCurveAttack(adsrCurveAttack);
     ADSRVoices[i].adsr_vca_voice.setAttack(ADSR_VCA_attack);
     ADSRVoices[i].adsr_vca_voice.setDecay(ADSR_VCA_decay);
-    ADSRVoices[i].adsr_vca_voice.setSustain(ADSR_VCA_sustain);
+    ADSRVoices[i].adsr_vca_voice.setSustain(s);
     ADSRVoices[i].adsr_vca_voice.setRelease(ADSR_VCA_release);
     ADSRVoices[i].adsr_vca_voice.setResetAttack(VCAADSRRestart);
   }
@@ -163,11 +192,12 @@ void ADSR_VCA_change_attack_curve(uint8_t adsrCurveAttack) {
 
 // EnvVCA decay curve → engine.
 void ADSR_VCA_change_decay_curve(uint8_t adsrCurveDecay) {
+  const int s = adsr_sustain_for_set(ADSR_VCA_sustain, ADSR_CV_SCALE);
   for (int i = 0; i < NUM_VOICES; i++) {
     ADSRVoices[i].adsr_vca_voice.adsrCurveDecay(adsrCurveDecay);
     ADSRVoices[i].adsr_vca_voice.setAttack(ADSR_VCA_attack);
     ADSRVoices[i].adsr_vca_voice.setDecay(ADSR_VCA_decay);
-    ADSRVoices[i].adsr_vca_voice.setSustain(ADSR_VCA_sustain);
+    ADSRVoices[i].adsr_vca_voice.setSustain(s);
     ADSRVoices[i].adsr_vca_voice.setRelease(ADSR_VCA_release);
     ADSRVoices[i].adsr_vca_voice.setResetAttack(VCAADSRRestart);
   }
@@ -175,43 +205,46 @@ void ADSR_VCA_change_decay_curve(uint8_t adsrCurveDecay) {
 
 // EnvVCF attack curve → engine.
 void ADSR_VCF_change_attack_curve(uint8_t adsrCurveAttack) {
+  const int s = adsr_sustain_for_set(ADSR_VCF_sustain, ADSR_CV_SCALE);
   adsr_vcf_voice.adsrCurveAttack(adsrCurveAttack);
   adsr_vcf_voice.setAttack(ADSR_VCF_attack);
   adsr_vcf_voice.setDecay(ADSR_VCF_decay);
-  adsr_vcf_voice.setSustain(ADSR_VCF_sustain);
+  adsr_vcf_voice.setSustain(s);
   adsr_vcf_voice.setRelease(ADSR_VCF_release);
   adsr_vcf_voice.setResetAttack(VCFADSRRestart);
 
   adsr_vcf2_voice.adsrCurveAttack(adsrCurveAttack);
   adsr_vcf2_voice.setAttack(ADSR_VCF_attack);
   adsr_vcf2_voice.setDecay(ADSR_VCF_decay);
-  adsr_vcf2_voice.setSustain(ADSR_VCF_sustain);
+  adsr_vcf2_voice.setSustain(s);
   adsr_vcf2_voice.setRelease(ADSR_VCF_release);
   adsr_vcf2_voice.setResetAttack(VCFADSRRestart);
 }
 
 // EnvVCF decay curve → engine.
 void ADSR_VCF_change_decay_curve(uint8_t adsrCurveDecay) {
+  const int s = adsr_sustain_for_set(ADSR_VCF_sustain, ADSR_CV_SCALE);
   adsr_vcf_voice.adsrCurveDecay(adsrCurveDecay);
   adsr_vcf_voice.setAttack(ADSR_VCF_attack);
   adsr_vcf_voice.setDecay(ADSR_VCF_decay);
-  adsr_vcf_voice.setSustain(ADSR_VCF_sustain);
+  adsr_vcf_voice.setSustain(s);
   adsr_vcf_voice.setRelease(ADSR_VCF_release);
   adsr_vcf_voice.setResetAttack(VCFADSRRestart);
 
   adsr_vcf2_voice.adsrCurveDecay(adsrCurveDecay);
   adsr_vcf2_voice.setAttack(ADSR_VCF_attack);
   adsr_vcf2_voice.setDecay(ADSR_VCF_decay);
-  adsr_vcf2_voice.setSustain(ADSR_VCF_sustain);
+  adsr_vcf2_voice.setSustain(s);
   adsr_vcf2_voice.setRelease(ADSR_VCF_release);
   adsr_vcf2_voice.setResetAttack(VCFADSRRestart);
 }
 
 void ADSR1_change_curves() {
+  const int s = adsr_sustain_for_set(ADSR1_sustain, ADSR_CV_SCALE);
   for (int i = 0; i < NUM_VOICES; i++) {
     ADSRVoices[i].adsr1_voice.setAttack(ADSR1_attack);
     ADSRVoices[i].adsr1_voice.setDecay(ADSR1_decay);
-    ADSRVoices[i].adsr1_voice.setSustain(ADSR1_sustain);
+    ADSRVoices[i].adsr1_voice.setSustain(s);
     ADSRVoices[i].adsr1_voice.setRelease(ADSR1_release);
     ADSRVoices[i].adsr1_voice.setResetAttack(ADSRRestart);
   }

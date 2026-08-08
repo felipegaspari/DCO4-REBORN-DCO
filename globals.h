@@ -34,10 +34,14 @@
 
 #define ENABLE_FS_CALIBRATION
 
-// Live clk_sys from the clocks block (not a compile-time overclock target).
-// For set_sys_clock_khz(), pass an explicit kHz constant — not these macros.
-#define sysClock_Hz (clock_get_hz(clk_sys))
-#define sysClock    (sysClock_Hz / 1000u)
+// Cached clk_sys Hz. `clock_get_hz` is not free — do not put it behind a hot-path macro.
+// Call sys_clock_hz_refresh() after boot / any set_sys_clock_* before voice/clkdiv runs.
+uint32_t sysClock_Hz_cached = 250000000u;
+static inline void sys_clock_hz_refresh(void) {
+  sysClock_Hz_cached = clock_get_hz(clk_sys);
+}
+#define sysClock_Hz (sysClock_Hz_cached)
+#define sysClock    (sysClock_Hz_cached / 1000u)
 
 static constexpr uint16_t DIV_COUNTER = 14000;
 static constexpr uint16_t DIV_COUNTER_PW = 1024;

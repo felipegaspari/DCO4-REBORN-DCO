@@ -368,7 +368,7 @@ Sparse mod matrix (8 slots). Docs: [`MOD_MATRIX.md`](MOD_MATRIX.md).
 
 ### `cv_out.h` / `cv_out.ino` / `cv_state.h`
 
-Soft VCA/VCF/reso CV math (~10 kHz). Depth bakers and peak math: [`CV_MOD_SCALES.md`](CV_MOD_SCALES.md). Hot-path map: [`UPDATE_CV_OUTS_HOT_PATH.md`](UPDATE_CV_OUTS_HOT_PATH.md).
+Soft VCA/VCF/reso CV math (~10 kHz). Depth bakers and peak math: [`CV_MOD_SCALES.md`](CV_MOD_SCALES.md). Hot-path map: [`UPDATE_CV_OUTS_HOT_PATH.md`](UPDATE_CV_OUTS_HOT_PATH.md). `cv_q15_to_u12`: Q15→u12 via `CV_U12_SCALE=4096`; clamp with `CV_U12_MAX=4095`.
 
 **Functions**
 - `init_cv_out()` — AS2164 linearize table; `cv_update_mod_scales()`; fixed path sets `vcf_drift_scale_q15`.
@@ -434,7 +434,7 @@ Globals / instances. **No function definitions.**
 - `init_ADSR()` — Tables + initial A/D/S/R (uses `linearToLogarithmic`).
   - **Called from:** `setup1()`.
   - **When:** Boot Core1.
-- `ADSR_update()` — Advance envelopes from note flags; update levels; lazy params.
+- `ADSR_update()` — Parameterless `noteOn`/`noteOff`/`getWave()` (per-call time); `NATIVE_Q15=1`: → `*_q15` only (no per-tick `levelDac`); EnvVCF/EnvVCF2 once; lazy params.
   - **Called from:** `loop1()` play path when `(micros delta) > 100`.
   - **When:** ~10 kHz while playing.
 - `ADSR_set_parameters()` — Debounced A/D/S/R apply to all voices.
@@ -453,7 +453,7 @@ Globals / instances. **No function definitions.**
 
 ### `LFO.h`
 
-Live LFO instances + Q15 levels + pitch mod arrays. Pitch/drift depth scales (`LFO1_PITCH_DEPTH_SCALE`, `LFO2_PITCH_DEPTH_SCALE`, `DRIFT_PITCH_*`) and `lfo_pitch_depth_q24`. ctor dacSize unused. Docs: [`LFO.md`](LFO.md). **Inline helpers only (no `.ino` bodies).**
+Live LFO instances + Q15 levels + pitch mod arrays. Pitch/drift depth scales (`LFO1_PITCH_DEPTH_SCALE`, `LFO2_PITCH_DEPTH_SCALE`, `DRIFT_PITCH_*`), `lfo_pitch_depth_q24`, and synth-side `applyDepthQ24` (not in mo-lfo). ctor dacSize unused. Docs: [`LFO.md`](LFO.md). **Inline helpers only (no `.ino` bodies).**
 
 ### `LFO.ino`
 
@@ -473,7 +473,7 @@ Live LFO instances + Q15 levels + pitch mod arrays. Pitch/drift depth scales (`L
 - `init_DRIFT_LFO(lfo&, byte)` — Init one drift LFO (uses `expConverterFloat`).
   - **Called from:** `init_DRIFT_LFOs()`.
   - **When:** Boot Core0.
-- `LFO1()` — `getWaveQ15` → `lfo1_pitch_mod_q24[]` via `applyDepthQ24`.
+- `LFO1()` — `getWaveQ15` → `lfo1_pitch_mod_q24[]` via DCO `applyDepthQ24` in `LFO.h` (broadcast when per-osc extras are 0).
   - **Called from:** `loop()` when ~50 µs elapsed (with LFO2 + drift).
   - **When:** Realtime Core0.
 - `LFO2()` — `getWaveQ15` → `lfo2_pitch_mod_q24[]`.

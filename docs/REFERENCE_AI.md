@@ -141,9 +141,10 @@ Related docs:
 
 - **Vendored library: `ADSR_Bezier`** (`#include <ADSR_Bezier.h>`)  
   - Located at `_build_libs/ADSR_Bezier` (symlink to monorepo-root `ADSR_Bezier`, branch **`main`**).  
-  - Compile-time backend: `ADSR_BEZIER_USE_FLOAT` in `adsr.h` (`0` = Q24/Q16 fixed default, `1` = float hot path).  
+  - Compile-time: `ADSR_BEZIER_USE_FLOAT` (`0` = Q24/Q16 fixed default, `1` = float time index); **`ADSR_BEZIER_NATIVE_Q15=1`** (DCO shipping — amp domain Q15).  
+  - Unipolar Q15 primary (`ADSR_Q15_ONE`, `getWave()` / `levelQ15`; `levelDac` only if needed off hot path).  
+  - DCO constants: **`ADSR_CV_CC=4095`** (max CV / ctor `levelDac` export); **`ADSR_CV_SCALE=4096`** (panel sustain → Q15 via `>>12`).  
   - RP2040‑friendly ADSR class (`adsr`) using **Bézier‑based curve lookup tables**.
-  - Supports configurable attack/decay/release curves (8 shapes), micros‑ or millis‑based timing, and integer outputs with no float in the envelope hot path.
 
 - **`adsr.h` / `adsr.ino`**  
   - DCO4‑specific wiring of the ADSR Bezier library:
@@ -155,16 +156,18 @@ Related docs:
     - Fills `linToLogLookup` using `linearToLogarithmic()`.
     - Applies initial A/D/S/R and restart settings to all voices.
   - `ADSR_update()`:
-    - Called from `loop1()` at ~10 kHz (conditioned by `Timer_millis` flags).
-    - Processes `noteStart[]` / `noteEnd[]` flags, triggers `noteOn()` / `noteOff()` on per‑voice ADSRs.
-    - Updates `ADSR1Level[i]` for every active voice (used by the voice engine for amplitude and detune modulation).
-    - Calls `ADSR_set_parameters()` to lazily propagate parameter changes.
+    - Called from `loop1()` at ~10 kHz (100 µs gate).
+    - Parameterless `noteOn`/`noteOff`/`getWave()` (each reads time); EnvDCO/EnvVCA per voice; EnvVCF/EnvVCF2 once.
+    - With `NATIVE_Q15=1`, `getWave` fills `*_q15` only (no per-tick `levelDac`).
+    - Processes `noteStart[]` / `noteEnd[]`; calls `ADSR_set_parameters()` lazily (VCA/VCF sustain via `ADSR_CV_SCALE` → Q15).
   - `ADSR_set_parameters()`:
     - Debounces A/D/S/R changes (checks against last values every 5 ms).
     - Efficiently re‑applies updates only to parameters that changed, across all voices.
   - Helper functions:
     - `ADSR1_set_restart()` – toggles legato vs per‑trigger behaviour for all voices.
     - `ADSR1_change_curves()` – re‑applies timing and restart settings after curve changes (hook point for future curve editing).
+
+- **CV u12 edge (`cv_out.ino`)** — `CV_U12_MAX=4095` (clamp / legal PWM codes); `CV_U12_SCALE=4096` (Q15→u12 in `cv_q15_to_u12`: `(q15 * SCALE) >> 15`). Details: [`UPDATE_CV_OUTS_HOT_PATH.md`](UPDATE_CV_OUTS_HOT_PATH.md), [`CV_MOD_SCALES.md`](CV_MOD_SCALES.md).
 
 - **External library: `mo-lfo`** (`#include <mo-lfo.h>`)  
   - LFO class from **mo‑thunderz**, installed as an Arduino library (not under `src/`).
@@ -175,7 +178,7 @@ Related docs:
 
 - **`LFO.h` / `LFO.ino`** — full reference: [`LFO.md`](LFO.md).  
   - Live bus is **full-scale Q15** (`getWaveQ15` / `setAmplQ15`); ctor `dacSize` is unused.
-  - Pitch/drift depth scales in `LFO.h` (`LFO1_PITCH_DEPTH_SCALE` 1700, `LFO2_PITCH_DEPTH_SCALE` 512, `DRIFT_PITCH_DEPTH_SCALE` 1000) + `lfo_pitch_depth_q24`.
+  - Pitch/drift depth scales in `LFO.h` (`LFO1_PITCH_DEPTH_SCALE` 1700, `LFO2_PITCH_DEPTH_SCALE` 512, `DRIFT_PITCH_DEPTH_SCALE` 1000) + `lfo_pitch_depth_q24` + synth-side `applyDepthQ24` (not in mo-lfo).
   - Instances: `LFO1_class`, `LFO2_class`, `LFO_DRIFT_CLASS[NUM_OSCILLATORS]`.
   - Globals: `LFO1Level` / `LFO2Level` / `LFO_DRIFT_LEVEL[]` (Q15); pitch depths `LFO1toDCO_q24`, `LFO1toOSC*_q24`, `LFO2toOSC*_q24` (+ coarse), `LFO2toPW`.
   - **LFO1 pitch routing:** `PARAM_LFO1_TO_DCO` folded into each `lfo1_pitch_mod_q24[OSCn]` (`applyDepthQ24` of `LFO1toDCO_q24 + LFO1toOSCn_q24`). Per‑osc extras `PARAM_LFO1_TO_OSC1/2/3`. LFO2 fine + coarse → `lfo2_pitch_mod_q24[]`; coarse uses `LFO1_PITCH_DEPTH_SCALE`.

@@ -28,9 +28,12 @@ Larger `SCALE` → deeper mod at the same panel setting.
 |--------|------:|------|
 | `LFO1_PITCH_DEPTH_SCALE` | 1700 | LFO1→pitch (`LFO1toDCO` + per-osc); also LFO2 coarse |
 | `LFO2_PITCH_DEPTH_SCALE` | 512 | LFO2→fine pitch (OSC2 / OSC3) |
+| `ADSR_PITCH_MAX_OCTAVES` | 2.0 | EnvDCO→pitch full-CW max travel (octaves); see below |
+| `ADSR_PITCH_DEPTH_PANEL_FULL` | 511 | Panel full scale for ADSR3→detune (`PARAM_ADSR3_TO_DETUNE1`) |
 | `DRIFT_PITCH_DEPTH_SCALE` | 1000 | Analog drift→pitch (with unit below) |
 | `DRIFT_PITCH_UNIT_Q24` | ~8 | Base octave unit for drift |
-| `lfo_pitch_depth_q24(amt, scale)` | helper | `amt * scale * 2^24` → Q24 depth |
+| `lfo_pitch_depth_q24(amt, scale)` | helper | `amt * scale * 2^24` → Q24 depth (LFO/drift) |
+| `applyDepthQ24(wave, depth)` | helper in **DCO** `LFO.h` | live `wave × depth` (not mo-lfo) |
 
 Drift runtime scale:
 
@@ -40,8 +43,21 @@ drift_pitch_scale_q24 = analogDrift * DRIFT_PITCH_UNIT_Q24 * DRIFT_PITCH_DEPTH_S
 
 LFO1 is deeper than LFO2 fine at the same panel curve by design (1700 vs 512). CV LFO→VCA/VCF uses a separate `/1024` domain — see [`CV_MOD_SCALES.md`](CV_MOD_SCALES.md).
 
----
+### EnvDCO (ADSR3) → pitch
 
+Hot path ([`voices.ino`](../voices.ino)):
+
+```text
+ADSRModifier_q24 = applyDepthQ24(ADSR1Level_q15, ADSR1toDETUNE1_scale_q24)
+```
+
+- **Env:** linear Q15 (no `linToLog`). Full env ≈ `depth_q24` of travel.
+- **Knob bake** ([`params.ino`](../params.ino) `apply_param_adsr1_to_detune1`): signed `expConverterFloat(|v|, 500)`, normalized to `ADSR_PITCH_DEPTH_PANEL_FULL` (511), then × `ADSR_PITCH_MAX_OCTAVES` → Q24.
+- **Units:** pitch sum uses Q24 where `1<<24` is the unison table coordinate; adding another `1<<24` at full-scale wave ≈ **+1 octave** (same idea as mod-matrix / character).
+- **Tune later:** change `ADSR_PITCH_MAX_OCTAVES` in [`LFO.h`](../LFO.h) (e.g. `1.0f` for one octave at full CW × full env).
+- Mid-knob is quieter than the old linear `param/1080000` feel (exp on depth). `linearToLogarithmic` remains in utils but is unused by this path.
+
+---
 ## Live bus
 
 | Global | Source | Domain |
@@ -53,6 +69,19 @@ LFO1 is deeper than LFO2 fine at the same panel curve by design (1700 vs 512). C
 Init uses `setAmplQ15(MO_LFO_Q15_ONE)` only — not `setAmpl` / `getWave`.
 
 Ctor `dacSize` is unused on the Q15 path (`LFO_DAC_SIZE_UNUSED = 1`). Changing it must not change audio; changing the depth scales above **does**.
+
+---
+
+## Core0 generate vs Core1 consume
+
+| Core | Gate | LFO role |
+|------|------|----------|
+| **0** | ~50 µs | `getWaveQ15` → `LFO*Level`; LFO1/LFO2 bake pitch via `applyDepthQ24` into `*_pitch_mod_q24[]` |
+| **1** | ~100 µs / voice loop | Read Q15 for CV / matrix / PW; **add** `*_pitch_mod_q24` into the pitch sum |
+
+A small rise in Core0 `LFO1` / `LFO2` / `drift` probes after Q15 is expected (wave is already Q15; depth is a few mul-shifts). Big Q15 wins show up on Core1 (`update_CV_outs`, pitch add) — see [`BENCHMARKING.md`](BENCHMARKING.md). Envelope cost is separate (`ADSR_update` on Core1).
+
+`applyDepthQ24` lives in DCO [`LFO.h`](../LFO.h) (synth pitch helper; mo-lfo only supplies `getWaveQ15`). It uses a signed 32-bit split for RP2040. When all `LFO1toOSCn_q24` are 0, `LFO1()` applies global depth once and broadcasts to all three osc slots.
 
 ---
 
@@ -72,7 +101,7 @@ Ctor `dacSize` is unused on the Q15 path (`LFO_DAC_SIZE_UNUSED = 1`). Changing i
 | Function | Core | Role |
 |----------|------|------|
 | `init_LFOs` / `init_DRIFT_LFOs` | 0 boot | Waveform, full-scale Q15 amp, initial Hz |
-| `LFO1` / `LFO2` / `DRIFT_LFOs` | 0 ~100 µs | Refresh levels + pitch mods |
+| `LFO1` / `LFO2` / `DRIFT_LFOs` | 0 ~50 µs | Refresh levels + pitch mods |
 | `apply_param_lfo*` | param table | Speeds, waveforms, `*_q24` depth bake |
 | `update_CV_outs` / voices / matrix | 1 | Consume Q15 levels |
 

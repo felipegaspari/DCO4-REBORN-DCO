@@ -116,7 +116,7 @@ LFO2toVCF_scale = -LFO2toVCF * (CV_U12_MAX / (CV_LFO_Q15_PEAK_DIV * 32768))
 | **Input** | `LFO1toVCA` |
 | **Output** | `LFO1toVCA_scale_q15` or float `LFO1toVCA_scale` |
 | **Polarity** | Negative |
-| **Hot path** | LFO1 → VCA (gated off when EnvVCA level is 0) |
+| **Hot path** | LFO1 → VCA (gated off when EnvVCA Q15 level is 0) |
 
 Same algebra as LFO2→VCF, with `LFO1toVCA` / `LFO1Level`.
 
@@ -159,7 +159,8 @@ LFO1_mod  = (LFO1Level * LFO1toVCA_scale_q15) >> 15
 LFO2_mod  = (LFO2Level * LFO2toVCF_scale_q15) >> 15
 ADSR_mod  = (ADSR_VCF_Level_q15 * ADSR2toVCF_scale_q15) >> 15
 
-VCA ≈ clamp( (EnvVCA_u12 + LFO1_mod) * velocity_q15 >> 15 ) → AS2164 lerp
+VCA ≈ clamp_u12( (env_u12 + LFO1_mod) * velocity_q15 >> 15 ) → AS2164 lerp
+// env_u12 = (EnvVCA_q15 * CV_U12_SCALE) >> 15; SCALE=4096, clamp max=4095
 VCF ≈ 4095 - clamp( (ADSR_mod + LFO2_mod + CUTOFF + VCF_DRIFT + matrix_cutoff)
                     * vel_q15 >> 15 * keytrack_q15 >> 15 )
 ```
@@ -173,6 +174,7 @@ VCF ≈ 4095 - clamp( (ADSR_mod + LFO2_mod + CUTOFF + VCF_DRIFT + matrix_cutoff)
 | Path | Where | Pattern |
 |------|--------|---------|
 | LFO → pitch | [`params.ino`](../params.ino) → `*_q24` | `lfo_pitch_depth_q24(amt, LFO*_PITCH_DEPTH_SCALE)` — [`LFO.h`](../LFO.h) / [`LFO.md`](LFO.md) |
+| EnvDCO → pitch | `ADSR1toDETUNE1_scale_q24` | exp knob → norm × `ADSR_PITCH_MAX_OCTAVES` → Q24; hot `applyDepthQ24(env_q15, depth)` — [`LFO.md`](LFO.md) |
 | Drift → pitch | `drift_pitch_scale_q24` | `analogDrift * DRIFT_PITCH_UNIT_Q24 * DRIFT_PITCH_DEPTH_SCALE` |
 | ADSR → PW | `ADSR1toPWM_scale` | Legacy `(level_u12 * depth) >> 11` peak → `(q15 * scale) >> 15` |
 | Character | [`CHARACTER.md`](CHARACTER.md) | `character_recompute_scales()` → `char_*_scale_q15` |

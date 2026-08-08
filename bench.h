@@ -331,14 +331,19 @@ BenchPathStat bench_path_snap;
 static inline void bench_path_walk_steps(uint32_t) {}
 static inline void bench_path_amp_walk_steps(uint32_t) {}
 #else
-#define BENCH_PATH_INC(field) do { bench_path_live.field++; } while (0)
+// Same gate as BENCH_PERIOD: do not bump while paced dump TX is active.
+#define BENCH_PATH_INC(field) do {                                        \
+    if (!bench_out_active) bench_path_live.field++;                       \
+  } while (0)
 static inline void bench_path_walk_steps(uint32_t steps) {
+  if (bench_out_active) return;
   bench_path_live.ratio_walk_steps_sum += steps;
   if (steps > bench_path_live.ratio_walk_steps_max) {
     bench_path_live.ratio_walk_steps_max = steps;
   }
 }
 static inline void bench_path_amp_walk_steps(uint32_t steps) {
+  if (bench_out_active) return;
   bench_path_live.amp_walk_steps_sum += steps;
   if (steps > bench_path_live.amp_walk_steps_max) {
     bench_path_live.amp_walk_steps_max = steps;
@@ -351,6 +356,8 @@ static inline void bench_path_amp_walk_steps(uint32_t steps) {
 volatile bool bench_dump_request = false;
 volatile bool bench_core_ready[2] = { false, false };
 volatile bool bench_periodic = false;
+// Bumped on snapshot/reset so BENCH_PERIOD drops its static prev (no straddling old window).
+volatile uint8_t bench_period_gen = 0;
 
 static inline void bench_stat_add(BenchStat *s, uint32_t d) {
   s->sum += d;
@@ -360,9 +367,10 @@ static inline void bench_stat_add(BenchStat *s, uint32_t d) {
 }
 
 // Close a cycle probe. Reads the counter first so none of the bookkeeping below lands
-// inside the measured span.
+// inside the measured span. Discard while dump TX is active (same gate as BENCH_PERIOD).
 static inline void bench_add_cyc(uint8_t id, uint32_t start) {
   const uint32_t d = bench_span(start, bench_now());
+  if (bench_out_active) return;
   bench_stat_add(&bench_stats[id], (d > bench_overhead_cyc) ? (d - bench_overhead_cyc) : 0u);
 }
 
@@ -372,10 +380,18 @@ static inline void bench_add_raw(uint8_t id, uint32_t d) {
 
 // Interval between successive arrivals. While a report is draining over USB, only refresh
 // the previous timestamp — never record — so dump TX cannot inflate period max on either core.
+// Generation check invalidates prev after snapshot/reset so the first delta cannot include
+// time from the previous collection window.
 #define BENCH_PERIOD(id)                                                  \
   do {                                                                    \
     static uint32_t bench_prev_##id = 0u;                                 \
+    static uint8_t bench_gen_##id = 0u;                                   \
     const uint32_t bench_us_##id = bench_us_now();                        \
+    const uint8_t bench_g_##id = bench_period_gen;                        \
+    if (bench_gen_##id != bench_g_##id) {                                 \
+      bench_gen_##id = bench_g_##id;                                      \
+      bench_prev_##id = 0u;                                               \
+    }                                                                     \
     if (bench_prev_##id != 0u && !bench_out_active) {                     \
       bench_add_raw(BENCH_##id, bench_us_##id - bench_prev_##id);         \
     }                                                                     \
@@ -414,6 +430,7 @@ inline void bench_service(uint8_t core) {
 
   bench_window_us[core] = elapsed;
   bench_window_start_us[core] = now_us;
+  bench_period_gen++;  // invalidate BENCH_PERIOD static prev on both cores
 
   for (uint8_t i = 0; i < BENCH_COUNT; ++i) {
     if (bench_desc[i].core != core) continue;
@@ -436,6 +453,7 @@ inline void bench_reset_all() {
   bench_path_live = BenchPathStat{};
   bench_path_snap = BenchPathStat{};
   bench_window_start_us[0] = bench_window_start_us[1] = bench_us_now();
+  bench_period_gen++;
 }
 
 // Raw probe value -> microseconds, as hundredths, without touching the FPU. Keeping this
@@ -450,17 +468,32 @@ inline void bench_fmt_us(char *out, size_t n, uint64_t raw, uint8_t kind) {
   snprintf(out, n, "%lu.%02lu", (unsigned long)(h / 100u), (unsigned long)(h % 100u));
 }
 
+inline void bench_fmt_us100(char *out, size_t n, uint64_t us100) {
+  snprintf(out, n, "%lu.%02lu", (unsigned long)(us100 / 100u), (unsigned long)(us100 % 100u));
+}
+
 inline void bench_fmt_cyc(char *out, size_t n, uint64_t raw) {
   snprintf(out, n, "%luc", (unsigned long)raw);
 }
 
 // Fixed columns so nested indents and large totals stay under the header.
-// name(28) count(8) mean(9) min(9) max(9) total(14) win(6)
+// name(28) count(8) mean(9) min(9) max(9) total(14) win(6) — win holds "100.00" or "<0.01"
 #define BENCH_ROW_FMT "%-28s %8s %9s %9s %9s %14s %6s"
 
-inline void bench_fmt_win(char *out, size_t n, uint32_t permille) {
-  snprintf(out, n, "%lu.%lu",
-           (unsigned long)(permille / 10u), (unsigned long)(permille % 10u));
+// %win as percent with two decimals from us100 share of window_us.
+// pct_x100 = hundredths of a percent: (us100 * 100) / window_us.
+inline void bench_fmt_win_us100(char *out, size_t n, uint64_t us100, uint32_t window_us) {
+  if (window_us == 0u) {
+    snprintf(out, n, "0.00");
+    return;
+  }
+  const uint64_t pct_x100 = (us100 * 100u) / window_us;
+  if (us100 > 0u && pct_x100 == 0u) {
+    snprintf(out, n, "<0.01");
+    return;
+  }
+  snprintf(out, n, "%lu.%02lu",
+           (unsigned long)(pct_x100 / 100u), (unsigned long)(pct_x100 % 100u));
 }
 
 inline void bench_print_row(uint8_t id, const char *indent) {
@@ -472,25 +505,26 @@ inline void bench_print_row(uint8_t id, const char *indent) {
   snprintf(name, sizeof(name), "%s%s", indent, d.label);
   snprintf(cnt, sizeof(cnt), "%lu", (unsigned long)s.n);
 
-  const uint64_t mean_raw = s.sum / s.n;
+  // Mean from full sum (rounded), not floor(sum/n), so mean×count ≈ total.
+  const uint64_t sum_us100 = bench_to_us100(s.sum, d.kind);
+  const uint64_t mean_us100 = (sum_us100 + (s.n / 2u)) / s.n;
   // Sub-microsecond cycle probes print as 0.00 us forever at 225 MHz hundredths; show
   // mean/min/max in cycles instead. total and %win stay in us so the budget still adds.
-  const bool as_cyc = (d.kind == BENCH_CYC) && (bench_to_us100(mean_raw, BENCH_CYC) < 100u);
+  const bool as_cyc = (d.kind == BENCH_CYC) && (mean_us100 < 100u);
   if (as_cyc) {
-    bench_fmt_cyc(mean, sizeof(mean), mean_raw);
+    const uint64_t mean_cyc = (s.sum + (s.n / 2u)) / s.n;
+    bench_fmt_cyc(mean, sizeof(mean), mean_cyc);
     bench_fmt_cyc(mn, sizeof(mn), s.min);
     bench_fmt_cyc(mx, sizeof(mx), s.max);
   } else {
-    bench_fmt_us(mean, sizeof(mean), mean_raw, d.kind);
+    bench_fmt_us100(mean, sizeof(mean), mean_us100);
     bench_fmt_us(mn, sizeof(mn), s.min, d.kind);
     bench_fmt_us(mx, sizeof(mx), s.max, d.kind);
   }
-  bench_fmt_us(tot, sizeof(tot), s.sum, d.kind);
+  bench_fmt_us100(tot, sizeof(tot), sum_us100);
 
   const uint32_t window = bench_window_us[d.core];
-  const uint64_t total_us = bench_to_us100(s.sum, d.kind) / 100u;
-  const uint32_t permille = (window > 0u) ? (uint32_t)((total_us * 1000u) / window) : 0u;
-  bench_fmt_win(win, sizeof(win), permille);
+  bench_fmt_win_us100(win, sizeof(win), sum_us100, window);
 
   snprintf(line, sizeof(line), BENCH_ROW_FMT, name, cnt, mean, mn, mx, tot, win);
   bench_out_println(line);
@@ -503,7 +537,8 @@ inline void bench_print_row(uint8_t id, const char *indent) {
 }
 
 // Whatever the parent measured that none of its children claimed. Makes gaps in coverage
-// visible instead of quietly absorbing them.
+// visible instead of quietly absorbing them. Over-attribution (children > parent) is printed
+// as a signed residual instead of clamping to zero.
 inline void bench_print_unattributed(uint8_t parent, const char *indent) {
   const BenchStat &p = bench_snap[parent];
   if (p.n == 0u) return;
@@ -518,15 +553,21 @@ inline void bench_print_unattributed(uint8_t parent, const char *indent) {
   if (!any) return;
 
   const uint64_t parent_us100 = bench_to_us100(p.sum, bench_desc[parent].kind);
-  const uint64_t rest = (parent_us100 > children_us100) ? (parent_us100 - children_us100) : 0u;
   const uint32_t window = bench_window_us[bench_desc[parent].core];
-  const uint32_t permille = (window > 0u) ? (uint32_t)(((rest / 100u) * 1000u) / window) : 0u;
 
   char name[32], tot[20], win[8], line[160];
-  snprintf(name, sizeof(name), "%s%s", indent, "(unattributed)");
-  snprintf(tot, sizeof(tot), "%lu.%02lu",
-           (unsigned long)(rest / 100u), (unsigned long)(rest % 100u));
-  bench_fmt_win(win, sizeof(win), permille);
+  if (parent_us100 >= children_us100) {
+    const uint64_t rest = parent_us100 - children_us100;
+    snprintf(name, sizeof(name), "%s%s", indent, "(unattributed)");
+    bench_fmt_us100(tot, sizeof(tot), rest);
+    bench_fmt_win_us100(win, sizeof(win), rest, window);
+  } else {
+    const uint64_t rest = children_us100 - parent_us100;
+    snprintf(name, sizeof(name), "%s%s", indent, "(over-attributed)");
+    snprintf(tot, sizeof(tot), "-%lu.%02lu",
+             (unsigned long)(rest / 100u), (unsigned long)(rest % 100u));
+    bench_fmt_win_us100(win, sizeof(win), rest, window);
+  }
   snprintf(line, sizeof(line), BENCH_ROW_FMT, name, "-", "-", "-", "-", tot, win);
   bench_out_println(line);
 }
@@ -581,42 +622,53 @@ inline void bench_print_path_counters() {
   const uint32_t amp_seg = p.amp_hit + p.amp_miss_walk + p.amp_miss_scan;
   const uint32_t porta_n = p.porta_off + p.porta_note_on + p.porta_retime +
                            p.porta_steady_time + p.porta_steady_slew;
-  if (ratio_seg == 0u && p.ratio_clamp == 0u && amp_seg == 0u && p.amp_clamp == 0u &&
-      porta_n == 0u) {
+  const bool ratio_any = (ratio_seg != 0u) || (p.ratio_clamp != 0u);
+  const bool amp_any = (amp_seg != 0u) || (p.amp_clamp != 0u);
+  if (!ratio_any && !amp_any && porta_n == 0u) {
     return;
   }
 
   bench_out_puts("\n");
   bench_out_println("-- Path counters (core 1, same window) --");
-  bench_out_printf(
-      "ratio: hit=%lu miss_direct=%lu miss_bsearch=%lu clamp=%lu  "
-      "walk_steps max=%lu sum=%lu\n",
-      (unsigned long)p.ratio_hit, (unsigned long)p.ratio_miss_direct,
-      (unsigned long)p.ratio_miss_bsearch, (unsigned long)p.ratio_clamp,
-      (unsigned long)p.ratio_walk_steps_max, (unsigned long)p.ratio_walk_steps_sum);
-  if (ratio_seg > 0u) {
-    const uint32_t miss = p.ratio_miss_direct + p.ratio_miss_bsearch;
-    const uint32_t miss_pm = (miss * 1000u) / ratio_seg;
-    bench_out_printf("ratio miss rate: %lu.%lu%% of in-table calls\n",
-                     (unsigned long)(miss_pm / 10u), (unsigned long)(miss_pm % 10u));
+  if (ratio_any) {
+    bench_out_printf(
+        "ratio: hit=%lu miss_direct=%lu miss_bsearch=%lu clamp=%lu  "
+        "walk_steps max=%lu sum=%lu\n",
+        (unsigned long)p.ratio_hit, (unsigned long)p.ratio_miss_direct,
+        (unsigned long)p.ratio_miss_bsearch, (unsigned long)p.ratio_clamp,
+        (unsigned long)p.ratio_walk_steps_max, (unsigned long)p.ratio_walk_steps_sum);
+    if (ratio_seg > 0u) {
+      const uint32_t miss = p.ratio_miss_direct + p.ratio_miss_bsearch;
+      const uint32_t miss_pm = (miss * 1000u) / ratio_seg;
+      bench_out_printf("ratio miss rate: %lu.%lu%% of in-table calls\n",
+                       (unsigned long)(miss_pm / 10u), (unsigned long)(miss_pm % 10u));
+    }
+  } else {
+    bench_out_println("ratio: (not instrumented for this build/path)");
   }
-  bench_out_printf(
-      "amp: hit=%lu miss_walk=%lu miss_scan=%lu clamp=%lu  "
-      "find_steps max=%lu sum=%lu\n",
-      (unsigned long)p.amp_hit, (unsigned long)p.amp_miss_walk,
-      (unsigned long)p.amp_miss_scan, (unsigned long)p.amp_clamp,
-      (unsigned long)p.amp_walk_steps_max, (unsigned long)p.amp_walk_steps_sum);
-  if (amp_seg > 0u) {
-    const uint32_t miss = p.amp_miss_walk + p.amp_miss_scan;
-    const uint32_t miss_pm = (miss * 1000u) / amp_seg;
-    bench_out_printf("amp miss rate: %lu.%lu%% of in-band calls\n",
-                     (unsigned long)(miss_pm / 10u), (unsigned long)(miss_pm % 10u));
+  if (amp_any) {
+    bench_out_printf(
+        "amp: hit=%lu miss_walk=%lu miss_scan=%lu clamp=%lu  "
+        "find_steps max=%lu sum=%lu\n",
+        (unsigned long)p.amp_hit, (unsigned long)p.amp_miss_walk,
+        (unsigned long)p.amp_miss_scan, (unsigned long)p.amp_clamp,
+        (unsigned long)p.amp_walk_steps_max, (unsigned long)p.amp_walk_steps_sum);
+    if (amp_seg > 0u) {
+      const uint32_t miss = p.amp_miss_walk + p.amp_miss_scan;
+      const uint32_t miss_pm = (miss * 1000u) / amp_seg;
+      bench_out_printf("amp miss rate: %lu.%lu%% of in-band calls\n",
+                       (unsigned long)(miss_pm / 10u), (unsigned long)(miss_pm % 10u));
+    }
+  } else {
+    bench_out_println("amp: (not instrumented for this build/path)");
   }
-  bench_out_printf(
-      "porta: off=%lu note_on=%lu retime=%lu steady_time=%lu steady_slew=%lu\n",
-      (unsigned long)p.porta_off, (unsigned long)p.porta_note_on,
-      (unsigned long)p.porta_retime, (unsigned long)p.porta_steady_time,
-      (unsigned long)p.porta_steady_slew);
+  if (porta_n != 0u) {
+    bench_out_printf(
+        "porta: off=%lu note_on=%lu retime=%lu steady_time=%lu steady_slew=%lu\n",
+        (unsigned long)p.porta_off, (unsigned long)p.porta_note_on,
+        (unsigned long)p.porta_retime, (unsigned long)p.porta_steady_time,
+        (unsigned long)p.porta_steady_slew);
+  }
 }
 
 // Format the report into bench_out_buf (no Serial I/O).
@@ -665,13 +717,79 @@ inline void bench_print_report() {
 #else
   const char *cv = "FIXED";
 #endif
+  // Grouped flag lines (aligned labels) so A/B rebuilds are obvious in the Board pane.
   snprintf(line, sizeof(line),
-           "build: mcu=%s voice=%s pitch=%s amp=%s cv=%s amp_method=%s clkdiv=%s note_retrig=%s",
+           "engine: mcu=%s voice=%s pitch=%s amp=%s cv=%s amp_method=%s clkdiv=%s note_retrig=%s",
            mcu, voice, bench_pitch_interp_mode_name(), amp, cv,
            amp_comp_method_name(amp_comp_method), clkdiv,
            note_retrig_mode_name(note_retrig_mode));
   bench_out_println(line);
-  bench_out_println("Times in us (mean/min/max as cycles when mean < 1 us). %win = share of wall clock.");
+
+  snprintf(line, sizeof(line),
+           "adsr:   phase=%d float=%d micros=%d native_q15=%d dyadic=%d q15_cache=%d",
+           (int)ADSR_BEZIER_PHASE_SHIFT,
+           (int)ADSR_BEZIER_USE_FLOAT,
+           (int)ADSR_BEZIER_USE_MICROS,
+           (int)ADSR_BEZIER_NATIVE_Q15,
+           (int)ADSR_BEZIER_Q15_DYADIC,
+           (int)ADSR_BEZIER_UPDATE_Q15_CACHE);
+  bench_out_println(line);
+
+  snprintf(line, sizeof(line), "noise:  engine=%d out=%d",
+           (int)NOISE_ENGINE,
+#ifdef ENABLE_NOISE_OUT
+           1
+#else
+           0
+#endif
+  );
+  bench_out_println(line);
+
+  snprintf(line, sizeof(line),
+           "board:  cv_outs=%d wave_mux=%d voice_aux=%d pio_rst_inv=%d fs_cal=%d",
+#ifdef ENABLE_CV_OUTS
+           1,
+#else
+           0,
+#endif
+#ifdef ENABLE_WAVE_MUX
+           1,
+#else
+           0,
+#endif
+#ifdef ENABLE_VOICE_AUX
+           1,
+#else
+           0,
+#endif
+#ifdef ENABLE_PIO_RESET_INVERT
+           1,
+#else
+           0,
+#endif
+#ifdef ENABLE_FS_CALIBRATION
+           1
+#else
+           0
+#endif
+  );
+  bench_out_println(line);
+
+  snprintf(line, sizeof(line), "bench:  clkdiv=%d amp_comp=%d",
+#ifdef CLKDIV_BENCHMARK
+           1,
+#else
+           0,
+#endif
+#ifdef AMP_COMP_BENCHMARK
+           1
+#else
+           0
+#endif
+  );
+  bench_out_println(line);
+
+  bench_out_println("Times in us (mean/min/max as cycles when mean < 1 us). %win = share of wall clock (two decimals).");
   bench_out_puts("\n");
   bench_print_core(0);
   bench_out_puts("\n");

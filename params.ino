@@ -467,26 +467,23 @@ static void apply_param_adsr1_to_pwm(int16_t v) {
   ADSR1toPWM_scale = (int32_t)(((int64_t)ADSR1toPWM * (int64_t)ADSR_1_CC) >> 11);
 }
 
-// PARAM_ADSR3_TO_DETUNE1: ADSR → pitch detune depth + precomputed Q24 scale.
+// PARAM_ADSR3_TO_DETUNE1: ADSR → pitch depth (exp on knob, linear env hot).
+// Full CW × full env → ADSR_PITCH_MAX_OCTAVES (tune in LFO.h).
 static void apply_param_adsr1_to_detune1(int16_t v) {
-  // ADSR1toDETUNE1 controls how much ADSR1 modulates pitch (detune).
-  // Original float formula was:
-  //   ADSRModifier = linToLogLookup[level] * (ADSR1toDETUNE1 / 1080000.0f)
-  // We now precompute a Q24 scale factor so the per-voice path stays fixed-point:
-  //   ADSRModifier_q24 = linToLogLookup[level] * ADSR1toDETUNE1_scale_q24
   ADSR1toDETUNE1 = (int16_t)v;
   if (ADSR1toDETUNE1 == 0) {
     ADSR1toDETUNE1_scale_q24 = 0;
   } else {
-    int64_t num = ((int64_t)ADSR1toDETUNE1 << 24);
-    // Symmetric rounding toward nearest for positive/negative values
-    const int32_t denom = 1080000;
-    if (num >= 0) {
-      num += (denom / 2);
-    } else {
-      num -= (denom / 2);
-    }
-    ADSR1toDETUNE1_scale_q24 = (int32_t)(num / denom);
+    const uint16_t mag_u =
+      (ADSR1toDETUNE1 < 0) ? (uint16_t)(-ADSR1toDETUNE1) : (uint16_t)ADSR1toDETUNE1;
+    const float mag = expConverterFloat(mag_u, 500);
+    const float mag_full = expConverterFloat(ADSR_PITCH_DEPTH_PANEL_FULL, 500);
+    float norm = (mag_full > 0.0f) ? (mag / mag_full) : 0.0f;
+    if (norm > 1.0f) norm = 1.0f;
+    const float signed_oct = (ADSR1toDETUNE1 < 0) ? -norm : norm;
+    ADSR1toDETUNE1_scale_q24 =
+      (int32_t)(signed_oct * ADSR_PITCH_MAX_OCTAVES * (float)(1 << 24) +
+                ((signed_oct >= 0.0f) ? 0.5f : -0.5f));
   }
 }
 

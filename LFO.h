@@ -8,7 +8,12 @@
 #ifndef MO_LFO_USE_Q15
 #define MO_LFO_USE_Q15 1
 #endif
-#include <mo-lfo.h>
+
+#define LFO_SINE_TABLE_BITS 9
+
+// Same isolated-project pattern as ADSR_Bezier (relative _build_libs path).
+// mo-lfo has a .cpp — it is compiled via #include in LFO.ino (not sketchbook).
+#include "_build_libs/mo-lfo/mo-lfo.h"
 // After Mainboard absorption, DCO is the sole LFO clock:
 //   LFO1 → pitch (volatile Q24 arrays) + EnvVCA depth (LFO1toVCA)
 //   LFO2 → OSC2/3 pitch (fine+coarse folded) + PW + EnvVCF depth (LFO2toVCF)
@@ -42,6 +47,14 @@ static constexpr int32_t LFO1_PITCH_DEPTH_SCALE = 1700;
 // LFO2 → fine pitch (OSC2 / OSC3).
 static constexpr int32_t LFO2_PITCH_DEPTH_SCALE = 512;
 
+// EnvDCO (ADSR3) → pitch. Tune max travel here (docs/LFO.md).
+// Full env × full |PARAM_ADSR3_TO_DETUNE1| (511) → this many octaves in Q24
+// (additive: depth_q24 ≈ N<<24 moves the pitch sum by ~N octaves).
+// Knob uses signed expConverterFloat(|v|, 500), normalized so |v|=511 hits exactly this max.
+// Mid-knob is quieter than the old linear /1080000 bake; env is linear Q15 (no linToLog).
+static constexpr float ADSR_PITCH_MAX_OCTAVES = 2.0f;
+static constexpr uint16_t ADSR_PITCH_DEPTH_PANEL_FULL = 511;
+
 // Analog drift → pitch:
 //   drift_pitch_scale_q24 = analogDrift * DRIFT_PITCH_UNIT_Q24 * DRIFT_PITCH_DEPTH_SCALE
 // Hot: (LFO_DRIFT_LEVEL_q15 * drift_pitch_scale_q24) >> 15
@@ -51,6 +64,15 @@ static constexpr int32_t DRIFT_PITCH_UNIT_Q24 =
 
 static inline int32_t lfo_pitch_depth_q24(float amt, int32_t depth_scale) {
   return (int32_t)(amt * (float)depth_scale * (float)(1 << 24) + 0.5f);
+}
+
+// Synth-side helper (not mo-lfo): mod_q24 = (wave_q15 * depth_q24) >> 15.
+// 32-bit split avoids int64 mul on Cortex-M0+.
+static inline int32_t applyDepthQ24(int16_t wave_q15, int32_t depth_q24) {
+  const int32_t w = (int32_t)wave_q15;
+  const int32_t hi = depth_q24 >> 15;
+  const int32_t lo = depth_q24 - (hi << 15);
+  return w * hi + ((w * lo) >> 15);
 }
 
 // mo-lfo ctor dacSize is ignored on the Q15 path (getWaveQ15 / setAmplQ15).
@@ -83,7 +105,7 @@ volatile int16_t LFO_DRIFT_LEVEL[NUM_OSCILLATORS];
 volatile int16_t LFO1Level;
 byte LFO1Waveform = 3;
 float LFO1Speed = 50;
-// Full-scale octave travel in Q24: lfo::applyDepthQ24(level_q15, depth_q24).
+// Full-scale octave travel in Q24: applyDepthQ24(level_q15, depth_q24).
 // Param apply: lfo_pitch_depth_q24(amt, LFO1_PITCH_DEPTH_SCALE).
 int32_t LFO1toDCO_q24 = 0;
 // Additive per-osc LFO1 pitch depths (each stacks on LFO1toDCO_q24 in LFO1()).

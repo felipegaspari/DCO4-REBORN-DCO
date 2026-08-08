@@ -13,7 +13,7 @@
 // =============================================================================
 // Deep detail: docs/ENGINE_OPTIONS.md
 //   0 FLOAT (walk find; natural modifier→ratio; needs float voice)
-//   1 RATIO_Q16 (slopeQ20 + fused y→ratio; fixed default / float A/B)
+//   1 RATIO_Q16 (slopeQ16 + fused y→ratio; fixed default / float A/B)
 //   2 Q12 (slope A/B: IntQ16 y + reciprocal; float A/B OK)
 //   3 FLOAT_FAST (trunc+clamp±1 find; same float tables; needs float voice)
 #define PITCH_INTERP_FLOAT 0
@@ -106,7 +106,7 @@
 // Overrides FINE. Needs RUNNING_AVERAGE.
 #define RUNNING_AVERAGE
 // #define RUNNING_AVERAGE_FINE
-// #define RUNNING_AVERAGE_PERIOD
+ #define RUNNING_AVERAGE_PERIOD
 
 // Float vs double clkdiv comparison in voice_task_float; needs RUNNING_AVERAGE.
 // #define CLKDIV_BENCHMARK
@@ -166,7 +166,6 @@
 
 #include "globals.h"
 #include "amp_comp.h"
-#include "bench.h"
 #include "cv_state.h"
 #include "cv_out.h"
 
@@ -184,6 +183,7 @@
 
 #include "LFO.h"
 #include "adsr.h"
+#include "bench.h"
 #include "midi_cc.h"
 #include "midi_cc_map.h"  // generated; defines midiCcMap[], so include it once, here
 #include "wave_mux.h"
@@ -196,7 +196,8 @@
 
 // Core 0 boot: USB, UART serial, MIDI handlers, LFOs, board fix pins, calibration input pin.
 void setup() {
-  //set_sys_clock_khz(sysClock, true);
+  //set_sys_clock_khz(250000, true);  // pass kHz constant — not sysClock macro
+  sys_clock_hz_refresh();
   // EEPROM.begin(512);
   bench_init_core();  // SysTick is per core; core 1 arms its own in setup1()
   init_usb();
@@ -227,7 +228,8 @@ void setup() {
 // Clears calibrationFlag so the init_DCO_calibration block below is currently unreachable.
 void setup1() {
 
-  //set_sys_clock_khz(sysClock, true);
+  //set_sys_clock_khz(250000, true);  // pass kHz constant — not sysClock macro
+  sys_clock_hz_refresh();
 
   bench_init_core();
 

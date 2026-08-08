@@ -5,11 +5,12 @@
 #include <string.h>
 
 // Panel depth 0..512 → CV units. LFO Q15 peak uses *2 (legacy HALF/CC).
-static constexpr int32_t CV_U12_MAX = 4095;
+static constexpr int32_t CV_U12_MAX = 4095;           // last valid 12-bit CV code
+static constexpr int32_t CV_U12_SCALE = 4096;         // 1<<12 — divisors / Q15→u12
 static constexpr int32_t CV_PANEL_DEPTH_FULL = 512;
 static constexpr int32_t CV_LFO_Q15_PEAK_DIV = CV_PANEL_DEPTH_FULL * 2;  // 1024
 
-// Always-on: divide by 4096 (>>12) instead of 4095.
+// Always-on: divide by CV_U12_SCALE via >>12 (not /4095).
 static inline uint16_t lerp_0_4095(uint16_t value, uint16_t y0, uint16_t y1) {
   return (uint16_t)((int32_t)y0 + ((((int32_t)y1 - (int32_t)y0) * (int32_t)value) >> 12));
 }
@@ -18,6 +19,11 @@ static inline uint16_t cv_clamp_u12(int32_t v) {
   if (v < 0) return 0;
   if (v > CV_U12_MAX) return (uint16_t)CV_U12_MAX;
   return (uint16_t)v;
+}
+
+// (q15 * CV_U12_SCALE) >> 15; with SCALE=4096 ≡ q15 >> 3 (peak → 4095).
+static inline uint16_t cv_q15_to_u12(int16_t q15) {
+  return cv_clamp_u12(((int32_t)q15 * CV_U12_SCALE) >> 15);
 }
 
 // Boot: build AS2164 VCA linearize table (same control points as Mainboard).
@@ -153,9 +159,12 @@ void update_CV_outs() {
 #ifdef USE_FLOAT_CV_OUTS
   const int16_t LFO1toVCA_calc = (int16_t)((float)LFO1Level * LFO1toVCA_scale);
   const float LFO2toVCF_mod = (float)LFO2Level * LFO2toVCF_scale;
-  // Float A/B: keep u12 ADSR levels with (1/512)*depth scale.
-  const float ADSR2toVCFcalculated = (float)ADSR_VCF_Level * ADSR2toVCF_scale;
-  const float ADSR2toVCF2calculated = (float)ADSR_VCF2_Level * ADSR2toVCF_scale;
+  // Q15 env → u12-ish for float depth formulas (same as >> 3).
+  static constexpr float ADSR_Q15_TO_U12 = 1.0f / 8.0f;
+  const float ADSR2toVCFcalculated =
+    (float)ADSR_VCF_Level_q15 * ADSR_Q15_TO_U12 * ADSR2toVCF_scale;
+  const float ADSR2toVCF2calculated =
+    (float)ADSR_VCF2_Level_q15 * ADSR_Q15_TO_U12 * ADSR2toVCF_scale;
   const float matrix_cutoff_f = (float)matrix_cutoff;
 
   for (byte i = 0; i < NUM_VOICES; i++) {
@@ -164,9 +173,10 @@ void update_CV_outs() {
       VCA_velocityFactor = 1.0f - ((float)velocityToVCA * (127 - midi_velocity[i]));
     }
 
-    int16_t LFO1toVCA_current = (ADSR_VCA_Level[i] == 0) ? 0 : LFO1toVCA_calc;
+    const uint16_t env_u12 = cv_q15_to_u12(ADSR_VCA_Level_q15[i]);
+    int16_t LFO1toVCA_current = (ADSR_VCA_Level_q15[i] == 0) ? 0 : LFO1toVCA_calc;
     uint16_t VCA_Calculated =
-      (uint16_t)constrain((float)(ADSR_VCA_Level[i] + LFO1toVCA_current) * VCA_velocityFactor, 0, 4095);
+      (uint16_t)constrain((float)(env_u12 + LFO1toVCA_current) * VCA_velocityFactor, 0, 4095);
     VCA_PWM[i] = lerp_0_4095(AS2164_VCA_linearize_table[VCA_Calculated],
                              (uint16_t)VCAResonanceCompensation, (uint16_t)(4095 - VCALevel));
 
@@ -203,9 +213,9 @@ void update_CV_outs() {
       if (vca_q15 < 0) vca_q15 = 0;
     }
 
-    const int16_t LFO1toVCA_current = (ADSR_VCA_Level[i] == 0) ? 0 : LFO1toVCA_calc;
-    const int32_t vca_pre =
-      (int32_t)ADSR_VCA_Level[i] + (int32_t)LFO1toVCA_current;
+    const uint16_t env_u12 = cv_q15_to_u12(ADSR_VCA_Level_q15[i]);
+    const int16_t LFO1toVCA_current = (ADSR_VCA_Level_q15[i] == 0) ? 0 : LFO1toVCA_calc;
+    const int32_t vca_pre = (int32_t)env_u12 + (int32_t)LFO1toVCA_current;
     const uint16_t VCA_Calculated =
       cv_clamp_u12((int32_t)(((int64_t)vca_pre * vca_q15) >> 15));
     VCA_PWM[i] = lerp_0_4095(AS2164_VCA_linearize_table[VCA_Calculated],

@@ -1,3 +1,6 @@
+// Compile mo-lfo into the sketch TU (Arduino IDE does not link _build_libs/*.cpp).
+#include "_build_libs/mo-lfo/mo-lfo.cpp"
+
 // Init LFO1 and LFO2 instances. Called from setup() (Core 0).
 void init_LFOs() {
   init_LFO1();
@@ -40,21 +43,29 @@ void init_LFO2() {
 // Update LFO1 Q15 level + per-osc pitch mods (depth_q24 is full-scale octave travel).
 inline void LFO1() {
   LFO1Level = LFO1_class.getWaveQ15(micros());
-  lfo1_pitch_mod_q24[LFO1_PITCH_OSC1] =
-    lfo::applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC1_q24);
-  lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] =
-    lfo::applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC2_q24);
-  lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] =
-    lfo::applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC3_q24);
+  // Common case: only global LFO1→DCO — one mul, broadcast to all osc slots.
+  if (LFO1toOSC1_q24 == 0 && LFO1toOSC2_q24 == 0 && LFO1toOSC3_q24 == 0) {
+    const int32_t m = applyDepthQ24(LFO1Level, LFO1toDCO_q24);
+    lfo1_pitch_mod_q24[LFO1_PITCH_OSC1] = m;
+    lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] = m;
+    lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] = m;
+  } else {
+    lfo1_pitch_mod_q24[LFO1_PITCH_OSC1] =
+      applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC1_q24);
+    lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] =
+      applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC2_q24);
+    lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] =
+      applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC3_q24);
+  }
 }
 
 // Update LFO2 Q15 level + OSC2/3 pitch mods (fine + coarse folded).
 inline void LFO2() {
   LFO2Level = LFO2_class.getWaveQ15(micros());
   lfo2_pitch_mod_q24[LFO2_PITCH_OSC2] =
-    lfo::applyDepthQ24(LFO2Level, LFO2toOSC2_q24 + LFO2toOSC2_coarse_q24);
+    applyDepthQ24(LFO2Level, LFO2toOSC2_q24 + LFO2toOSC2_coarse_q24);
   lfo2_pitch_mod_q24[LFO2_PITCH_OSC3] =
-    lfo::applyDepthQ24(LFO2Level, LFO2toOSC3_q24 + LFO2toOSC3_coarse_q24);
+    applyDepthQ24(LFO2Level, LFO2toOSC3_q24 + LFO2toOSC3_coarse_q24);
 }
 
 // Update per-oscillator drift LFO levels as Q15 (negate wave = legacy polarity).

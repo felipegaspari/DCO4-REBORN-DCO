@@ -41,20 +41,11 @@ Vendored Arduino libraries used by the build (passed via `--libraries ./_build_l
 |---------|------|--------|
 | `ADSR_Bezier` | `_build_libs/ADSR_Bezier` → `../../ADSR_Bezier` | Symlink to monorepo root; track **`main`**. Toggle math backend in [`adsr.h`](adsr.h) via `ADSR_BEZIER_USE_FLOAT` (default `0` = fixed-point). |
 | `DCO_Noise` | `_build_libs/DCO_Noise` → `../../DCO_Noise` | Symlink to monorepo root; noise engines (`begin`/`next`). Fleet size in [`noise.h`](noise.h). |
-| `mo-lfo` | `_build_libs/mo-lfo` → `../../mo-lfo` | Symlink to monorepo root (dual `getWave`/`getWaveQ15` API). Arduino IDE: also symlink sketchbook `libraries/mo-lfo` → this tree and use `#include <mo-lfo.h>`. |
+| `mo-lfo` | `_build_libs/mo-lfo` → `../../mo-lfo` | Symlink to monorepo root. Isolated like ADSR: `LFO.h` includes the header via `_build_libs/...`; `LFO.ino` `#include`s `mo-lfo.cpp` so Arduino IDE links it (no sketchbook library). |
 | `MIDI_Library` | `_build_libs/MIDI_Library` | Vendored copy |
 | `PID_v1` | `_build_libs/PID_v1` | Vendored copy |
 
 **Monorepo layout:** clone `DCO3-MONOSYNTH` with sibling [`ADSR_Bezier`](../ADSR_Bezier/), [`DCO_Noise`](../DCO_Noise/), and [`mo-lfo`](../mo-lfo/) at the repo root so the symlinks resolve.
-
-**Arduino IDE:** `_build_libs` is not on the IDE library path. For `mo-lfo` (has a `.cpp`), replace the sketchbook copy with a symlink to the monorepo tree (sketchbook here is `/media/NVME_DATA/Arduino`):
-
-```bash
-rm -rf /media/NVME_DATA/Arduino/libraries/mo-lfo
-ln -s /home/felipe/Documentos/DCO3-MONOSYNTH/mo-lfo /media/NVME_DATA/Arduino/libraries/mo-lfo
-```
-
-`LFO.h` must use `#include <mo-lfo.h>` (not a relative `_build_libs/...` path), or the `.cpp` is never linked.
 
 **Standalone DCO clone:** replace the symlink with a submodule:
 
