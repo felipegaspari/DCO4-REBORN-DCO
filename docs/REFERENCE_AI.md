@@ -6,7 +6,8 @@ It explains what each file does and how the main subsystems (voices, modulation,
 Related docs:
 - Flat file + function + call-site inventory: [`FILE_INDEX.md`](FILE_INDEX.md) (same `docs/` folder)
 - System topology (other boards): [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md)
-- Float vs fixed build flags and precision modes: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
+- Complete compile-time flag catalog: [`BUILD_FLAGS.md`](BUILD_FLAGS.md)
+- Float vs fixed engine math (depth): [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
 - Hot-path profiling: [`BENCHMARKING.md`](BENCHMARKING.md)
 - Autotune algorithms / refactor layout: [`AUTOTUNE.md`](AUTOTUNE.md), [`AUTOTUNE_REFACTORED.md`](AUTOTUNE_REFACTORED.md)
 - Repo entry point: [`../README.md`](../README.md)
@@ -21,9 +22,9 @@ Related docs:
     - `setup()` / `loop()` (core 0): USB/serial/MIDI I/O, LFO evaluation (~50 µs tick).
     - `setup1()` / `loop1()` (core 1): PID & FS init, ADSR init, DCO calibration/autotune, real‑time voice engine.  
   - **Engine build options** (top of file: **pitch ids** → **board defaults** → **overrides** → **guards** → profiling / board):
-    - Board defaults are per-MCU branch: RP2350 → float voice + `PITCH_INTERP_FLOAT_FAST` + float amp + FLOAT_QUAD; RP2040 → `PITCH_INTERP_RATIO_Q16` + FIXED amp (no float flags). No `USE_FLOAT_ENGINE` umbrella.
+    - Board defaults (both MCUs): fixed voice/amp/CV (no `USE_FLOAT_*`), `PITCH_INTERP_RATIO_Q16`, amp method `FIXED`, `HIGH_PRECISION_CLKDIV 1`. No `USE_FLOAT_ENGINE` umbrella.
     - Overrides can `#undef` / `#define` those flags (pitch A/B needs `#undef PITCH_INTERP_MODE` first).
-    - See [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) for precision vs speed trade-offs.
+    - Full catalog: [`BUILD_FLAGS.md`](BUILD_FLAGS.md). Math depth: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
   - Configures USB product strings in `setup()` (via Adafruit TinyUSB; product **DCO3-MONO**), toggles board pins (23/24) for hardware fixes, and selects DCO calibration mode.
   - Core 0 writes LFO pitch mods into `lfo1_pitch_mod_q24[]` / `lfo2_pitch_mod_q24[]` every ~50 µs; core 1 reads them in the voice task (float path converts Q24 → float each frame).
   - `loop1()` calls `voice_task_main()` (dispatch to float or fixed), then `bench_service(1)` to hand its profiler counters to core 0.
@@ -78,14 +79,14 @@ Related docs:
           - **1**: 64‑bit divide on full Q24 Hz (~4 µs/voice, preferred low‑note accuracy).
           - **0**: compact **Q4 Hz** then 32‑bit divide (~1 µs/voice).
           - Corrected OSR clock dividers for OSC1–3 including OSC2 phase‑alignment; OSC3 free-running.
-        - Performs **amplitude compensation** via `get_chan_level_lookup_fast()` (Q8 Hz domain) using precomputed quadratic windows (`amp_comp.h`) → **RANGE PWM** (not PIO amp).
-        - Writes new dividers into the three PIO SMs on pio0 and amp levels into range PWM channels.
+        - Performs **amplitude compensation** via `get_chan_level_lookup_fast()` (Q8 Hz domain) using precomputed quadratic windows (`amp_comp.h`) → **RANGE PWM** via `write_range_pwm()` (slice or PIO dither; not a PIO oscillator).
+        - Writes new dividers into the three PIO SMs on pio0 and amp levels into RANGE channels.
         - At 99 µs intervals (`timer99microsFlag`), updates shared PW PWM, combining ADSR1 and LFO2 modulation in integer math and using `get_PW_level_interpolated()`.
 
     - **`voice_task_float()`** (float hot path, when `USE_FLOAT_VOICE_TASK` — **current default**):
       - Same overall structure (portamento → modifiers → ratio → clkdiv → amp → PIO/PWM/PW), but in **Hz / float**:
         - Float portamento state; pitch bend / LFO / ADSR / drift / OSC3 interval+detune converted from Q24 globals where needed.
-        - Pitch table: `interpolateRatioFloat_cached_fast` when `PITCH_INTERP_FLOAT_FAST` (RP2350 default); walk `interpolateRatioFloat_cached` when `PITCH_INTERP_FLOAT`; or fixed `RATIO_Q16` / IntQ16 via `PITCH_INTERP_MODE` (`×10000`→Q16 glue) for A/B.
+        - Pitch table: `interpolateRatioFloat_cached_fast` when `PITCH_INTERP_FLOAT_FAST`; walk `interpolateRatioFloat_cached` when `PITCH_INTERP_FLOAT`; or fixed `RATIO_Q16` / IntQ16 via `PITCH_INTERP_MODE` (`×10000`→Q16 glue) for A/B. Shipping default is fixed voice + `RATIO_Q16` (this float path is override-only).
         - Clkdiv always `sysClock_Hz / freqHz` in float (`HIGH_PRECISION_CLKDIV` ignored).
         - Amp via `get_chan_level_for_engine()` → float or fixed facade depending on `USE_FLOAT_AMP_COMP`.
       - Details: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) §6.
@@ -126,14 +127,14 @@ Related docs:
     - Preloads Y with `pioPulseLength` and re-pushes `osc_last_clk_div[]`, because writing Y consumes the OSR that also feeds the chunk reads.
     - Starts every SM on the same cycle with `pio_enable_sm_mask_in_sync()`, removing the inter-oscillator skew that capped phase-align accuracy.
   - **Sync flavours:** hard sync costs nothing (weight 4) but is analog-cap-only — it discharges the slave without restarting its counter. Soft sync (weights 5/6/7 for 1/2/3 trailing polled chunks) restarts the slave's own count; receptive windows are ~40% / ~67% / ~86% of the ramp because polled chunks run at half speed.
-  - **Phase offset** (`phaseAlignOSC2`) is split into a coarse quarter-period jump into a later ramp chunk (`osc_ramp_entry_target()`, program-dependent addresses, preceded by an exec'd `set pins, 0` because those entries skip address 2) plus a sub-quarter residual that widens Y. That caps the held-reset waveform distortion at 25% of a period instead of the old worst case of nearly a whole period at 180°.
+  - **Phase offset** (`phaseAlignOSC2`) is a one-shot X countdown to `loop_final` (`osc_phase_align_hold_stopped` / `osc_phase_hold_target`, addr 9 on `frequency_sync_4_jumps`). That is the old 8-chunk `jmp 10; out x` recipe retargeted after the program cut moved address 10 to restart. Y stays the real pulse; later cycles are undistorted. SYNC_JMP is 0° only (X preload needs a stopped SM). Detail: [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §8.
   - **Diagnostics:** `pio_topology_report()` (roles + reset-pin ownership), `pio_period_probe()` / `pio_solve_period_model()` (confirm weight/overhead against a frequency counter).
 
 - **`PWM.h` / `PWM.ino`**  
-  - `init_pwm()` configures RP2040 PWM slices for:
-    - RANGE PWM (per oscillator amplitude): `RANGE_PINS` mapped to `RANGE_PWM_SLICES` / `RANGE_PWM_CHANNELS`, `wrap = DIV_COUNTER`.
-    - Shared PW PWM (voice 0): `PW_PINS` mapped to `PW_PWM_SLICES`, `wrap = DIV_COUNTER_PW`.
-  - Provides the low‑level PWM targets used by both the voice task and calibration routines.
+  - Voice and cal write amplitude through **`write_range_pwm(osc, level)`** (domain still `0..DIV_COUNTER` = 14000).
+  - **`RANGE0_PIO_DITHER_TEST` on (shipping):** dithered PIO PWM on the same `RANGE_PINS[]` (GP17/16/14) — wrap 4666, 3-frame dither → 13998 levels, ~54 kHz @ 250 MHz. `init_range_pio_dither()` after `init_pio()`; 6 DMA channels. Detail: [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §4.4.
+  - **Flag off:** `init_pwm()` configures hardware PWM slices (`RANGE_PWM_SLICES` / `RANGE_PWM_CHANNELS`, `wrap = DIV_COUNTER`).
+  - Shared PW PWM (voice 0): `PW_PINS` mapped to `PW_PWM_SLICES`, `wrap = DIV_COUNTER_PW`.
 
 ---
 
@@ -376,7 +377,7 @@ Related docs:
 
 - `*.h` – Declarations, constants, global state and struct/class definitions.  
 - `*.ino` – Implementation files with function bodies and logic.  
-- Engine math flags – pitch ids / board defaults / **ENGINE — overrides** at the top of `DCO.ino`; see [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).  
+- Engine / IO / ADSR / LFO flags – catalog [`BUILD_FLAGS.md`](BUILD_FLAGS.md); math depth [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) (`DCO.ino` pitch ids / board defaults / overrides).  
 - Shared serial/param headers – keep `ParamId` numbers stable across boards; see [`README_serial_and_params.md`](README_serial_and_params.md).
 
 ---
@@ -384,7 +385,7 @@ Related docs:
 ### Summary
 
 This firmware implements a **dual‑core 1-voice × 3-osc DCO monosynth** (RP2040 / RP2350-class) with:
-- A compile-time **float or fixed-point** voice engine (float is the current default) and matching amplitude-compensation paths — see [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
+- A compile-time **float or fixed-point** voice engine (**fixed is the shipping default** on both MCUs) and matching amplitude-compensation paths — see [`BUILD_FLAGS.md`](BUILD_FLAGS.md) / [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
 - A table‑driven pitch path (portamento, LFOs, drift, ADSR, OSC2/OSC3 interval+detune) feeding PIO clock dividers and RANGE/PW PWM.
 - Robust DCO and PW calibration via edge‑timing (and optional PID), persisted in LittleFS.
 - MIDI over USB and DIN, plus a high‑speed UART protocol to a main controller for parameters and UI.

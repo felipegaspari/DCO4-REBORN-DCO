@@ -3,7 +3,8 @@
 Purpose of **every file**, and for each source function: **what it does**, **who calls it**, and **when**.
 
 - Deep narrative: [`REFERENCE_AI.md`](REFERENCE_AI.md)
-- Engine flags: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
+- Build flags catalog: [`BUILD_FLAGS.md`](BUILD_FLAGS.md)
+- Engine float/fixed math: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
 - Hot-path profiling: [`BENCHMARKING.md`](BENCHMARKING.md)
 - Character / noise jitter: [`CHARACTER.md`](CHARACTER.md)
 - CV mod depth scales: [`CV_MOD_SCALES.md`](CV_MOD_SCALES.md)
@@ -25,7 +26,7 @@ flowchart TD
   fw1 --> loop1["loop1()"]
 
   setup0 --> initSerial["init_serial / init_midi / init_LFOs"]
-  setup1 --> initCore1["seed_fake_if_missing / init_FS / init_ADSR / init_pwm / init_pio / init_voices"]
+  setup1 --> initCore1["seed_fake_if_missing / init_FS / init_ADSR / init_pwm / init_pio / init_range_pio_dither / init_voices"]
 
   loop0 --> midiRead["MIDI_*.read → handle* → note_on/off"]
   loop0 --> serialTask["serial_panel_task → handlers"]
@@ -66,7 +67,7 @@ Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine flags (
 - `setup()` — Core 0 init: serial, MIDI, LFOs, pins, USB strings, cal pin.
   - **Called from:** Arduino framework (Core 0).
   - **When:** Boot once.
-- `setup1()` — Core 1 init: PID, `seed_fake_calibration_tables(false)` if `voiceTables` missing, FS, ADSR, `mod_matrix_init`, amp-comp precompute, PWM, PIO, voices; clears cal flags.
+- `setup1()` — Core 1 init: PID, `seed_fake_calibration_tables(false)` if `voiceTables` missing, FS, ADSR, `mod_matrix_init`, amp-comp precompute, PWM, PIO, optional `init_range_pio_dither`, voices; clears cal flags.
   - **Called from:** Arduino framework (Core 1).
   - **When:** Boot once. (`init_DCO_calibration` block below is unreachable — see that function.)
 - `loop()` — Core 0: MIDI read, Serial2 pump, LFO1; ~100 µs LFO2 + drift + FIFO push.
@@ -76,7 +77,7 @@ Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine flags (
   - **Called from:** Arduino framework (Core 1).
   - **When:** Forever.
 
-**Key macros:** `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `USE_FLOAT_CV_OUTS`, `PITCH_INTERP_MODE` (`FLOAT` / `FLOAT_FAST` / `RATIO_Q16` / `Q12`), `HIGH_PRECISION_CLKDIV`, `AMP_COMP_METHOD_DEFAULT`, `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`.
+**Key macros:** full catalog in [`BUILD_FLAGS.md`](BUILD_FLAGS.md). Engine: `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `USE_FLOAT_CV_OUTS`, `PITCH_INTERP_MODE` (`FLOAT` / `FLOAT_FAST` / `RATIO_Q16` / `Q12`), `HIGH_PRECISION_CLKDIV`, `AMP_COMP_METHOD_DEFAULT`. Noise: `NOISE_ENGINE`, `ENABLE_NOISE_OUT`. Profiler: `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`, `RUNNING_AVERAGE_PERIOD`, `BENCH_PATH_STATS`. Board/IO: `ENABLE_USB_CONTROL`, `ENABLE_CV_OUTS`, `ENABLE_WAVE_MUX`, `ENABLE_VOICE_AUX`, `ENABLE_PIO_RESET_INVERT`, `RANGE0_PIO_DITHER_TEST`, `NOTE_RETRIG_MODE_DEFAULT`.
 
 ### `bench.h`
 
@@ -239,7 +240,8 @@ Note → frequency tables. **No function definitions.**
 Prototypes plus the inline period model: `pio_period_split()` (exact split, remainder into
 Y), `pio_clk_div_for_y()` (rounded, for a Y that must not move), `osc_ramp_weight()` /
 `osc_period_overhead()` (per-program constants), and the jump-target helpers
-`osc_restart_target()` / `osc_ramp_entry_target()`.
+`osc_restart_target()` / `osc_phase_hold_target()` / `osc_phase_hold_x()`.
+`osc_ramp_entry_target()` is unused by live phase-align.
 
 ### `state_machines.ino`
 
@@ -270,6 +272,10 @@ PIO load, SM setup, sync topology and diagnostics. **All three oscillators live 
   chunk reads). Clear variant for boot/topology; fused noclear for note-on EXACT_Y.
   - **Called from:** `start_voice_sms()`, `osc_set_reset_pulse()` (clear); both engine note-on
     EXACT_Y paths (fused noclear).
+- `osc_phase_align_hold_stopped()` — `static inline` in `state_machines.h`: preload X, restore
+  clk_div, `set pins, 0`, jmp `loop_final` (one-shot delay until OSC2's first flyback).
+  - **Called from:** both engine note-on EXACT_Y paths when `phaseHoldX != 0`.
+  - **When:** Mono note-on, `oscSync > 1`, EXACT_Y. SM already stopped after noclear load.
 - `osc_set_reset_pulse()` — Change only Y, reusing `osc_last_clk_div[]`.
   - **Called from:** `apply_param_osc_sync_mode()`.
 - `pio_topology_report()` — Print sync roles and assert every RESET pin reads back as PIO0.
@@ -286,7 +292,8 @@ PIO load, SM setup, sync topology and diagnostics. **All three oscillators live 
 PIO assembly source. **Not C functions.** Programs in use: `frequency_sync_4_jumps`
 (free-running, weight 4), `frequency_sync_poll` / `_2` / `_3` (soft-sync slave, N=1/2/3
 trailing `jmp pin` chunks, weights 5/6/7; one resident at a time), `noise_lfsr` (PIO1
-origin 0), `subosc_div2` / `subosc_div4`.
+origin 0), `subosc_div2` / `subosc_div4`. Comment-only listing for RANGE dither
+(`range_pwm_dither`; real encoding in `range_pwm_dither.pio.h`).
 
 Annotated listings and the period model for each program: [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md).
 
@@ -323,17 +330,32 @@ above `frequency_sync_poll`.
 - `frequency_pulse1_program_init()` — Init SM for pulse1 program.
   - **Called from:** **none (dead)** in this firmware.
 
+### `range_pwm_dither.pio.h`
+
+Hand-encoded 4-inst 1-cycle RANGE PWM (sideset). **Not C functions** besides
+`range_pwm_dither_program_get_default_config()`. Loaded by `init_range_pio_dither()` onto
+pio0 and pio1 when `RANGE0_PIO_DITHER_TEST`. Detail: [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §4.4.
+
 ### `PWM.h`
 
-Prototype. **No function definitions.**
+`write_range_pwm()` is **inline** here (PIO dither or slice). Under `RANGE0_PIO_DITHER_TEST`:
+prototypes `init_range_pio_dither`, `range_pio_set_level`. Constants `RANGE_PIO_PERIOD` (4666),
+`RANGE_PIO_FRAMES` (3), `RANGE_PIO_LEVELS` (13998).
 
 ### `PWM.ino`
 
 **Functions**
 - `init_pwm()` — Configure range + PW PWM slices (`RANGE_PWM_SLICES` / `RANGE_PWM_CHANNELS`);
-  under `ENABLE_CV_OUTS` calls `init_cv_pwm()`.
+  under `RANGE0_PIO_DITHER_TEST` skips all RANGE slices (`0xFF`); under `ENABLE_CV_OUTS` calls `init_cv_pwm()`.
   - **Called from:** `setup1()`.
   - **When:** Boot Core1.
+- `init_range_pio_dither()` — Claim RANGE SMs (pio1 SM2/3, pio0 SM3), load `range_pwm_dither`,
+  start 3× data+ctrl DMA rings. Idempotent re-enable.
+  - **Called from:** `setup1()` when `RANGE0_PIO_DITHER_TEST`.
+  - **When:** Boot Core1, after `init_pio()`.
+- `range_pio_set_level(osc, level)` — Scale `0..14000` → 3-frame packed DMA words.
+  - **Called from:** `write_range_pwm()`; `disable_all_oscillators_and_range_pwm()`.
+  - **When:** Live amp-comp / cal RANGE writes when flag on.
 - `init_cv_pwm()` — Cutoff / reso / VCA / dist PWM; calls `init_level_pwm()`.
   - **Called from:** `init_pwm()` when `ENABLE_CV_OUTS`.
 - `init_level_pwm()` / `write_level_pwm()` / `write_level_pwm_raw()` — OSC1/2/3 + Sub level PWM → mix VCAs.
@@ -512,7 +534,7 @@ Constants only. **No function definitions.**
 ### `autotune.ino`
 
 **Functions**
-- `disable_all_oscillators_and_range_pwm()` — Mute oscs / park RANGE GPIO; calls `reset_pw_to_DIV_COUNTER_PW`.
+- `disable_all_oscillators_and_range_pwm()` — Mute oscs / park RANGE (PIO `range_pio_set_level(DIV_COUNTER)` when `RANGE0_PIO_DITHER_TEST`, else GPIO high); calls `reset_pw_to_DIV_COUNTER_PW`.
   - **Called from:** `init_DCO_calibration()`, `DCO_calibration()`, `restart_DCO_calibration()`.
   - **When:** Cal setup (note `init_DCO_calibration` unreachable at boot).
 - `reset_pw_to_DIV_COUNTER_PW()` — Shared PW PWM → max wrap.
@@ -817,7 +839,7 @@ Prototype. **No function definitions.**
 - `apply_param_lfo2_to_osc2()` — LFO2→OSC2 fine pitch depth (0..255, `expConverterFloat`).
 - `apply_param_lfo2_to_osc3()` — LFO2→OSC3 fine pitch depth (0..255).
 - `apply_param_lfo2_to_osc2/3_coarse()` — LFO2 coarse pitch (0..511; LFO1 curve + amp scale at apply time).
-- `apply_param_osc_sync_mode()` — Osc sync / phase-align related.
+- `apply_param_osc_sync_mode()` — Osc sync / phase-align: sets `oscSync` + `phaseAlignOSC2`, retriggers notes.
 - `apply_param_portamento_time()` — Porta time (uses `expConverter`).
 - `apply_param_portamento_mode()` — Time vs slew porta.
 - `apply_param_calibration_value()` — Reserved / no-op.
@@ -985,4 +1007,6 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | Mono note priority / held notes | `midi.ino` mono stack (`mono_note_stack_*`); porta still via `note_on_flag` → `voices.ino` |
 | MIDI CC assignments | `tools/dco_control/params.py` `cc=` field → `gen_midi_map.py` → `midi_cc_map.h` + [`MIDI_CC_MAP.md`](MIDI_CC_MAP.md) |
 | Play audio path | `loop1` → `ADSR_update` + `voice_task_main` |
+| OSC2 note-on phase align | `PARAM_OSC_SYNC_MODE` → `oscSync` / `phaseAlignOSC2`; EXACT_Y in `voices.ino` → `osc_phase_align_hold_stopped` ([`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §8) |
 | Measure where the time goes | `RUNNING_AVERAGE` in `DCO.ino` → probe table in `bench.h` → debug command 10 |
+| RANGE carrier / slice vs PIO dither | `RANGE0_PIO_DITHER_TEST` in `DCO.ino` → `PWM.h` / `PWM.ino` / [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §4.4 |

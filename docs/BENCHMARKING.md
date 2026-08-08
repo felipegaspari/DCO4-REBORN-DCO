@@ -16,6 +16,7 @@ Uncomment in [`../DCO.ino`](../DCO.ino):
 #define RUNNING_AVERAGE         // profiler on (main stage probes)
 #define RUNNING_AVERAGE_FINE    // plus the tiny per-stage probes
 #define RUNNING_AVERAGE_PERIOD  // only loop / loop1 periods (no stage probes)
+#define BENCH_PATH_STATS        // porta path-tag trees + walk-step sums
 ```
 
 With `RUNNING_AVERAGE` off, every `BENCH_*` macro expands to nothing. There is no runtime
@@ -26,6 +27,10 @@ out; only `BENCH_PERIOD` for `loop period` / `loop1 period` collects. Path count
 (`amp:` / `ratio:` / `porta:`) are also disabled — no bumps and no dump block. Use this for
 a true loop-time baseline without intermediate probe tax. The dump banner says `period only`.
 Do not combine with FINE expecting stage rows — PERIOD wins and FINE is ignored.
+
+**`BENCH_PATH_STATS`** (needs `RUNNING_AVERAGE`): compiles in the porta path-tag `if/else`
+and amp/ratio walk-step sums in [`../voices.ino`](../voices.ino). Leave off for shipping.
+Path bumps still no-op under `RUNNING_AVERAGE_PERIOD` (`BENCH_PATH_INC` / dump block).
 
 **Period-only vs full MAIN.** Same preset, same play: compare `loop` / `loop1` mean **and
 max**. The gap is mostly instrumentation tax (each child's `BENCH_END` updates stats after

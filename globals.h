@@ -103,7 +103,7 @@ volatile uint8_t STACK_VOICES = 1;
 
 volatile uint8_t voiceMode = 1;
 uint8_t syncMode = 0;
-uint8_t oscSync = 0;
+volatile uint8_t oscSync = 0;
 volatile uint8_t polyMode = 1;
 
 volatile uint16_t phaseAlignOSC2 = 0;
@@ -343,13 +343,16 @@ uint8_t subOscDivide = 0;
 
 // Program-relative addresses.
 //   RESTART: `mov x, y`, the top of the reset pulse. Jumping here retriggers a cycle.
-//   RAMP_ENTRY[q]: enters the ramp with 4-q chunks left, advancing phase by q quarters.
-//     This skips `set pins, 0` at address 2, so the caller must drive the reset pin low
-//     first. Index 0 is unused; a zero advance is just a restart.
+//   PHASE_HOLD: last `jmp x--` before `mov x, y` / `set pins, 1` (loop_final). Preload X and
+//     jump here for a one-shot delay until OSC2's first flyback. On the old 8-chunk
+//     `frequency` program this was hardcoded jmp 10; on frequency_sync_4_jumps it is 9.
+//   RAMP_ENTRY[q]: leftover 90° chunk entries (unused by live phase-align).
 // Free and poll-1 share entry addresses {0,4,6,8}; poll-2/3 shift later entries because
 // polled chunks insert an extra instruction before each countdown.
 static constexpr uint8_t PIO_RESTART_ADDR_FREE = 10;
 static constexpr uint8_t PIO_RESTART_ADDR_SYNC[4] = { 10, 11, 12, 13 };  // index = softSyncChunks
+static constexpr uint8_t PIO_PHASE_HOLD_ADDR_FREE = 9;
+static constexpr uint8_t PIO_PHASE_HOLD_ADDR_SYNC[4] = { 9, 10, 11, 12 };  // index = softSyncChunks
 static constexpr uint8_t PIO_RAMP_ENTRY_FREE[4] = { 0, 4, 6, 8 };
 static constexpr uint8_t PIO_RAMP_ENTRY_SYNC_1[4] = { 0, 4, 6, 8 };
 static constexpr uint8_t PIO_RAMP_ENTRY_SYNC_2[4] = { 0, 4, 6, 9 };
@@ -370,6 +373,24 @@ static inline uint32_t osc_restart_target(uint8_t osc) {
     return pio_offset_free + PIO_RESTART_ADDR_FREE;
   }
   return pio_offset_sync + PIO_RESTART_ADDR_SYNC[soft_sync_chunks_clamped()];
+}
+
+static inline uint32_t osc_phase_hold_target(uint8_t osc) {
+  if (!osc_uses_sync_program[osc]) {
+    return pio_offset_free + PIO_PHASE_HOLD_ADDR_FREE;
+  }
+  return pio_offset_sync + PIO_PHASE_HOLD_ADDR_SYNC[soft_sync_chunks_clamped()];
+}
+
+// X preload for osc_phase_align_hold_stopped so the first flyback lands at
+// remaining ≈ total * (360 - deg) / 360. 0 → caller should jmp restart (0°).
+// RECIP_360_Q24 mul/shift; −3 is loop_final fallthrough + mov x,y + set pins,1.
+static inline uint32_t osc_phase_hold_x(uint32_t total_cycles, uint16_t deg) {
+  if (deg >= 360u) deg = (uint16_t)(deg % 360u);
+  if (deg == 0) return 0;
+  uint32_t per_deg = (uint32_t)(((uint64_t)total_cycles * RECIP_360_Q24 + (1u << 23)) >> 24);
+  uint32_t remaining = per_deg * (uint32_t)(360u - deg);
+  return (remaining > 3u) ? remaining - 3u : 0u;
 }
 
 static inline uint32_t osc_ramp_entry_target(uint8_t osc, uint8_t quarters) {
@@ -457,10 +478,10 @@ uint16_t dato_serial;
 float dato_serial_float;
 // Global octave offset for note math: table_index = midi - 36 + octave_shift (36 ⇒ unison).
 // Wire param remains PARAM_OSC1_INTERVAL (13) / CC 2.
-uint8_t octave_shift = 24;
+volatile uint8_t octave_shift = 24;
 uint8_t OSC2_serial_detune = 127;
-uint8_t OSC2_interval = 36;
-uint8_t OSC3_interval = 36;
+volatile uint8_t OSC2_interval = 36;
+volatile uint8_t OSC3_interval = 36;
 float OSC2_detune = 127;
 uint16_t OSC2DetuneVal = 256;
 uint16_t OSC3DetuneVal = 256;

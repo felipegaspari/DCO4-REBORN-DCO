@@ -4,7 +4,7 @@ DCO3-MONOSYNTH is a **fully digitally controlled analog monosynth**, forked from
 
 The shipping instrument is **three firmwares** (Mainboard absorbed into DCO). Board-specific details live in each board folder / docs.
 
-**DCO board:** RP2350 (**A** with helper, or **B** solo), **1 voice × 3 oscillators**, freq on PIO, amp via RANGE PWM, EnvDCO/VCA/VCF, LFOs, opt-in CV PWM / mux / OSC1..3+Sub level PWM. Autotune stack retained (PW center/limits + amp-comp).
+**DCO board:** RP2350 (**A** with helper, or **B** solo), **1 voice × 3 oscillators**, freq on PIO, amp via RANGE PWM (optional PIO dither), EnvDCO/VCA/VCF, LFOs, opt-in CV PWM / mux / OSC1..3+Sub level PWM. Autotune stack retained (PW center/limits + amp-comp).
 
 **Dual MCU (concept):** RP2350A + helper RP2040 sharing Input TX — see [`DUAL_MCU.md`](DUAL_MCU.md). `DCO/` keeps full IO code for a later RP2350B-only build.
 

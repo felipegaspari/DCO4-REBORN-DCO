@@ -30,6 +30,10 @@ static void disable_all_oscillators_and_range_pwm() {
 
     // Stop the SM and hold the RANGE pin high as a plain GPIO output.
     pio_sm_set_enabled(pioN, smN, false);
+#ifdef RANGE0_PIO_DITHER_TEST
+    range_pio_set_level((uint8_t)i, DIV_COUNTER);  // full-on via PIO; do not steal RANGE pin
+    continue;
+#endif
     gpio_init(RANGE_PINS[i]);
     gpio_set_dir(RANGE_PINS[i], GPIO_OUT);
     gpio_put(RANGE_PINS[i], 1);
@@ -127,7 +131,7 @@ void DCO_calibration() {
     restart_DCO_calibration();
 
     ampCompCalibrationVal = initManualAmpCompCalibrationVal[currentDCO] + manualCalibrationOffset[currentDCO];
-    pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], RANGE_PWM_CHANNELS[currentDCO], ampCompCalibrationVal);
+    write_range_pwm(currentDCO, ampCompCalibrationVal);
 
     DCO_calibration_current_note = DCO_calibration_start_note;
     VOICE_NOTES[0] = DCO_calibration_current_note;
@@ -198,7 +202,9 @@ void restart_DCO_calibration() {
   // currentDCO we must restore its RANGE pin back to PWM function so that
   // voice_task_autotune() and subsequent RANGE PWM writes actually appear
   // on the physical pin.
+#ifndef RANGE0_PIO_DITHER_TEST
   gpio_set_function(RANGE_PINS[currentDCO], GPIO_FUNC_PWM);
+#endif
 
   PIO pioN = pio[VOICE_TO_PIO[currentDCO]];
   uint8_t sm1N = VOICE_TO_SM[currentDCO];
@@ -804,9 +810,7 @@ void find_PW_center(uint8_t mode) {
     PWCalibrationVal = PW_CENTER[0];
   }
   // Center the starting PW
-  pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO],
-                     RANGE_PWM_CHANNELS[currentDCO],
-                     PW[0]);
+  write_range_pwm(currentDCO, PW[0]);
 
   voice_task_autotune(voiceTaskMode, ampCompCalibrationVal);
 

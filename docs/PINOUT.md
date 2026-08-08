@@ -46,9 +46,9 @@ From [`globals.h`](../globals.h) today:
 | OSC2 RESET | 27 | PIO0 SM0/1 | — | Active-low pad if `ENABLE_PIO_RESET_INVERT` |
 | OSC3 RESET | 19 | PIO0 SM2 | — | Active-low pad if `ENABLE_PIO_RESET_INVERT` |
 | Sub-osc out | 8 | PIO1 SM0 | — | — |
-| OSC1 RANGE | 28 | PWM | 6 | A |
-| OSC2 RANGE | 22 | PWM | 3 | A |
-| OSC3 RANGE | 17 | PWM | 0 | B |
+| OSC1 RANGE | **17** | PIO1 SM2 or PWM | 0 | B (`RANGE0_PIO_DITHER_TEST` → PIO) |
+| OSC2 RANGE | **16** | PIO1 SM3 or PWM | 0 | A (slice mode shares slice 0 with OSC1 RANGE) |
+| OSC3 RANGE | **14** | PIO0 SM3 or PWM | 7 | A |
 | PW (voice 0) | 3 | PWM | 1 | B |
 | Cal sense | **6** (was 10; A/B header spare) | GPIO in | — | — |
 | Board fix rails | 23, 24 | GPIO out HIGH | — | — |
@@ -59,9 +59,9 @@ block, so oscillators split across blocks cannot share a reset pin — the secon
 OSC2 swap SM indices depending on `syncMode` (`assign_sm_mapping()`) so the master always
 outranks its slave; OSC3 is always SM2. `pio_topology_report()` verifies this at runtime.
 
-PIO block budget: **PIO0** oscillators (25 of 32 instructions: `frequency_sync_4_jumps` 12 +
-`frequency_sync_poll` 13), **PIO1** noise LFSR @ origin 0 SM1 (12) + sub-oscillator (12) =
-24 of 32, **PIO2** reserved for `ENABLE_PIO_MIDI`.
+PIO block budget: **PIO0** oscillators (25–27 of 32) + RANGE dither 4 when `RANGE0_PIO_DITHER_TEST`
+(29–31), **PIO1** noise LFSR + sub-osc (24) + RANGE dither 4 (28), **PIO2** reserved for
+`ENABLE_PIO_MIDI`. RANGE SMs: pio1 SM2/SM3 + pio0 SM3. See [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §3.2 / §4.4.
 
 Full detail on the programs, the period model, sync modes and phase align:
 [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md).
@@ -120,7 +120,7 @@ Full detail on the programs, the period model, sync modes and phase align:
 | 12–14 | Dual 74HC595 → DG411 wave mux |
 | 15 | Cutoff 0 PWM |
 | 16 | OSC1 level PWM (slice 0 A w/ RANGE OSC3) |
-| 17,22,28 | RANGE ×3 |
+| 14,16,17 | RANGE ×3 (`RANGE_PINS[]`; PIO dither or PWM slice) |
 | 18 | OSC2 level PWM (slice 1 A w/ PW) |
 | 19,27,29 | RESET ×3 (all PIO0) |
 | 20,21 | HW UART Input |

@@ -253,6 +253,20 @@ void frequency_sync_poll_init(PIO pio, uint sm, uint offset, uint pin, uint pin2
 }
 %}
 
+; RANGE dither (see range_pwm_dither.pio.h): pio1 SM2/SM3 + pio0 SM3, same pins as slice PWM.
+; 1-cycle-per-count PWM: DMA word = (low << 16) | high, autopull 32. 3-frame dither
+; (wrap 4666, chained DMA) is not extra PIO inst (program is 4 slots, loaded per block).
+; .program range_pwm_dither
+; .side_set 1 opt
+; .wrap_target
+;     out x, 16
+;     out y, 16
+; high:
+;     jmp x-- high    side 1
+; low:
+;     jmp y-- low     side 0
+; .wrap
+
 ; White noise LFSR for CPU coloring + optional pin listen (ENABLE_NOISE_OUT).
 ; 32-bit Fibonacci trinomial x^31+x^28+1; pushes one word every 32 steps.
 ; mov pins, isr emits bit0 each step when OUT pins are mapped.

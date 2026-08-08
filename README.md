@@ -11,7 +11,7 @@ Branch baseline: `autotune-improvements` (refactored autotune / amp-comp), then 
 | Voices | `NUM_VOICES_TOTAL = 1` |
 | Oscillators | `NUM_OSCILLATORS = 3` |
 | Freq SMs | PIO0/1/2 SM0 |
-| Amplitude | Hardware RANGE PWM (`get_chan_level_for_engine`) |
+| Amplitude | RANGE PWM via `write_range_pwm` — PIO dither (`RANGE0_PIO_DITHER_TEST`) or HW slice |
 | Voice entry | `voice_task_main()` → float or fixed engine |
 | Sync | OSC1↔OSC2; OSC3 free-running |
 | PW | One shared PW channel (voice 0); inverted `PW_LOOKUP` |
@@ -62,6 +62,8 @@ Ensure `ADSR_Bezier` is on branch **`main`**. To try the float envelope path on 
 
 See `docs/` — especially:
 
+- [`docs/BUILD_FLAGS.md`](docs/BUILD_FLAGS.md) — complete compile-time flag catalog (`DCO.ino` + headers + vendored libs)
+- [`docs/ENGINE_OPTIONS.md`](docs/ENGINE_OPTIONS.md) — float vs fixed voice/amp/CV math depth
 - [`docs/PINOUT.md`](docs/PINOUT.md) — provisional hub + CV pin / UART map (Phase 0)
 - [`docs/MOD_MATRIX.md`](docs/MOD_MATRIX.md) — sparse mod matrix (levels / dual reso / Dist Drive)
 - [`docs/CV_MOD_SCALES.md`](docs/CV_MOD_SCALES.md) — VCA/VCF mod depth bakers, Q15 peak math (`/512` vs `/1024`), when to call

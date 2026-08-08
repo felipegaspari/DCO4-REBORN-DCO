@@ -161,10 +161,8 @@ static void apply_param_character(int16_t v) {
 static void apply_param_osc_sync_mode(int16_t v) {
   oscSync = v;
   if (oscSync < 2) {
-    // Clear any phase-align widening by returning Y to the plain reset pulse. The SM
-    // has to be stopped for this: Y travels through the OSR, which also holds clk_div
-    // for the chunk reads, so writing it on a running SM can make a chunk latch the
-    // pulse width as its ramp count.
+    // Live phase-align no longer widens Y; still reload the plain pulse in case a
+    // previous note left a leftover exact-split remainder or an old firmware Y.
     phaseAlignOSC2 = 0;
     pio_defer_request_reset_pulse_all();
   } else {

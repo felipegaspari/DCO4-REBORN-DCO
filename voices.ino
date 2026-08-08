@@ -389,6 +389,7 @@ inline void voice_task_fixed_point() {
   // retime the glide without introducing pitch discontinuities.
   static uint32_t last_portamento_time = 0;
   static uint8_t last_portamento_mode = PORTA_MODE_TIME;
+  static uint8_t lastNote1 = 0, lastNote2 = 0, lastNote3 = 0;
   uint32_t portaTime = portamento_time;
   uint8_t portaMode = portamento_mode;
   bool portaTimeChanged = (portaTime != last_portamento_time);
@@ -451,6 +452,12 @@ inline void voice_task_fixed_point() {
       note2 = (vn1 == 0) ? 0 : midi_offset_to_table_index((int)vn1, (int)octave_shift, NOTE_TABLE_LEN);
       note3 = (vn2 == 0) ? 0 : midi_offset_to_table_index((int)vn2, (int)octave_shift, NOTE_TABLE_LEN);
     }
+
+      const bool pitchTargetChanged =
+          note1 != lastNote1 || note2 != lastNote2 || note3 != lastNote3;
+      lastNote1 = note1;
+      lastNote2 = note2;
+      lastNote3 = note3;
 
       BENCH_BEGIN(vt_osc_detune);
       // Optimized: Calculate OSC2/OSC3 detune in Q24 and keep it there.
@@ -521,7 +528,7 @@ inline void voice_task_fixed_point() {
             (voiceMode == 0) ? note_on_flag_flag[i]
                              : (note_on_flag_flag[0] || note_on_flag_flag[1] || note_on_flag_flag[2]);
         const bool portaDoRetime =
-            (portaTimeChanged || portaModeChanged) && !portaNoteOnEdge;
+            (portaTimeChanged || portaModeChanged || pitchTargetChanged) && !portaNoteOnEdge;
 
         int64_t curA;
         int64_t curB;
@@ -631,18 +638,20 @@ inline void voice_task_fixed_point() {
         porta_note_valid[DCO_C] = true;
       }
 
+#if defined(BENCH_PATH_STATS)
       // Exclusive path tag for jitter attribution (note_on > retime > steady > off).
       if (portaTime == 0) {
         BENCH_PATH_INC(porta_off);
       } else if (note_on_flag_flag[i]) {
         BENCH_PATH_INC(porta_note_on);
-      } else if (portaTimeChanged || portaModeChanged) {
+      } else if (portaTimeChanged || portaModeChanged || pitchTargetChanged) {
         BENCH_PATH_INC(porta_retime);
       } else if (portaMode == PORTA_MODE_TIME) {
         BENCH_PATH_INC(porta_steady_time);
       } else {
         BENCH_PATH_INC(porta_steady_slew);
       }
+#endif
 #if DCO_DEBUG_REPORT
       // Debug: OSC1 base frequency after portamento, before modifiers (in Hz)
       dbg_freq_base_Hz = (float)portamento_cur_freq_q24[DCO_A] / (float)(1 << 24);
@@ -817,8 +826,6 @@ inline void voice_task_fixed_point() {
 
       uint8_t arbitrary_measured_correction_value = 0; // 60 is a measured correction for the PIO
 
-      uint32_t phaseDelay = 0;
-
       uint32_t total_cycles1, total_cycles2, total_cycles3;
       // One load of cached clk_sys (see sys_clock_hz_refresh); never call clock_get_hz here.
       const uint32_t sys_hz = sysClock_Hz;
@@ -857,37 +864,21 @@ inline void voice_task_fixed_point() {
 
       // Measured apart from the divider math because it only runs with sync on and a
       // non-zero phase offset; averaging the two together hides both.
-      BENCH_BEGIN(vt_phase_align);
-      // Phase align applies to OSC2 only (OSC1<->OSC2 sync); OSC3 is free-running.
-      // The coarse part of the offset is a jump into a later ramp chunk at note-on,
-      // which costs no waveform distortion at all. Only the sub-quarter residual widens
-      // the reset pulse, so the held-reset distortion is capped at 25% of a period
-      // instead of the old worst case of nearly a whole period at 180 degrees.
-      uint8_t phaseQuarters = 0;
-      // Phase-align / oscSync offset is mono-only (para has no coupled A+B sync).
-      if (voiceMode == 0 && oscSync > 1 && phaseAlignOSC2 != 0) {
-        uint16_t deg = (uint16_t)(phaseAlignOSC2 % 360u);
-        phaseQuarters = (uint8_t)(deg / 90u);
-        uint16_t residualDeg = (uint16_t)(deg - (uint16_t)phaseQuarters * 90u);
-        uint64_t phase_num = (uint64_t)total_cycles2 * (uint64_t)residualDeg;
-        phaseDelay = (uint32_t)((phase_num + 180u) / 360u);
-      } else {
-        phaseDelay = 0;
-      }
-      BENCH_END(vt_phase_align);
-
-      // Exact period split on note-on+EXACT_Y frames, next to hot phase_align (I-cache).
-      // Stash for the note-on block; OSC3 stays on the rounded clk_div path.
+      // Phase align + exact split: note-on only (I-cache next to each other).
+      uint32_t phaseHoldX = 0;
       PioPeriod retrig_p1{};
       PioPeriod retrig_p2{};
-      uint32_t retrig_y2 = 0;
+      if (voiceMode == 0 && note_on_flag_flag[i] && oscSync > 1 && phaseAlignOSC2 != 0) {
+        BENCH_BEGIN(vt_phase_align);
+        phaseHoldX = osc_phase_hold_x(total_cycles2, phaseAlignOSC2);
+        BENCH_END(vt_phase_align);
+      }
       // Mono EXACT_Y A+B stash only. Para splits inside its per-osc note-on loop.
       if (voiceMode == 0 && note_on_flag_flag[i] && oscSync >= 1 &&
           note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
         BENCH_BEGIN(vt_retrig_split);
         retrig_p1 = pio_period_split(total_cycles1, wA, kA);
-        retrig_p2 = pio_period_split(total_cycles2 - phaseDelay, wB, kB);
-        retrig_y2 = retrig_p2.y + phaseDelay;
+        retrig_p2 = pio_period_split(total_cycles2, wB, kB);
         BENCH_END(vt_retrig_split);
       }
 
@@ -994,7 +985,7 @@ inline void voice_task_fixed_point() {
           // One probe for the whole SM apply path — fine MAIN slices mis-attribute cold XIP.
           BENCH_BEGIN(vt_retrig_sm_apply);
           if (note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
-            // Exact split was computed after phase_align (retrig_p1 / retrig_y2).
+            // Exact split was computed after phase_align (retrig_p1 / retrig_p2).
             // OSC3 is deliberately absent: never retriggered; Y stays at pioPulseLength.
             uint32_t maskAB = (1u << smAN) | (1u << smBN);
             pio_set_sm_mask_enabled(pio[0], maskAB, false);
@@ -1002,17 +993,12 @@ inline void voice_task_fixed_point() {
             // Note-on is the one point where Y can be rewritten safely. Frame already did
             // put+pull, so TX is empty — fused noclear load (no FJOIN).
             osc_load_periods_stopped_noclear(DCO_A, retrig_p1.y, retrig_p1.clk_div,
-                                             DCO_B, retrig_y2, retrig_p2.clk_div);
+                                             DCO_B, retrig_p2.y, retrig_p2.clk_div);
 
             pio_sm_exec(pioN_A, smAN, pio_encode_jmp(osc_restart_target(DCO_A)));
 
-            if (phaseQuarters != 0) {
-              // Coarse phase advance: enter a later ramp chunk so OSC2's first cycle starts
-              // partway up the ramp. That entry point skips `set pins, 0`, so the reset pin
-              // has to be driven low explicitly first.
-              pio_sm_exec(pioN_B, smBN, pio_encode_set(pio_pins, 0));
-              pio_sm_exec(pioN_B, smBN,
-                          pio_encode_jmp(osc_ramp_entry_target(DCO_B, phaseQuarters)));
+            if (phaseHoldX != 0) {
+              osc_phase_align_hold_stopped(DCO_B, phaseHoldX);
             } else {
               pio_sm_exec(pioN_B, smBN, pio_encode_jmp(osc_restart_target(DCO_B)));
             }
@@ -1020,17 +1006,9 @@ inline void voice_task_fixed_point() {
             pio_enable_sm_mask_in_sync(pio[0], maskAB);
           } else {
             // SYNC_JMP: phase resync only — no disable / Y load / enable_in_sync.
+            // X preload needs a stopped SM, so degree offsets require EXACT_Y.
             pio_sm_exec(pioN_A, smAN, pio_encode_jmp(osc_restart_target(DCO_A)));
-            if (phaseQuarters != 0) {
-              // Coarse phase advance: enter a later ramp chunk so OSC2's first cycle starts
-              // partway up the ramp. That entry point skips `set pins, 0`, so the reset pin
-              // has to be driven low explicitly first.
-              pio_sm_exec(pioN_B, smBN, pio_encode_set(pio_pins, 0));
-              pio_sm_exec(pioN_B, smBN,
-                          pio_encode_jmp(osc_ramp_entry_target(DCO_B, phaseQuarters)));
-            } else {
-              pio_sm_exec(pioN_B, smBN, pio_encode_jmp(osc_restart_target(DCO_B)));
-            }
+            pio_sm_exec(pioN_B, smBN, pio_encode_jmp(osc_restart_target(DCO_B)));
           }
           BENCH_END(vt_retrig_sm_apply);
         }
@@ -1038,16 +1016,13 @@ inline void voice_task_fixed_point() {
         BENCH_BEGIN(vt_retrig_pwm);
         if (char_amp_scale_q15) {
           const int32_t amp_j = character_amp_delta();
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], RANGE_PWM_CHANNELS[DCO_A],
-                             character_clamp_amp((int32_t)chanLevel + amp_j));
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], RANGE_PWM_CHANNELS[DCO_B],
-                             character_clamp_amp((int32_t)chanLevel2 + amp_j));
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], RANGE_PWM_CHANNELS[DCO_C],
-                             character_clamp_amp((int32_t)chanLevel3 + amp_j));
+          write_range_pwm(DCO_A, character_clamp_amp((int32_t)chanLevel + amp_j));
+          write_range_pwm(DCO_B, character_clamp_amp((int32_t)chanLevel2 + amp_j));
+          write_range_pwm(DCO_C, character_clamp_amp((int32_t)chanLevel3 + amp_j));
         } else {
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], RANGE_PWM_CHANNELS[DCO_A], chanLevel);
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], RANGE_PWM_CHANNELS[DCO_B], chanLevel2);
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], RANGE_PWM_CHANNELS[DCO_C], chanLevel3);
+          write_range_pwm(DCO_A, chanLevel);
+          write_range_pwm(DCO_B, chanLevel2);
+          write_range_pwm(DCO_C, chanLevel3);
         }
         BENCH_END(vt_retrig_pwm);
         BENCH_END(vt_note_retrig);
@@ -1074,26 +1049,23 @@ inline void voice_task_fixed_point() {
           BENCH_BEGIN(vt_note_retrig);
           const uint8_t osc = (uint8_t)k;
           BENCH_BEGIN(vt_retrig_pwm);
-          pwm_set_chan_level(RANGE_PWM_SLICES[osc], RANGE_PWM_CHANNELS[osc], chanLevels[k]);
+          write_range_pwm(osc, chanLevels[k]);
           BENCH_END(vt_retrig_pwm);
           BENCH_END(vt_note_retrig);
         }
       }
 
-      if (timer99microsFlag) {
+      if (timer99microsFlag2) {
         BENCH_BEGIN(vt_range_pwm);
         if (char_amp_scale_q15) {
           const int32_t amp_j = character_amp_delta();
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], RANGE_PWM_CHANNELS[DCO_A],
-                             character_clamp_amp((int32_t)chanLevel + amp_j));
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], RANGE_PWM_CHANNELS[DCO_B],
-                             character_clamp_amp((int32_t)chanLevel2 + amp_j));
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], RANGE_PWM_CHANNELS[DCO_C],
-                             character_clamp_amp((int32_t)chanLevel3 + amp_j));
+          write_range_pwm(DCO_A, character_clamp_amp((int32_t)chanLevel + amp_j));
+          write_range_pwm(DCO_B, character_clamp_amp((int32_t)chanLevel2 + amp_j));
+          write_range_pwm(DCO_C, character_clamp_amp((int32_t)chanLevel3 + amp_j));
         } else {
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], RANGE_PWM_CHANNELS[DCO_A], chanLevel);
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], RANGE_PWM_CHANNELS[DCO_B], chanLevel2);
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], RANGE_PWM_CHANNELS[DCO_C], chanLevel3);
+          write_range_pwm(DCO_A, chanLevel);
+          write_range_pwm(DCO_B, chanLevel2);
+          write_range_pwm(DCO_C, chanLevel3);
         }
         BENCH_END(vt_range_pwm);
 
@@ -1158,6 +1130,7 @@ inline void voice_task_float() {
     // --- Track portamento control changes exactly as in original ---
     static uint32_t last_portamento_time = 0;
     static uint8_t  last_portamento_mode = PORTA_MODE_SLEW;
+    static uint8_t lastNote1 = 0, lastNote2 = 0, lastNote3 = 0;
     uint32_t portaTime = portamento_time;
     uint8_t  portaMode = portamento_mode;
     bool portaTimeChanged = (portaTime != last_portamento_time);
@@ -1225,6 +1198,12 @@ inline void voice_task_float() {
         note2 = (vn1 == 0) ? 0 : midi_offset_to_table_index((int)vn1, (int)octave_shift, NOTE_TABLE_LEN);
         note3 = (vn2 == 0) ? 0 : midi_offset_to_table_index((int)vn2, (int)octave_shift, NOTE_TABLE_LEN);
       }
+
+      const bool pitchTargetChanged =
+          note1 != lastNote1 || note2 != lastNote2 || note3 != lastNote3;
+      lastNote1 = note1;
+      lastNote2 = note2;
+      lastNote3 = note3;
   
       BENCH_BEGIN(vt_osc_detune);
       // --- 2.2 OSC2/OSC3 detune (float equivalent of Q24) ---
@@ -1294,7 +1273,7 @@ inline void voice_task_float() {
             (voiceMode == 0) ? note_on_flag_flag[i]
                              : (note_on_flag_flag[0] || note_on_flag_flag[1] || note_on_flag_flag[2]);
         const bool portaDoRetime =
-            (portaTimeChanged || portaModeChanged) && !portaNoteOnEdge;
+            (portaTimeChanged || portaModeChanged || pitchTargetChanged) && !portaNoteOnEdge;
 
         float curA, curB, curC;
         if (portaDoRetime) {
@@ -1400,19 +1379,21 @@ inline void voice_task_float() {
         porta_note_valid[DCO_C] = true;
       }
 
+#if defined(BENCH_PATH_STATS)
       // Exclusive path tag for jitter attribution (note_on > retime > steady > off).
       if (portaTime == 0) {
         BENCH_PATH_INC(porta_off);
       } else if (note_on_flag_flag[i]) {
         BENCH_PATH_INC(porta_note_on);
-      } else if (portaTimeChanged || portaModeChanged) {
+      } else if (portaTimeChanged || portaModeChanged || pitchTargetChanged) {
         BENCH_PATH_INC(porta_retime);
       } else if (portaMode == PORTA_MODE_TIME) {
         BENCH_PATH_INC(porta_steady_time);
       } else {
         BENCH_PATH_INC(porta_steady_slew);
       }
-  
+#endif
+
   #if DCO_DEBUG_REPORT
       dbg_freq_base_Hz = freqA;
   #endif
@@ -1549,32 +1530,21 @@ inline void voice_task_float() {
 
       // Measured apart from the divider math because it only runs with sync on and a
       // non-zero phase offset; averaging the two together hides both.
-      BENCH_BEGIN(vt_phase_align);
-      // Phase align (OSC2 only). Coarse offset becomes a ramp-chunk entry jump at
-      // note-on; only the sub-quarter residual widens the reset pulse.
-      uint8_t phaseQuarters = 0;
-      uint32_t phaseDelay = 0;
-      // Phase-align / oscSync offset is mono-only (para has no coupled A+B sync).
-      if (voiceMode == 0 && oscSync > 1 && phaseAlignOSC2 != 0) {
-        uint16_t deg = (uint16_t)(phaseAlignOSC2 % 360u);
-        phaseQuarters = (uint8_t)(deg / 90u);
-        uint16_t residualDeg = (uint16_t)(deg - (uint16_t)phaseQuarters * 90u);
-        phaseDelay = (uint32_t)(((float)total_cycles2 * (float)residualDeg / 360.0f) + 0.5f);
-      }
-      BENCH_END(vt_phase_align);
-
-      // Exact period split on note-on+EXACT_Y frames, next to hot phase_align (I-cache).
-      // Stash for the note-on block; OSC3 stays on the rounded clk_div path.
+      // Phase align + exact split: note-on only (I-cache next to each other).
+      uint32_t phaseHoldX = 0;
       PioPeriod retrig_p1{};
       PioPeriod retrig_p2{};
-      uint32_t retrig_y2 = 0;
+      if (voiceMode == 0 && note_on_flag_flag[i] && oscSync > 1 && phaseAlignOSC2 != 0) {
+        BENCH_BEGIN(vt_phase_align);
+        phaseHoldX = osc_phase_hold_x(total_cycles2, phaseAlignOSC2);
+        BENCH_END(vt_phase_align);
+      }
       // Mono EXACT_Y A+B stash only. Para splits inside its per-osc note-on loop.
       if (voiceMode == 0 && note_on_flag_flag[i] && oscSync >= 1 &&
           note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
         BENCH_BEGIN(vt_retrig_split);
         retrig_p1 = pio_period_split(total_cycles1, wA, kA);
-        retrig_p2 = pio_period_split(total_cycles2 - phaseDelay, wB, kB);
-        retrig_y2 = retrig_p2.y + phaseDelay;
+        retrig_p2 = pio_period_split(total_cycles2, wB, kB);
         BENCH_END(vt_retrig_split);
       }
 
@@ -1639,23 +1609,19 @@ inline void voice_task_float() {
           // One probe for the whole SM apply path — fine MAIN slices mis-attribute cold XIP.
           BENCH_BEGIN(vt_retrig_sm_apply);
           if (note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
-            // Exact split was computed after phase_align (retrig_p1 / retrig_y2).
+            // Exact split was computed after phase_align (retrig_p1 / retrig_p2).
             // OSC3 is deliberately absent: never retriggered; Y stays at pioPulseLength.
             uint32_t maskAB = (1u << sm1N) | (1u << sm2N);
             pio_set_sm_mask_enabled(pio[0], maskAB, false);
 
             // Frame already did put+pull, so TX is empty — fused noclear load (no FJOIN).
             osc_load_periods_stopped_noclear(DCO_A, retrig_p1.y, retrig_p1.clk_div,
-                                             DCO_B, retrig_y2, retrig_p2.clk_div);
+                                             DCO_B, retrig_p2.y, retrig_p2.clk_div);
 
             pio_sm_exec(pioN_A, sm1N, pio_encode_jmp(osc_restart_target(DCO_A)));
 
-            if (phaseQuarters != 0) {
-              // Enter a later ramp chunk for the coarse phase advance; that path skips
-              // `set pins, 0`, so drive the reset pin low explicitly first.
-              pio_sm_exec(pioN_B, sm2N, pio_encode_set(pio_pins, 0));
-              pio_sm_exec(pioN_B, sm2N,
-                          pio_encode_jmp(osc_ramp_entry_target(DCO_B, phaseQuarters)));
+            if (phaseHoldX != 0) {
+              osc_phase_align_hold_stopped(DCO_B, phaseHoldX);
             } else {
               pio_sm_exec(pioN_B, sm2N, pio_encode_jmp(osc_restart_target(DCO_B)));
             }
@@ -1663,17 +1629,9 @@ inline void voice_task_float() {
             pio_enable_sm_mask_in_sync(pio[0], maskAB);
           } else {
             // SYNC_JMP: phase resync only — no disable / Y load / enable_in_sync.
-            if (phaseQuarters != 0) {
-              // Enter a later ramp chunk for the coarse phase advance; that path skips
-              // `set pins, 0`, so drive the reset pin low explicitly first.
-              pio_sm_exec(pioN_B, sm2N, pio_encode_set(pio_pins, 0));
-              pio_sm_exec(pioN_B, sm2N,
-                          pio_encode_jmp(osc_ramp_entry_target(DCO_B, phaseQuarters)));
-              pio_sm_exec(pioN_A, sm1N, pio_encode_jmp(osc_restart_target(DCO_A)));
-            } else {
-              pio_sm_exec(pioN_A, sm1N, pio_encode_jmp(osc_restart_target(DCO_A)));
-              pio_sm_exec(pioN_B, sm2N, pio_encode_jmp(osc_restart_target(DCO_B)));
-            }
+            // X preload needs a stopped SM, so degree offsets require EXACT_Y.
+            pio_sm_exec(pioN_A, sm1N, pio_encode_jmp(osc_restart_target(DCO_A)));
+            pio_sm_exec(pioN_B, sm2N, pio_encode_jmp(osc_restart_target(DCO_B)));
           }
           BENCH_END(vt_retrig_sm_apply);
         }
@@ -1681,16 +1639,13 @@ inline void voice_task_float() {
         BENCH_BEGIN(vt_retrig_pwm);
         if (char_amp_scale_q15) {
           const int32_t amp_j = character_amp_delta();
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], RANGE_PWM_CHANNELS[DCO_A],
-                             character_clamp_amp((int32_t)chanLevel + amp_j));
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], RANGE_PWM_CHANNELS[DCO_B],
-                             character_clamp_amp((int32_t)chanLevel2 + amp_j));
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], RANGE_PWM_CHANNELS[DCO_C],
-                             character_clamp_amp((int32_t)chanLevel3 + amp_j));
+          write_range_pwm(DCO_A, character_clamp_amp((int32_t)chanLevel + amp_j));
+          write_range_pwm(DCO_B, character_clamp_amp((int32_t)chanLevel2 + amp_j));
+          write_range_pwm(DCO_C, character_clamp_amp((int32_t)chanLevel3 + amp_j));
         } else {
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], RANGE_PWM_CHANNELS[DCO_A], chanLevel);
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], RANGE_PWM_CHANNELS[DCO_B], chanLevel2);
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], RANGE_PWM_CHANNELS[DCO_C], chanLevel3);
+          write_range_pwm(DCO_A, chanLevel);
+          write_range_pwm(DCO_B, chanLevel2);
+          write_range_pwm(DCO_C, chanLevel3);
         }
         BENCH_END(vt_retrig_pwm);
         BENCH_END(vt_note_retrig);
@@ -1717,26 +1672,23 @@ inline void voice_task_float() {
           BENCH_BEGIN(vt_note_retrig);
           const uint8_t osc = (uint8_t)k;
           BENCH_BEGIN(vt_retrig_pwm);
-          pwm_set_chan_level(RANGE_PWM_SLICES[osc], RANGE_PWM_CHANNELS[osc], chanLevels[k]);
+          write_range_pwm(osc, chanLevels[k]);
           BENCH_END(vt_retrig_pwm);
           BENCH_END(vt_note_retrig);
         }
       }
   
-      if (timer99microsFlag) {
+      if (timer99microsFlag2) {
         BENCH_BEGIN(vt_range_pwm);
         if (char_amp_scale_q15) {
           const int32_t amp_j = character_amp_delta();
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], RANGE_PWM_CHANNELS[DCO_A],
-                             character_clamp_amp((int32_t)chanLevel + amp_j));
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], RANGE_PWM_CHANNELS[DCO_B],
-                             character_clamp_amp((int32_t)chanLevel2 + amp_j));
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], RANGE_PWM_CHANNELS[DCO_C],
-                             character_clamp_amp((int32_t)chanLevel3 + amp_j));
+          write_range_pwm(DCO_A, character_clamp_amp((int32_t)chanLevel + amp_j));
+          write_range_pwm(DCO_B, character_clamp_amp((int32_t)chanLevel2 + amp_j));
+          write_range_pwm(DCO_C, character_clamp_amp((int32_t)chanLevel3 + amp_j));
         } else {
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_A], RANGE_PWM_CHANNELS[DCO_A], chanLevel);
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_B], RANGE_PWM_CHANNELS[DCO_B], chanLevel2);
-          pwm_set_chan_level(RANGE_PWM_SLICES[DCO_C], RANGE_PWM_CHANNELS[DCO_C], chanLevel3);
+          write_range_pwm(DCO_A, chanLevel);
+          write_range_pwm(DCO_B, chanLevel2);
+          write_range_pwm(DCO_C, chanLevel3);
         }
         BENCH_END(vt_range_pwm);
 
@@ -1941,23 +1893,31 @@ uint16_t get_chan_level_lookup_fast(int32_t x, uint8_t voiceN) {
   } else {
     int cand = window;
     if (cand < 0 || cand > maxWindow) cand = 0;
+#if defined(BENCH_PATH_STATS)
     uint32_t steps = 0;
+#endif
     if (x >= freqRow[cand + 2]) {
       while (cand < maxWindow && x >= freqRow[cand + 2]) {
         ++cand;
+#if defined(BENCH_PATH_STATS)
         ++steps;
+#endif
       }
     } else if (x < freqRow[cand]) {
       while (cand > 0 && x < freqRow[cand]) {
         --cand;
+#if defined(BENCH_PATH_STATS)
         ++steps;
+#endif
       }
     }
     if (cand >= 0 && cand <= maxWindow &&
         x >= freqRow[cand] && x < freqRow[cand + 2]) {
       window = cand;
       BENCH_PATH_INC(amp_miss_walk);
+#if defined(BENCH_PATH_STATS)
       bench_path_amp_walk_steps(steps);
+#endif
     } else {
       window = 0;
       for (int i = 0; i <= maxWindow; ++i) {
@@ -2037,23 +1997,31 @@ uint16_t get_chan_level_float_quad(float freqHz, uint8_t voiceN) {
   } else {
     int cand = window;
     if (cand < 0 || cand > maxWindow) cand = 0;
+#if defined(BENCH_PATH_STATS)
     uint32_t steps = 0;
+#endif
     if (freqHz >= hzRow[cand + 2]) {
       while (cand < maxWindow && freqHz >= hzRow[cand + 2]) {
         ++cand;
+#if defined(BENCH_PATH_STATS)
         ++steps;
+#endif
       }
     } else if (freqHz < hzRow[cand]) {
       while (cand > 0 && freqHz < hzRow[cand]) {
         --cand;
+#if defined(BENCH_PATH_STATS)
         ++steps;
+#endif
       }
     }
     if (cand >= 0 && cand <= maxWindow &&
         freqHz >= hzRow[cand] && freqHz < hzRow[cand + 2]) {
       window = cand;
       BENCH_PATH_INC(amp_miss_walk);
+#if defined(BENCH_PATH_STATS)
       bench_path_amp_walk_steps(steps);
+#endif
     } else {
       window = 0;
       for (int i = 0; i <= maxWindow; ++i) {
@@ -2162,7 +2130,7 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
 
         pio_sm_put(pioN, sm1N, silence_clk_div1);
         pio_sm_exec(pioN, sm1N, pio_encode_pull(false, false));
-        pwm_set_chan_level(RANGE_PWM_SLICES[i], RANGE_PWM_CHANNELS[i], 0);
+        write_range_pwm((uint8_t)i, 0);
       } else {
 
         uint32_t clk_div1 = autotune_total_cycles
@@ -2174,7 +2142,7 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
 
         pio_sm_exec(pioN, sm1N, pio_encode_pull(false, false));
 
-        pwm_set_chan_level(RANGE_PWM_SLICES[i], RANGE_PWM_CHANNELS[i], calibrationValue);
+        write_range_pwm((uint8_t)i, calibrationValue);
 
         pwm_set_chan_level(PW_PWM_SLICES[0], pwm_gpio_to_channel(PW_PINS[0]), 0);
 
@@ -2197,20 +2165,20 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
 
     switch (taskAutotuneVoiceMode) {
       case 0:
-        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], RANGE_PWM_CHANNELS[currentDCO], calibrationValue);
+        write_range_pwm(currentDCO, calibrationValue);
         break;
       case 1:
-        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], RANGE_PWM_CHANNELS[currentDCO], calibrationValue);
+        write_range_pwm(currentDCO, calibrationValue);
         pio_sm_exec(pioN, sm1N, pio_encode_jmp(osc_restart_target(currentDCO)));
         break;
       case 2:
-        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], RANGE_PWM_CHANNELS[currentDCO], chanLevel);
+        write_range_pwm(currentDCO, chanLevel);
         break;
       case 3:
         chanLevel = get_chan_level_for_engine(freq, currentDCO);
-        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], RANGE_PWM_CHANNELS[currentDCO], chanLevel);
+        write_range_pwm(currentDCO, chanLevel);
       case 4:
-        pwm_set_chan_level(RANGE_PWM_SLICES[currentDCO], RANGE_PWM_CHANNELS[currentDCO], calibrationValue);
+        write_range_pwm(currentDCO, calibrationValue);
         break;
     }
 
@@ -2290,17 +2258,25 @@ inline int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex) {
     int cand = (int)(((int64_t)(xQ16 - kPitchX0_Q16) * (int64_t)kPitchInvDx) >> 16);
     if (cand < 0) cand = 0;
     else if (cand > lastSeg) cand = lastSeg;
+#if defined(BENCH_PATH_STATS)
     uint32_t steps = 0;
+#endif
     if (cand < lastSeg && xQ16 >= xMultiplierTable[cand + 1]) {
       ++cand;
+#if defined(BENCH_PATH_STATS)
       steps = 1;
+#endif
     } else if (cand > 0 && xQ16 < xMultiplierTable[cand]) {
       --cand;
+#if defined(BENCH_PATH_STATS)
       steps = 1;
+#endif
     }
     low = cand;
     BENCH_PATH_INC(ratio_miss_direct);
+#if defined(BENCH_PATH_STATS)
     bench_path_walk_steps(steps);
+#endif
     interpSegCache[dcoIndex] = (int16_t)low;
   }
   const int32_t x0 = xMultiplierTable[low];
@@ -2330,17 +2306,23 @@ inline float interpolateRatioFloat_cached(float x, int dcoIndex) {
       xMultiplierTableF[low] <= x && x < xMultiplierTableF[low + 1]) {
     BENCH_PATH_INC(ratio_hit);
   } else {
+#if defined(BENCH_PATH_STATS)
     uint32_t steps = 0;
+#endif
     if (low >= 0 && low < multiplierTableSize - 1) {
       if (x >= xMultiplierTableF[low + 1]) {
         while (low < multiplierTableSize - 2 && x >= xMultiplierTableF[low + 1]) {
           ++low;
+#if defined(BENCH_PATH_STATS)
           steps++;
+#endif
         }
       } else if (x < xMultiplierTableF[low]) {
         while (low > 0 && x < xMultiplierTableF[low]) {
           --low;
+#if defined(BENCH_PATH_STATS)
           steps++;
+#endif
         }
       }
     }
@@ -2364,7 +2346,9 @@ inline float interpolateRatioFloat_cached(float x, int dcoIndex) {
       BENCH_PATH_INC(ratio_miss_bsearch);
     } else {
       BENCH_PATH_INC(ratio_miss_direct);
+#if defined(BENCH_PATH_STATS)
       bench_path_walk_steps(steps);
+#endif
     }
     interpSegCache[dcoIndex] = (int16_t)low;
   }
@@ -2401,17 +2385,25 @@ float interpolateRatioFloat_cached_fast(float x, int dcoIndex) {
     if (cand < 0) cand = 0;
     else if (cand > lastSeg) cand = lastSeg;
     // Float rounding / live ballast: keep both ±1 compares even if steps stay 0.
+#if defined(BENCH_PATH_STATS)
     uint32_t steps = 0;
+#endif
     if (cand < lastSeg && x >= xMultiplierTableF[cand + 1]) {
       ++cand;
+#if defined(BENCH_PATH_STATS)
       steps = 1;
+#endif
     } else if (cand > 0 && x < xMultiplierTableF[cand]) {
       --cand;
+#if defined(BENCH_PATH_STATS)
       steps = 1;
+#endif
     }
     low = cand;
     BENCH_PATH_INC(ratio_miss_direct);
+#if defined(BENCH_PATH_STATS)
     bench_path_walk_steps(steps);
+#endif
     interpSegCache[dcoIndex] = (int16_t)low;
   }
 

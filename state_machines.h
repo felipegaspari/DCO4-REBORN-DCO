@@ -65,6 +65,29 @@ static inline void osc_load_periods_stopped_noclear(uint8_t osc_a, uint32_t y_a,
   osc_last_clk_div[osc_b] = clk_div_b;
 }
 
+// Note-on phase align after osc_load_periods_stopped_noclear (OSR holds clk_div, Y is
+// the real pulse). Preload X with a one-shot countdown, restore clk_div, release reset,
+// jmp loop_final. First flyback is delayed; later cycles use Y unchanged.
+// SM must already be stopped. Old 8-chunk recipe: jmp 10; out x.
+static inline void osc_phase_align_hold_stopped(uint8_t osc, uint32_t x_count) {
+  const uint sm = VOICE_TO_SM[osc];
+  pio_hw_t *const hw = pio0_hw;
+  const uint32_t clk_div = osc_last_clk_div[osc];
+
+  const uint pull_instr = pio_encode_pull(false, false);
+  const uint out_x_instr = pio_encode_out(pio_x, 31);
+  const uint set0_instr = pio_encode_set(pio_pins, 0);
+  const uint jmp_instr = pio_encode_jmp(osc_phase_hold_target(osc));
+
+  hw->txf[sm] = x_count;
+  hw->sm[sm].instr = pull_instr;
+  hw->sm[sm].instr = out_x_instr;
+  hw->txf[sm] = clk_div;
+  hw->sm[sm].instr = pull_instr;
+  hw->sm[sm].instr = set0_instr;
+  hw->sm[sm].instr = jmp_instr;
+}
+
 // Boot / topology paths: disable does not empty TX — clear before Y/OSR reload.
 static inline void osc_load_period_stopped(uint8_t osc, uint32_t y, uint32_t clk_div) {
   const uint sm = VOICE_TO_SM[osc];

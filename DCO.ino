@@ -104,9 +104,12 @@
 // codegen; for measuring that distortion, not for leaving on.
 // RUNNING_AVERAGE_PERIOD: only loop/loop1 BENCH_PERIOD; stage probes compile out.
 // Overrides FINE. Needs RUNNING_AVERAGE.
+// BENCH_PATH_STATS: porta path-tag if/else + walk-step sums in voices.ino.
+// Needs RUNNING_AVERAGE; path bumps still no-op under PERIOD. Leave off for shipping.
 #define RUNNING_AVERAGE
 // #define RUNNING_AVERAGE_FINE
  #define RUNNING_AVERAGE_PERIOD
+// #define BENCH_PATH_STATS
 
 // Float vs double clkdiv comparison in voice_task_float; needs RUNNING_AVERAGE.
 // #define CLKDIV_BENCHMARK
@@ -124,6 +127,10 @@
 // production: stray terminal bytes are read as frame headers while enabled.
 #define ENABLE_USB_CONTROL
 
+// All RANGE pins via dithered PIO PWM (wrap 4666, 3-frame → ~14000). Comment out
+// to restore hardware PWM slices on RANGE_PINS[].
+#define RANGE0_PIO_DITHER_TEST
+
 // Phase 3 CV hardware (provisional pins in globals.h / docs/PINOUT.md).
 // Leave commented on benches without filter/VCA/mux/DAC attached.
 // #define ENABLE_CV_OUTS
@@ -140,7 +147,8 @@
 // working. Leave commented for active-high / direct FET discharge. See PIO_OSCILLATORS.md.
 #define ENABLE_PIO_RESET_INVERT
 
-// Note-on sync retrigger (oscSync >= 1): 0 = EXACT_Y, 1 = SYNC_JMP. Runtime: cmds 26/27.
+// Note-on sync retrigger (oscSync >= 1): 0 = EXACT_Y (Y load + phase hold), 1 = SYNC_JMP
+// (restart jmp only; degree offsets need EXACT_Y). Runtime: cmds 26/27.
 #ifndef NOTE_RETRIG_MODE_DEFAULT
 #define NOTE_RETRIG_MODE_DEFAULT 0
 #endif
@@ -179,7 +187,7 @@
 #include "state_machines.h"
 #include "PWM.h"
 #include "utils.h"
-#include "Timer_millis.h"
+#include "Timer_micros.h"
 
 #include "LFO.h"
 #include "adsr.h"
@@ -200,6 +208,7 @@ void setup() {
   sys_clock_hz_refresh();
   // EEPROM.begin(512);
   bench_init_core();  // SysTick is per core; core 1 arms its own in setup1()
+  init_micros_timers();
   init_usb();
   init_serial();
   init_midi();
@@ -232,6 +241,7 @@ void setup1() {
   sys_clock_hz_refresh();
 
   bench_init_core();
+  init_micros_timers();
 
   init_PID();
 
@@ -250,10 +260,13 @@ void setup1() {
 
   calibrationFlag = false;
   manualCalibrationFlag = false;
-  firstTuneFlag = true;
+  firstTuneFlag = false;
 
   init_pwm();
   init_pio();
+#ifdef RANGE0_PIO_DITHER_TEST
+  init_range_pio_dither();
+#endif
   dcoNoisePioBegin(pio[NOISE_PIO], NOISE_SM);
   init_voices();
 
@@ -266,7 +279,12 @@ void setup1() {
 // Core 0 forever loop: MIDI read, Serial2 parser; ~50 µs LFO1 + LFO2 + drift.
 void loop() {
   BENCH_PERIOD(loop0_period);
-  loop0_micros = micros();
+
+  {
+    BENCH_BEGIN(loop0_microsTimer);
+    microsTimer();
+    BENCH_END(loop0_microsTimer);
+  }
 
   {
     BENCH_BEGIN(loop0_midi);
@@ -290,26 +308,26 @@ void loop() {
     BENCH_END(loop0_serial);
   }
 
-  if ((loop0_micros - loop0_microsLast) > 50) {
+  if (timer50microsFlag == 1) {
     {
       BENCH_BEGIN(loop0_lfo1);
       LFO1();
       BENCH_END(loop0_lfo1);
     }
 
+
     {
       BENCH_BEGIN(loop0_lfo2);
       LFO2();
       BENCH_END(loop0_lfo2);
     }
-
+  }
+  if (timer51microsFlag == 1) {
     {
       BENCH_BEGIN(loop0_drift);
       DRIFT_LFOs();
       BENCH_END(loop0_drift);
     }
-
-    loop0_microsLast = loop0_micros;
   }
 
   // Snapshot core 0's probes and print once core 1 has handed its own over. All profiler
@@ -322,9 +340,9 @@ void loop1() {
   BENCH_PERIOD(loop1_period);
 
   {
-    BENCH_BEGIN(loop1_millis);
-    millisTimer();
-    BENCH_END(loop1_millis);
+    BENCH_BEGIN(loop1_microsTimer);
+    microsTimer2();
+    BENCH_END(loop1_microsTimer);
   }
 
   {
@@ -363,9 +381,7 @@ void loop1() {
 
     pio_defer_service();
 
-    loop1_micros = micros();
-
-    if ((loop1_micros - loop1_microsLast) > 100) {
+    if (timer99microsFlag2 == 1) {
       {
         BENCH_BEGIN(loop1_adsr);
         ADSR_update();
@@ -376,7 +392,6 @@ void loop1() {
         update_CV_outs();
         BENCH_END(loop1_cv_outs);
       }
-      loop1_microsLast = loop1_micros;
     }
 
     {

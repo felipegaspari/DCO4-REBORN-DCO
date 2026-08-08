@@ -37,7 +37,7 @@
 #include "utils.h"
 #include "noise.h"
 #include "character_jitter.h"
-#include "Timer_millis.h"
+#include "Timer_micros.h"
 
 #include "LFO.h"
 #include "adsr.h"

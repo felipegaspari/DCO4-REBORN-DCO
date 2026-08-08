@@ -10,6 +10,7 @@
 // barrier the compiler cannot move work across. RUNNING_AVERAGE_PERIOD keeps only
 // BENCH_PERIOD (loop / loop1); all BENCH_BEGIN/END stage probes and path counters compile
 // out — use that for a true loop baseline without intermediate probe tax. PERIOD overrides FINE.
+// BENCH_PATH_STATS (DCO.ino): porta path-tag trees and walk-step sums in voices.ino.
 //
 // Time source: SysTick, read as a free-running 24-bit down-counter clocked from clk_sys.
 // RP2040's Cortex-M0+ has no DWT cycle counter, so SysTick is the only single-cycle source
@@ -73,6 +74,7 @@ static inline const char *bench_pitch_interp_mode_name() {
 #define BENCH_PROBES(X)                                                                       \
   /* --- Core 0: loop() --- */                                                                \
   X(loop0_period,      0, BENCH_US,  BENCH_T_MAIN, BENCH_NONE,          "loop period")         \
+  X(loop0_microsTimer, 0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "microsTimer")         \
   X(loop0_midi,        0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "MIDI read")           \
   X(loop0_serial,      0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "serial panel/USB")    \
   X(loop0_lfo1,        0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "LFO1")                \
@@ -80,7 +82,7 @@ static inline const char *bench_pitch_interp_mode_name() {
   X(loop0_drift,       0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "drift LFOs")          \
   /* --- Core 1: loop1() --- */                                                               \
   X(loop1_period,      1, BENCH_US,  BENCH_T_MAIN, BENCH_NONE,          "loop1 period")        \
-  X(loop1_millis,      1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "millisTimer")         \
+  X(loop1_microsTimer, 1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "microsTimer2")        \
   X(loop1_noise,       1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "noise_gens")          \
   X(loop1_noise_refill,1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_noise,   "noise refill")        \
   X(loop1_adsr,        1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "ADSR_update")         \

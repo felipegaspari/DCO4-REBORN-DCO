@@ -1,8 +1,109 @@
+#ifdef RANGE0_PIO_DITHER_TEST
+#include "hardware/dma.h"
+
+// osc0/1: pio1 SM2/SM3 (SM0=subosc, SM1=noise). osc2: pio0 SM3 (SM0–2=voices).
+static const uint8_t RANGE_PIO_BLOCK[NUM_OSCILLATORS] = { 1, 1, 0 };
+static const uint8_t RANGE_PIO_SM[NUM_OSCILLATORS] = { 2, 3, 3 };
+
+static uint32_t range_pio_duty[NUM_OSCILLATORS][RANGE_PIO_FRAMES];
+static uint32_t range_dma_src_addr[NUM_OSCILLATORS];
+static int range_dma_data[NUM_OSCILLATORS] = { -1, -1, -1 };
+static int range_dma_ctrl[NUM_OSCILLATORS] = { -1, -1, -1 };
+static bool range_pio_ready = false;
+
+void range_pio_set_level(uint8_t osc, uint16_t level) {
+  if (osc >= NUM_OSCILLATORS) {
+    return;
+  }
+  if (level > DIV_COUNTER) {
+    level = DIV_COUNTER;
+  }
+  const uint32_t t =
+      ((uint32_t)level * RANGE_PIO_LEVELS + (DIV_COUNTER / 2u)) / DIV_COUNTER;
+  const uint16_t base = (uint16_t)(t / RANGE_PIO_FRAMES);
+  const uint16_t rem = (uint16_t)(t % RANGE_PIO_FRAMES);
+  for (uint32_t i = 0; i < RANGE_PIO_FRAMES; i++) {
+    const uint16_t d = (uint16_t)(base + (i < rem ? 1u : 0u));
+    range_pio_duty[osc][i] = ((uint32_t)(RANGE_PIO_PERIOD - d) << 16) | d;
+  }
+}
+
+static void range_pio_enable_pin(uint8_t osc) {
+  PIO p = pio[RANGE_PIO_BLOCK[osc]];
+  const uint sm = RANGE_PIO_SM[osc];
+  pio_gpio_init(p, RANGE_PINS[osc]);
+  pio_sm_set_consecutive_pindirs(p, sm, RANGE_PINS[osc], 1, true);
+  pio_sm_set_enabled(p, sm, true);
+}
+
+void init_range_pio_dither() {
+  if (range_pio_ready) {
+    for (uint8_t osc = 0; osc < NUM_OSCILLATORS; osc++) {
+      range_pio_enable_pin(osc);
+    }
+    return;
+  }
+
+  const uint offset1 = pio_add_program(pio[1], &range_pwm_dither_program);
+  const uint offset0 = pio_add_program(pio[0], &range_pwm_dither_program);
+
+  for (uint8_t osc = 0; osc < NUM_OSCILLATORS; osc++) {
+    PIO p = pio[RANGE_PIO_BLOCK[osc]];
+    const uint sm = RANGE_PIO_SM[osc];
+    const uint offset = (RANGE_PIO_BLOCK[osc] == 1) ? offset1 : offset0;
+    const uint pin = RANGE_PINS[osc];
+
+    pio_sm_claim(p, sm);
+    pio_gpio_init(p, pin);
+    pio_sm_set_consecutive_pindirs(p, sm, pin, 1, true);
+
+    pio_sm_config c = range_pwm_dither_program_get_default_config(offset);
+    sm_config_set_sideset_pins(&c, pin);
+    pio_sm_init(p, sm, offset, &c);
+
+    range_pio_set_level(osc, 0);
+    for (uint32_t i = 0; i < RANGE_PIO_FRAMES; i++) {
+      pio_sm_put(p, sm, range_pio_duty[osc][i]);
+    }
+
+    range_dma_src_addr[osc] = (uint32_t)(uintptr_t)range_pio_duty[osc];
+    range_dma_data[osc] = dma_claim_unused_channel(true);
+    range_dma_ctrl[osc] = dma_claim_unused_channel(true);
+
+    dma_channel_config data_c = dma_channel_get_default_config(range_dma_data[osc]);
+    channel_config_set_transfer_data_size(&data_c, DMA_SIZE_32);
+    channel_config_set_read_increment(&data_c, true);
+    channel_config_set_write_increment(&data_c, false);
+    channel_config_set_dreq(&data_c, pio_get_dreq(p, sm, true));
+    channel_config_set_chain_to(&data_c, (uint)range_dma_ctrl[osc]);
+    dma_channel_configure(range_dma_data[osc], &data_c, &p->txf[sm], range_pio_duty[osc],
+                          RANGE_PIO_FRAMES, false);
+
+    dma_channel_config ctrl_c = dma_channel_get_default_config(range_dma_ctrl[osc]);
+    channel_config_set_transfer_data_size(&ctrl_c, DMA_SIZE_32);
+    channel_config_set_read_increment(&ctrl_c, false);
+    channel_config_set_write_increment(&ctrl_c, false);
+    dma_channel_configure(range_dma_ctrl[osc], &ctrl_c,
+                          &dma_hw->ch[range_dma_data[osc]].al3_read_addr_trig,
+                          &range_dma_src_addr[osc], 1, false);
+
+    dma_channel_start(range_dma_ctrl[osc]);
+    pio_sm_set_enabled(p, sm, true);
+  }
+  range_pio_ready = true;
+}
+#endif  // RANGE0_PIO_DITHER_TEST
+
 // Configure range PWM (per DCO, DIV_COUNTER) and PW PWM (per osc, DIV_COUNTER_PW). Called from setup1().
 void init_pwm()
 {
   for (int i = 0; i < NUM_OSCILLATORS; i++)
   {
+#ifdef RANGE0_PIO_DITHER_TEST
+    RANGE_PWM_SLICES[i] = 0xFF;
+    RANGE_PWM_CHANNELS[i] = 0;
+    continue;
+#endif
     gpio_set_function(RANGE_PINS[i], GPIO_FUNC_PWM);
     RANGE_PWM_SLICES[i] = pwm_gpio_to_slice_num(RANGE_PINS[i]);
     RANGE_PWM_CHANNELS[i] = pwm_gpio_to_channel(RANGE_PINS[i]);
@@ -79,6 +180,7 @@ void init_cv_pwm() {
 // True if this slice already owns a RANGE or PW wrap that must not become 4095.
 static bool level_pwm_slice_shares_voice_wrap(uint8_t slice) {
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
+    if (RANGE_PWM_SLICES[i] == 0xFF) continue;
     if (slice == RANGE_PWM_SLICES[i]) return true;
   }
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
@@ -116,7 +218,9 @@ void init_level_pwm() {
     level_wrap_for_slice[s] = 0;
   }
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
-    level_wrap_for_slice[RANGE_PWM_SLICES[i] & 7] = DIV_COUNTER;
+    if (RANGE_PWM_SLICES[i] != 0xFF) {
+      level_wrap_for_slice[RANGE_PWM_SLICES[i] & 7] = DIV_COUNTER;
+    }
     if (PW_PWM_SLICES[i] != 0xFF) {
       level_wrap_for_slice[PW_PWM_SLICES[i] & 7] = DIV_COUNTER_PW;
     }

@@ -10,6 +10,13 @@ static constexpr int32_t CV_U12_SCALE = 4096;         // 1<<12 — divisors / Q1
 static constexpr int32_t CV_PANEL_DEPTH_FULL = 512;
 static constexpr int32_t CV_LFO_Q15_PEAK_DIV = CV_PANEL_DEPTH_FULL * 2;  // 1024
 
+// Resonance → VCA compensation (1 ms path in update_CV_outs).
+static constexpr int CV_VCA_COMP_DEFAULT = 100;
+static constexpr int CV_RESO_COMP_MAX_RESONANCE = 2300;
+static constexpr int CV_RESO_COMP_MIN_RESONANCE = 50;
+static constexpr int CV_RESO_COMP_MAX_VCA = 315;
+static constexpr int CV_RESO_COMP_SLOPE_Q8 = 36;  // ≈ 0.14 via (span * 36) >> 8
+
 // Always-on: divide by CV_U12_SCALE via >>12 (not /4095).
 static inline uint16_t lerp_0_4095(uint16_t value, uint16_t y0, uint16_t y1) {
   return (uint16_t)((int32_t)y0 + ((((int32_t)y1 - (int32_t)y0) * (int32_t)value) >> 12));
@@ -78,21 +85,17 @@ void cv_update_mod_scales() {
 
 // Hot path (~10 kHz with ADSR): EnvVCA/EnvVCF + LFO + keytrack/vel → soft CV levels.
 void update_CV_outs() {
-  static constexpr int DEFAULT_VCA_COMPENSATION = 100;
-
-  if (timer1msFlag) {
+  if (timer1msFlag2) {
     if (RESONANCEAmpCompensation) {
-      static constexpr int MAX_RESONANCE = 2300;
-      static constexpr int MIN_RESONANCE = 50;
-      static constexpr int MAX_VCA_COMPENSATION = 315;
-      // ≈ * 0.14f via (span * 36) >> 8 — always-on integer (both float/fixed CV builds).
-      const int resonance_in = min((int)RESONANCE, MAX_RESONANCE);
+      // Always-on integer (both float/fixed CV builds).
+      const int resonance_in = min((int)RESONANCE, CV_RESO_COMP_MAX_RESONANCE);
       VCAResonanceCompensation =
-        (resonance_in >= MIN_RESONANCE)
-          ? (int16_t)(MAX_VCA_COMPENSATION - (((resonance_in - MIN_RESONANCE) * 36) >> 8))
-          : (int16_t)MAX_VCA_COMPENSATION;
+        (resonance_in >= CV_RESO_COMP_MIN_RESONANCE)
+          ? (int16_t)(CV_RESO_COMP_MAX_VCA -
+                      (((resonance_in - CV_RESO_COMP_MIN_RESONANCE) * CV_RESO_COMP_SLOPE_Q8) >> 8))
+          : (int16_t)CV_RESO_COMP_MAX_VCA;
     } else {
-      VCAResonanceCompensation = DEFAULT_VCA_COMPENSATION;
+      VCAResonanceCompensation = CV_VCA_COMP_DEFAULT;
     }
 
 #ifdef USE_FLOAT_CV_OUTS

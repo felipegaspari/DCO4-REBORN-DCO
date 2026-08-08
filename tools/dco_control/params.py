@@ -135,7 +135,7 @@ class Block:
 #          note-on and their phase relationship is whatever it happens to be
 #   1      OSC1 and OSC2 are stopped, reloaded and restarted together at note-on, with no
 #          phase offset
-#   2..8   the same restart, plus a fixed OSC2 offset of 45 to 315 degrees
+#   2..8   the same restart, plus OSC2 first-flyback offset (45..315 deg); EXACT_Y
 #   >8     the same restart, with the offset in degrees being value * 2
 #
 # Presented as one combo so the encoding never has to be worked out by hand.
@@ -184,8 +184,8 @@ PARAMS: list[Param] = [
     Param(17, "Osc sync / phase align OSC2", GROUP_OSC, "combo", default=0,
           choices=_phase_choices(),
           note="Off leaves the oscillators running through note-on; every other setting "
-               "restarts OSC1 and OSC2 together there, the degree entries adding an OSC2 "
-               "offset on top. Changing this retriggers all notes.",
+               "restarts OSC1 and OSC2 together there, the degree entries delaying OSC2's "
+               "first flyback (EXACT_Y). Changing this retriggers all notes.",
           cc=23),
     Param(26, "Voice mode", GROUP_OSC, "combo", default=0,
           choices=(("0 - mono", 0), ("1 - poly", 1), ("2 - stack", 2)), cc=69),

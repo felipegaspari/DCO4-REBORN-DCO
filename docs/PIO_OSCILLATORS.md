@@ -141,12 +141,15 @@ flowchart LR
 
 | Block | Contents | Instructions used |
 |-------|----------|-------------------|
-| **PIO0** | `frequency_sync_4_jumps` + one of `frequency_sync_poll{,_2,_3}` | 25–27 of 32 |
-| **PIO1** | `noise_lfsr` (origin 0, SM1) + `subosc_div2` + `subosc_div4` (SM0) | 24 of 32 |
+| **PIO0** | `frequency_sync_4_jumps` + one of `frequency_sync_poll{,_2,_3}` (+ `range_pwm_dither` when `RANGE0_PIO_DITHER_TEST`) | 25–27 of 32; **29–31** with RANGE dither |
+| **PIO1** | `noise_lfsr` (origin 0, SM1) + `subosc_div2` + `subosc_div4` (SM0) (+ `range_pwm_dither` when flag on) | 24 of 32; **28** with RANGE dither |
 | **PIO2** | reserved for `ENABLE_PIO_MIDI` | 0 |
 
 Only one soft-sync poll image is resident at a time. Changing `softSyncChunks` among 1/2/3
 reloads that image via `pio_remove_program` / `pio_add_program` (section 7.4).
+
+With `RANGE0_PIO_DITHER_TEST`, the same 4-inst RANGE program is loaded on **pio0 and pio1**.
+SMs: pio1 SM2/SM3 (RANGE osc0/1), pio0 SM3 (RANGE osc2). Voice SMs stay pio0 SM0–2; subosc/noise stay pio1 SM0/SM1.
 
 ### 3.3 Pins
 
@@ -156,6 +159,11 @@ reloads that image via `pio_remove_program` / `pio_add_program` (section 7.4).
 | OSC2 RESET | 27 | PIO0 out |
 | OSC3 RESET | 19 | PIO0 out |
 | Sub-osc square | 8 | PIO1 out (`SUBOSC_PIN`) |
+| OSC1 RANGE | 17 | PIO1 SM2 out when `RANGE0_PIO_DITHER_TEST`; else PWM slice |
+| OSC2 RANGE | 16 | PIO1 SM3 out when flag on; else PWM slice |
+| OSC3 RANGE | 14 | PIO0 SM3 out when flag on; else PWM slice |
+
+Live `RANGE_PINS[]` in [`globals.h`](../globals.h) is `{17, 16, 14}`. Same GPIOs in both PWM modes.
 
 ---
 
@@ -170,6 +178,7 @@ reloads that image via `pio_remove_program` / `pio_add_program` (section 7.4).
 | `noise_lfsr` | 12 | **yes**, PIO1 @ origin 0, SM1 | — | — | White LFSR → RX FIFO + optional GP2 bit out |
 | `subosc_div2` | 4 | **yes**, PIO1 | — | — | Divide OSC1 by 2 |
 | `subosc_div4` | 8 | **yes**, PIO1 | — | — | Divide OSC1 by 4 |
+| `range_pwm_dither` | 4 | no — `init_range_pio_dither()` after `init_pio()` | — | 1 clk/count | RANGE amp PWM (3-frame dither, wrap 4666) |
 | `frequency` | 18 | no | — | — | Legacy 8-chunk oscillator |
 | `frequency_sync` | 20 | no | — | — | Legacy sync experiment |
 | `frequency_pulse1` | 5 | no | — | — | Legacy PW generator |
@@ -240,14 +249,53 @@ gains a poll:
 
 N=2 / N=3 (`frequency_sync_poll_2` / `_3`) convert successive trailing chunks the same way and
 share one `do_sync` tail. Lengths are 13 / 14 / 15 instructions; restart addresses are 11 / 12 / 13.
-Phase-align ramp entries for N=2 are `{0,4,6,9}` and for N=3 `{0,4,7,10}` (see `PIO_RAMP_ENTRY_SYNC_*`
-in [`globals.h`](../globals.h)).
+Phase-align hold targets (last `jmp x--` before `mov x, y`) are free **9**, poll-1 **10**,
+poll-2 **11**, poll-3 **12** (`PIO_PHASE_HOLD_ADDR_*` in [`globals.h`](../globals.h)).
 
 Both the sync branch and the ordinary count-expired fall-through land on `do_sync`. Each polled
 chunk costs **2 cycles per iteration**, so weight = `4 + N`.
 
 `sm_config_set_jmp_pin` points the slave at the master's reset GPIO. PIO input sampling reads the
 pad regardless of function select, so a slave can read a pin another state machine drives.
+
+### 4.4 RANGE dither PWM (`range_pwm_dither`)
+
+Hand-encoded in [`range_pwm_dither.pio.h`](../range_pwm_dither.pio.h) (not `init_pio()`). Intent is
+commented in [`pico-dco.pio`](../pico-dco.pio). Flag: `RANGE0_PIO_DITHER_TEST` in [`DCO.ino`](../DCO.ino)
+— **on** = all three `RANGE_PINS[]` use this program; comment out = hardware slice PWM
+(`wrap = DIV_COUNTER` = 14000). Voice/amp-comp still write **0..14000** via `write_range_pwm()`.
+
+1-cycle-per-count sideset PWM (beats slice wrap-14000 ripple: ~54 kHz carrier @ 250 MHz vs ~17.9 kHz):
+
+```
+.side_set 1 opt
+.wrap_target
+    out x, 16              ; high counts (autopull 32)
+    out y, 16              ; low counts
+high:
+    jmp x-- high  side 1
+low:
+    jmp y-- low   side 0
+.wrap
+```
+
+DMA word = `(low << 16) | high`. Wrap **4666**; 3 frames → **13998** effective levels
+(`t = level * 13998 / 14000`, then `base = t/3`, `rem = t%3`, frame *i* gets `base + (i < rem)`).
+Two counts in 14000 (~0.014%) vs analog noise — ignore. Waveform is PIO+DMA (no CPU); each amp
+update is `range_pio_set_level` (~sub-µs).
+
+RP2040 DMA ring only wraps at **2^n bytes**, so 3 words cannot use ring mode. Each osc uses a
+**data + control** DMA pair: data transfers 3 words to the SM TX FIFO then chains to control,
+which rewrites `al3_read_addr_trig` and restarts. Six DMA channels total.
+
+| Osc | Pin | PIO |
+|-----|-----|-----|
+| 0 | GP17 | pio1 SM2 |
+| 1 | GP16 | pio1 SM3 |
+| 2 | GP14 | pio0 SM3 |
+
+Autotune must not steal RANGE pins as GPIO when the flag is on; park full-on with
+`range_pio_set_level(osc, DIV_COUNTER)`.
 
 ---
 
@@ -358,11 +406,13 @@ seconds.
 ```mermaid
 flowchart TD
   A["Note-on for OSC1 and OSC2"] --> B["pio_set_sm_mask_enabled(mask, false)"]
-  B --> C["osc_load_period_stopped: put Y, pull, out y 31"]
-  C --> D["same call: put clk_div, pull (OSR valid again)"]
-  D --> E["exec set pins 0, only if entering a later ramp chunk"]
-  E --> F["exec jmp to restart or ramp-entry address"]
-  F --> G["pio_enable_sm_mask_in_sync(mask)"]
+  B --> C["osc_load_periods_stopped_noclear: Y + clk_div"]
+  C --> D["OSC1 jmp restart"]
+  D --> E{"deg != 0?"}
+  E -->|no| F["OSC2 jmp restart"]
+  E -->|yes| G["osc_phase_align_hold_stopped: out x, restore clk_div, set pins 0, jmp loop_final"]
+  F --> H["pio_enable_sm_mask_in_sync(mask)"]
+  G --> H
 ```
 
 Stopping the SM closes the window entirely, and note-on is the natural place to do it: the
@@ -464,8 +514,9 @@ resident unused.
 
 ## 8. Phase align
 
-`phaseAlignOSC2` (degrees, via `PARAM_OSC_SYNC_MODE`) offsets OSC2's phase relative to OSC1 at
-note-on. It applies only when `oscSync > 1`.
+`phaseAlignOSC2` (degrees, via `PARAM_OSC_SYNC_MODE`) offsets OSC2's **first flyback** relative
+to OSC1 at note-on. It applies only when `oscSync > 1`. Heard DCO "phase" is that reset edge,
+not the analog ramp start. Mono only (`voiceMode == 0`).
 
 That one parameter carries three regimes, because `oscSync` also gates the note-on restart
 itself in [`voices.ino`](../voices.ino):
@@ -481,8 +532,8 @@ When `oscSync >= 1`, `note_retrig_mode` selects how that restart loads period st
 
 | Mode | Value | Behavior |
 |------|------:|----------|
-| `EXACT_Y` | 0 (default) | disable → apply stashed `pio_period_split` via `osc_load_periods_stopped_noclear` → jmp → `enable_in_sync` |
-| `SYNC_JMP` | 1 | jmp (or phase ramp-entry) only on **running** SMs — no disable / Y load / `enable_in_sync` |
+| `EXACT_Y` | 0 (default) | disable → `pio_period_split` via `osc_load_periods_stopped_noclear` → OSC1 restart; OSC2 restart or `osc_phase_align_hold_stopped` → `enable_in_sync` |
+| `SYNC_JMP` | 1 | jmp restart only on **running** SMs — no disable / Y load / X preload / `enable_in_sync`. Degree offsets need EXACT_Y |
 
 On EXACT_Y note-on frames, `pio_period_split` runs next to `phase align`, then the note-on
 block applies the stash. Load uses fused **noclear** (frame already did PIO put+pull so TX
@@ -491,64 +542,60 @@ is empty); boot/topology still use `osc_load_period_stopped` with FJOIN clear. P
 `note-on retrigger` (one SM-apply probe — do not slice disable/load/jmp/enable). See
 [`BENCHMARKING.md`](BENCHMARKING.md).
 
-`SYNC_JMP` is for A/B listening (near-sync from consecutive `exec`s, no no-RESET window). Static tuning may differ slightly vs exact-Y (same idea as free-run never getting the §5.2 rewrite).
+`SYNC_JMP` is for A/B listening (near-sync from consecutive `exec`s, no no-RESET window). Static tuning may differ slightly vs exact-Y (same idea as free-run never getting the §5.2 rewrite). X preload is unsafe on a running SM, so SYNC_JMP is 0° only.
 
 Worth knowing when comparing 0 against the rest: with `EXACT_Y`, the exact-Y rewrite
 (`osc_load_periods_stopped_noclear`) runs only inside that gated block, so free running never
 receives the exact-period Y rewrite from 5.2 and keeps the rounded `clk_div` path for its
 whole life.
 
-### 8.1 The problem with the old approach
+### 8.1 Why 0 / 90 / 180 used to be the only working offsets
 
-Previously the whole offset went into a widened reset pulse: `y_val2 = pioPulseLength +
-phaseDelay`, loaded for the entire note. Because Y is asserted every cycle, that did not offset
-the phase once — it held the integrator discharged on **every** cycle. At 180 degrees on a 12 Hz
-note that is 41 ms of flat zero per cycle, a waveform shape neither the amp-comp tables nor
-`find_gap` model.
-
-### 8.2 Coarse offset by ramp entry point
-
-Instead, the coarse offset is a one-shot jump **into a later ramp chunk**, so OSC2's first cycle
-simply starts partway up its ramp. Steady-state cycles are untouched.
+The working note-on recipe on the **18-instr `frequency` program** (wrap 17) was:
 
 ```c
-// Free / poll-1; poll-2 uses {0,4,6,9}, poll-3 uses {0,4,7,10}
-static constexpr uint8_t PIO_RAMP_ENTRY_FREE[4] = { 0, 4, 6, 8 };
+pio_sm_exec(A, jmp(10 + pio_offset));
+pio_sm_exec(B, jmp(10 + pio_offset));
+put(pioPulseLength + phaseDelay); pull; out y, 31; out x, 31;  // OSC2 only
 ```
 
-| Advance | Entry address | Chunks remaining |
-|---------|---------------|------------------|
-| 0% | restart (10 or 11) | 4, full cycle |
-| 25% | 4 | 3 |
-| 50% | 6 | 2 |
-| 75% | 8 | 1 |
+Address **10** there is mid-ramp `jmp x--, 10`. OSC1 and OSC2 start at the same PC; OSC2's
+larger X delays its first flyback. Any degree worked.
 
-Addresses 4, 6 and 8 are all `mov x, OSR`, and the OSR still holds a valid `clk_div` from
-`osc_load_period_stopped()`, so the chunk count loads correctly.
+`frequency_sync_4_jumps` is 12 instructions. Address **10 is now `mov x, y` (restart)**. The
+old `jmp(10)` no longer delays time-to-flyback. A retrofit of 90° ramp-entry tables `{0,4,6,8}`
+plus residual Y-widen only hit real `mov x, OSR` points at 90° and 180°; other angles kept
+flybacks locked to OSC1 (same period, longer zero).
 
-> **Trap.** Entries at 4/6/8 skip `set pins, 0` at address 2, which is what releases the reset
-> pin. The caller must drive it low explicitly first:
-> ```c
-> pio_sm_exec(pioN_B, smBN, pio_encode_set(pio_pins, 0));
-> pio_sm_exec(pioN_B, smBN, pio_encode_jmp(osc_ramp_entry_target(DCO_B, phaseQuarters)));
-> ```
-> Omit the `set` and OSC2 starts its ramp with the reset switch still closed.
+### 8.2 One-shot hold on `loop_final` (current)
 
-### 8.3 Residual
-
-Degrees are split into whole quarters plus a remainder:
+Keep the 4-jump program. Retarget the old recipe to **`loop_final` = addr 9** (poll: 10 / 11 / 12).
+Y and `clk_div` stay on the normal `pio_period_split(total_cycles)` — no permanent Y widen.
 
 ```c
-uint16_t deg          = phaseAlignOSC2 % 360u;
-uint8_t  phaseQuarters = deg / 90u;                       // coarse: ramp entry jump
-uint16_t residualDeg  = deg - phaseQuarters * 90u;        // fine: widens Y
-phaseDelay = (total_cycles2 * residualDeg + 180u) / 360u;
+per_deg   = (total_cycles2 * RECIP_360_Q24 + (1 << 23)) >> 24;  // total / 360
+remaining = per_deg * (360 - deg);                               // time until first flyback
+X         = remaining - 3;                                       // loop_final fallthrough + mov x,y + set pins,1
 ```
 
-The residual still widens Y, so some held-reset distortion remains — but it is now capped at
-**25% of a period** instead of approaching 100%. Pitch stays correct because the widening is
-compensated in `clk_div`: the split is computed on `total_cycles2 - phaseDelay`, then `phaseDelay`
-is added back to Y, so the period sums exactly.
+Note-on only (not every control frame). Free-program loop_final is 1 cycle/count; soft-sync slave already overrides flybacks so there is no `/2` poll path.
+
+EXACT_Y note-on:
+
+1. Stop OSC1+OSC2; load normal Y + `clk_div` (fused noclear).
+2. OSC1 jmp `osc_restart_target` (addr 10) — flyback now.
+3. OSC2, `deg != 0`: `osc_phase_align_hold_stopped` — `out x`, restore `clk_div`, `set pins, 0`,
+   jmp `osc_phase_hold_target` (`loop_final`).
+4. `pio_enable_sm_mask_in_sync`. Loop expires → `mov x, y` → `set pins, 1` (first flyback) →
+   wrap into a normal period forever.
+
+0° is both jmp restart. `deg == 0` or a remaining ≤ 3 cycles also uses restart.
+
+> **Trap.** `loop_final` skips `set pins, 0` at address 2. The helper drives it low before the
+> jmp. Omit that and OSC2 counts down with the reset switch still closed.
+
+`PIO_RAMP_ENTRY_*` / `osc_ramp_entry_target()` remain in [`globals.h`](../globals.h) but are
+**unused** by live phase-align.
 
 ---
 
@@ -593,6 +640,7 @@ inaudible until the carrier board gives GP8 a mixer input.**
 | `pio_reset_pin_apply_polarity(pin)` | OUTOVER+INOVER invert/clear for `ENABLE_PIO_RESET_INVERT` | `start_voice_sms()` | RESET pins only |
 | `osc_load_period_stopped(osc, y, clk_div)` | Push Y then `clk_div` (with FJOIN clear) | `start_voice_sms()`, `osc_set_reset_pulse()` | **SM must already be stopped.** |
 | `osc_load_periods_stopped_noclear(...)` | Dual-osc Y + clk_div, no FJOIN | Both engine note-on EXACT_Y paths | After frame put+pull (TX empty); caller disable/enable |
+| `osc_phase_align_hold_stopped(osc, x)` | Preload X, restore clk_div, `set pins, 0`, jmp `loop_final` | Both engine note-on EXACT_Y paths when deg ≠ 0 | **SM must already be stopped**; after noclear load |
 | `osc_set_reset_pulse(osc, y)` | Change only Y, restoring `osc_last_clk_div[osc]` | `apply_param_osc_sync_mode()` | Stops and restarts the SM itself; parameter path, not audio path |
 | `pio_topology_report()` | Print sync roles and verify every RESET pin reads back as PIO0 | Bench / diagnostics | Serial up |
 | `pio_period_probe(osc, clk_div)` | Park an oscillator at a fixed divider and print the predicted period | Bench | Disturbs the oscillator |
@@ -608,7 +656,9 @@ and `globals.h` is included first.
 |--------|---------|
 | `osc_program_base(osc)` | Load offset of the program that oscillator is running |
 | `osc_restart_target(osc)` | Absolute address of `mov x, y` — jump here to retrigger a cycle (10 free; 11/12/13 for poll N=1/2/3) |
-| `osc_ramp_entry_target(osc, quarters)` | Absolute address of a ramp chunk entry, for phase advance (program-dependent for poll-2/3) |
+| `osc_phase_hold_target(osc)` | Absolute address of `loop_final` (`jmp x--` before flyback): 9 free; 10/11/12 poll N=1/2/3 |
+| `osc_phase_hold_x(total, deg)` | X preload for that hold (Q24 mul/shift), or 0 → restart |
+| `osc_ramp_entry_target(osc, quarters)` | Unused by live phase-align (leftover 90° chunk entries) |
 | `osc_ramp_weight(osc)` | 4, or 5/6/7 from `softSyncChunks` when the slave runs a poll program |
 | `osc_period_overhead(osc)` | 12, or 13/14/15 likewise |
 | `pio_period_split(total, w, k)` | Exact `{clk_div, y}` split; note-on only |
@@ -646,7 +696,7 @@ Everything here is a trap that has already bitten, or would bite the next change
    source currently would not assemble (section 4.1).
 7. **Do not add `pull noblock` to the chunk loop.** It would restore the low-note update latency
    the chunks exist to eliminate (section 6.1).
-8. **Entering a ramp chunk requires an explicit `set pins, 0` first** (section 8.2).
+8. **Jumping to `loop_final` (phase hold) requires an explicit `set pins, 0` first** (section 8.2).
 9. **Changing `pioPulseLength` invalidates amp-comp calibration.** It is baked into the measured
    gap tables (sections 2.1, 13). Runtime changes via debug 160 may need an amp-comp redo after
    large Y moves.
