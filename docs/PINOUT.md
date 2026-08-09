@@ -1,6 +1,6 @@
 # DCO4-REBORN pinout — 4 voices × 2 oscillators
 
-**Status:** Live RESET / RANGE / PW / cal match **old DCO4 WEACT**. **Not frozen for PCB fab.** Four SUB GPIOs are TBD (`SUBOSC_PINS[]` still `0xFF`). Hub/CV absorption below is a **DCO3 leftover** — it collides with the 8-osc map; do **not** enable `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` until that remap.
+**Status:** Live RESET / RANGE / **PW ×4** / cal match **old DCO4 WEACT**. **Not frozen for PCB fab.** Four SUB GPIOs are TBD (`SUBOSC_PINS[]` still `0xFF`). Cut/Res/VCA/dist/levels/wave-mux **firmware is kept** behind `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` (off) for later expansion — not used on this 4×2 board (draft pins collide with RESET/RANGE).
 
 **Platform:** RP2040 and RP2350 (WEACT / Pico-class). Dual-MCU: [`DUAL_MCU.md`](DUAL_MCU.md). Live constants: [`globals.h`](../globals.h).
 
@@ -23,7 +23,7 @@ From [`globals.h`](../globals.h):
 | V3 A (osc 6) | 12 | 9 | pio1 SM2 | GP5 |
 | V3 B (osc 7) | 8 | 7 | pio1 SM3 | — |
 
-`VOICE_TO_PIO[]` = `{0,0,0,0,1,1,1,1}`. A voice pair (A+B) **must share one PIO block** so hard/soft sync can share a RESET pin. `VOICE_TO_SM[]` is mutable: within a pair the slave takes the lower local SM so hard-sync sideset wins. `PW_PINS[]` is length 8 with voices 0–3 = `{3,2,4,5}` and osc 4–7 = `0xFF` (one PW per MIDI voice).
+`VOICE_TO_PIO[]` = `{0,0,0,0,1,1,1,1}`. A voice pair (A+B) **must share one PIO block** so hard/soft sync can share a RESET pin. `VOICE_TO_SM[]` is mutable: within a pair the slave takes the lower local SM so hard-sync sideset wins. `PW_PINS[]` is length **4**: `{3,2,4,5}` (one PW PWM per MIDI voice — shipping).
 
 | Function | GPIO | Notes |
 |----------|------|-------|
@@ -54,9 +54,9 @@ The DCO's pins on the Input link are fixed at GP20 TX / GP21 RX, and both wires 
 
 ---
 
-## Hub / CV / mux (NOT LIVE — DCO3 leftover)
+## Hub / CV / mux (code retained, unused on this board)
 
-Do **not** enable `ENABLE_CV_OUTS` or `ENABLE_WAVE_MUX` on this 4×2 map. The draft below collides with 8-osc RESET/RANGE (Cut0 GP15 = V2 A RESET, HC595 on RESET/RANGE GPIOs, level PWM on RANGE pins, etc.). Keep for a later remap (RP2350B extra pins and/or VOICE-AUX).
+Cut/Res/VCA/dist/osc-sub levels/wave mux are **not wired** on this 4×2 project. Leave `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` off. The writers stay in-tree for later expansion; the draft pins below still collide with 8-osc RESET/RANGE (not a near-term remap).
 
 | Function | GPIO | PWM slice | Ch | Notes |
 |----------|------|-----------|----|-------|
@@ -79,9 +79,9 @@ Do **not** enable `ENABLE_CV_OUTS` or `ENABLE_WAVE_MUX` on this 4×2 map. The dr
 | 74HC595 CLK | **14** | Collides with V2 A RANGE |
 | AS3320 mode | *TBD* | Dual-MCU → **RP2040**; solo-B → DCO spares — [`FILTER_ROUTING.md`](FILTER_ROUTING.md) |
 
-**Wave mux:** 2× 74HC595 drive 3× DG411 (OSC1–3 × Saw/Pulse/Tri). Provisional bits 0–8; 9–15 unused. Active-low. Not wired on 4×2 until remap.
+**Wave mux:** 2× 74HC595 drive 3× DG411 (OSC1–3 × Saw/Pulse/Tri). Provisional bits 0–8; 9–15 unused. Active-low. Not used on this board.
 
-**I2C level DAC dropped** — osc/sub levels are PWM → analog level VCAs when CV is remapped. Soft bases still update with `ENABLE_CV_OUTS` off.
+**I2C level DAC dropped** — osc/sub levels would be PWM → analog level VCAs if CV is enabled later. Soft bases still update with `ENABLE_CV_OUTS` off.
 
 **Do not use for level PWM (when remapping):** GP2 (aliases GP18), GP6 (aliases RANGE OSC V0 B GP22).
 
@@ -102,7 +102,7 @@ Do **not** enable `ENABLE_CV_OUTS` or `ENABLE_WAVE_MUX` on this 4×2 map. The dr
 | 20,21 | HW UART1 Input |
 | 23,24 | Board fix |
 | 25 | Pico LED (not on header) |
-| 26 | free (Dist Mix only after CV remap) |
+| 26 | free (Dist Mix only if CV is enabled later) |
 | SUB ×4 | TBD (RP2350 pio2 SM0–3) |
 
 ---
@@ -118,13 +118,13 @@ Do **not** enable `ENABLE_CV_OUTS` or `ENABLE_WAVE_MUX` on this 4×2 map. The dr
 ## Feature flags (code)
 
 ```text
-ENABLE_CV_OUTS           // NOT LIVE on 4×2 — DCO3 leftover collides with RESET/RANGE
-ENABLE_WAVE_MUX          // NOT LIVE on 4×2 — same
-ENABLE_VOICE_AUX         // Dist/mode on RP2040; DCO reuses GP9/26 for OSC3/Sub levels (after remap)
+ENABLE_CV_OUTS           // off — Cut/Res/VCA/dist/levels writers kept for later expansion
+ENABLE_WAVE_MUX          // off — same; draft pins collide with 8-osc RESET/RANGE
+ENABLE_VOICE_AUX         // Dist/mode on RP2040 when aux is used
 ENABLE_PIO_RESET_INVERT  // RESET pad active-low (DG411 discharge); OUTOVER+INOVER
 ENABLE_NOISE_OUT         // leftover; noise PIO LFSR is off on both MCUs
 ENABLE_PIO_MIDI          // DIN on PIO UART — later PCB bring-up
 ```
 PCM5102 I2S noise listen lives on **VOICE-AUX** (see [`../../VOICE-AUX/docs/I2S_NOISE.md`](../../VOICE-AUX/docs/I2S_NOISE.md)).
 
-Uncomment Phase 3 HW flags in `DCO.ino` only after a 4×2 CV remap. The Input link on Serial2 is unconditional: the `ENABLE_INPUT_UART`, `ENABLE_SCREEN_UART` and `ENABLE_LEGACY_MAINBOARD_LINK` flags were removed along with the Mainboard and SerialPIO paths.
+Leave Phase 3 HW flags commented in `DCO.ino` on this board. The Input link on Serial2 is unconditional: the `ENABLE_INPUT_UART`, `ENABLE_SCREEN_UART` and `ENABLE_LEGACY_MAINBOARD_LINK` flags were removed along with the Mainboard and SerialPIO paths.

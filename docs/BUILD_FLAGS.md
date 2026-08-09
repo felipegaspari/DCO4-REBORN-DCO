@@ -26,9 +26,9 @@ Unless overridden, RP2350 and RP2040 ship the same engine shape:
 | Noise | `NOISE_ENGINE 1`, `ENABLE_NOISE_OUT` off |
 | ADSR | fixed Q22 phase, micros, native Q15 |
 | USB panel | `ENABLE_USB_CONTROL` on |
-| CV / mux / aux HW | off (`ENABLE_CV_OUTS` / `WAVE_MUX` / `VOICE_AUX` commented) |
+| CV / mux / aux HW | off (`ENABLE_CV_OUTS` / `WAVE_MUX` / `VOICE_AUX` commented) — **retained**, unused on this 4×2 board. PW PWM is independent (always live). |
 | PIO RESET | `ENABLE_PIO_RESET_INVERT` on |
-| RANGE amp PWM | `RANGE0_PIO_DITHER_TEST` on (PIO dither; comment out = slice PWM) |
+| RANGE amp PWM | `RANGE0_PIO_DITHER_TEST` **off** (HW slice; dither not feasible for 8 oscs) |
 | Profiler (tree as checked in) | `RUNNING_AVERAGE` + `RUNNING_AVERAGE_PERIOD` on; FINE off |
 | Mem diag (dump 13) | `ENABLE_MEM_DIAG` on; runtime polls on |
 
@@ -102,11 +102,11 @@ Pitch interp cmds **28–29** and fixed clkdiv cmds **32–33** (`CLKDIV_MODE` A
 |--------|----------|--------|----------|
 | `ENABLE_USB_CONTROL` | **on** | Panel protocol on USB CDC (`dco_control`) | [`Serial.h`](../Serial.h) / [`Serial.ino`](../Serial.ino), bench TX |
 | `SERIAL_FRAMING_COBS` | **off** | On-wire COBS(`inner`)+`0x00` instead of RAW inner. A/B vs default; host: `dco_control --cobs` or `DCO_SERIAL_COBS=1`. | [`serial_frame.h`](../serial_frame.h) / [`serial_parser.h`](../serial_parser.h), [`DCO.ino`](../DCO.ino) |
-| `ENABLE_CV_OUTS` | off | Hardware CV / OSC level PWM writers | [`PWM.ino`](../PWM.ino), [`cv_out.ino`](../cv_out.ino), [`globals.h`](../globals.h) pins |
-| `ENABLE_WAVE_MUX` | off | Wave mux GPIO / shift-register path | globals pin block, wave mux |
+| `ENABLE_CV_OUTS` | off | Cut/Res/VCA/dist/levels PWM writers — unused on this project; keep for expansion. PW is not behind this flag. | [`PWM.ino`](../PWM.ino), [`cv_out.ino`](../cv_out.ino), [`globals.h`](../globals.h) pins |
+| `ENABLE_WAVE_MUX` | off | Wave mux GPIO / shift-register — unused on this project; keep for expansion | globals pin block, wave mux |
 | `ENABLE_VOICE_AUX` | off | Skip local Dist/filter writers (aux owns them) | [`PWM.ino`](../PWM.ino), globals |
 | `ENABLE_PIO_RESET_INVERT` | **on** | Active-low RESET pad via GPIO OVER | [`state_machines.ino`](../state_machines.ino) |
-| `RANGE0_PIO_DITHER_TEST` | **on** | All `RANGE_PINS[]` via PIO dither PWM; comment out = HW slice `wrap=DIV_COUNTER` | [`PWM.h`](../PWM.h) / [`PWM.ino`](../PWM.ino), [`autotune.ino`](../autotune.ino), `setup1()` |
+| `RANGE0_PIO_DITHER_TEST` | **off** | Comment out = HW slice `wrap=DIV_COUNTER` on all 8 `RANGE_PINS[]`. Define = PIO dither (not used on 4×2). | [`PWM.h`](../PWM.h) / [`PWM.ino`](../PWM.ino), [`autotune.ino`](../autotune.ino), `setup1()` |
 | `NOTE_RETRIG_MODE_DEFAULT` | `0` (EXACT_Y) | Note-on sync retrig default; runtime 26/27 | [`globals.h`](../globals.h) |
 
 ---

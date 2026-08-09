@@ -1,26 +1,25 @@
-# DCO3-MONOSYNTH – Pico 2 DCO Voice Board
+# DCO4-REBORN – DCO Voice Board
 
-Firmware for the **DCO voice board** of DCO3-MONOSYNTH: **1 voice × 3 oscillators**, based on DCO4 but retargeted to **Raspberry Pi Pico 2 (RP2350)** with 3 PIO blocks.
-
-Branch baseline: `autotune-improvements` (refactored autotune / amp-comp), then monosynth voicing.
+Firmware for the **DCO voice board** of DCO4-REBORN: **4 MIDI voices × 2 oscillators**, forked from DCO3-MONOSYNTH and restored to old DCO4 voicing. Targets **RP2040 and RP2350**.
 
 ## Target model
 
 | Item | Value |
 |------|--------|
-| Voices | `NUM_VOICES_TOTAL = 1` |
-| Oscillators | `NUM_OSCILLATORS = 3` |
-| Freq SMs | PIO0/1/2 SM0 |
-| Amplitude | RANGE PWM via `write_range_pwm` — PIO dither (`RANGE0_PIO_DITHER_TEST`) or HW slice |
+| Voices | `NUM_VOICES_TOTAL = 4` |
+| Oscillators | `NUM_OSCILLATORS = 8` |
+| Freq SMs | pio0+pio1 (8); RP2350 pio2 ×4 sub TBD |
+| Amplitude | RANGE HW PWM (`RANGE0_PIO_DITHER_TEST` off) |
 | Voice entry | `voice_task_main()` → float or fixed engine |
-| Sync | OSC1↔OSC2; OSC3 free-running |
-| PW | One shared PW channel (voice 0); inverted `PW_LOOKUP` |
+| Sync | per-voice A↔B |
+| PW | 4 channels `{3,2,4,5}` |
+| CV / mux | `ENABLE_CV_OUTS` / `WAVE_MUX` **off**; code kept |
 
-Poly/`setVoiceMode` scaffolding kept for a later paraphonic mode.
+`setVoiceMode`: 0 mono / 1 poly / 2 stack.
 
 ## Hub mode
 
-Serial1 is DIN MIDI, Serial2 is the Input board — the DCO's only peer link. It pairs with the Input's Serial1: the DCO's Serial2 RX (GP21) is fed by the Input's TX (GP0), while the DCO's Serial2 TX (GP20) drives the Input's RX (GP1). Gap 154 and cal offsets 155 go out as `'x'` frames on that TX, and Input forwards 154 to the Screen; the DCO has no Screen port of its own. Soft EnvVCA/EnvVCF always run; uncomment `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` for hardware CV / mux / OSC level PWM writers. Docs: [`docs/MAINBOARD_ABSORPTION.md`](docs/MAINBOARD_ABSORPTION.md), [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md).
+Serial1 is DIN MIDI, Serial2 is the Input board — the DCO's only peer link. It pairs with the Input's Serial1: the DCO's Serial2 RX (GP21) is fed by the Input's TX (GP0), while the DCO's Serial2 TX (GP20) drives the Input's RX (GP1). Gap 154 and cal offsets 155 go out as `'x'` frames on that TX, and Input forwards 154 to the Screen; the DCO has no Screen port of its own. Soft EnvVCA/EnvVCF always run. Leave `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` off on this board (writers retained for later). Docs: [`docs/MAINBOARD_ABSORPTION.md`](docs/MAINBOARD_ABSORPTION.md), [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md).
 
 ## Build
 
@@ -45,7 +44,7 @@ Vendored Arduino libraries used by the build (passed via `--libraries ./_build_l
 | `MIDI_Library` | `_build_libs/MIDI_Library` | Vendored copy |
 | `PID_v1` | `_build_libs/PID_v1` | Vendored copy |
 
-**Monorepo layout:** clone `DCO3-MONOSYNTH` with sibling [`ADSR_Bezier`](../ADSR_Bezier/), [`DCO_Noise`](../DCO_Noise/), and [`mo-lfo`](../mo-lfo/) at the repo root so the symlinks resolve.
+**Monorepo layout:** clone `DCO4-REBORN` with sibling [`ADSR_Bezier`](../ADSR_Bezier/), [`DCO_Noise`](../DCO_Noise/), and [`mo-lfo`](../mo-lfo/) at the repo root so the symlinks resolve.
 
 **Standalone DCO clone:** replace the symlink with a submodule:
 
@@ -66,7 +65,7 @@ See `docs/` — especially:
 - [`docs/ENGINE_OPTIONS.md`](docs/ENGINE_OPTIONS.md) — float vs fixed voice/amp/CV math depth
 - [`docs/BENCHMARKING.md`](docs/BENCHMARKING.md) — hot-path CPU profiler
 - [`docs/MEMORY.md`](docs/MEMORY.md) — SRAM / heap / stack (`__not_in_flash_func`, dump cmd 13)
-- [`docs/PINOUT.md`](docs/PINOUT.md) — provisional hub + CV pin / UART map (Phase 0)
+- [`docs/PINOUT.md`](docs/PINOUT.md) — live 4×2 RESET/RANGE/PW/cal + UART; CV/mux draft unused
 - [`docs/MOD_MATRIX.md`](docs/MOD_MATRIX.md) — sparse mod matrix (levels / dual reso / Dist Drive)
 - [`docs/CV_MOD_SCALES.md`](docs/CV_MOD_SCALES.md) — VCA/VCF mod depth bakers, Q15 peak math (`/512` vs `/1024`), when to call
 - [`docs/LFO.md`](docs/LFO.md) — LFO Q15 bus; pitch/drift depth scales in `LFO.h`
@@ -82,6 +81,6 @@ See `docs/` — especially:
 - [`tools/dco_control/`](tools/dco_control/README.md) — Linux bench controller: drive every parameter over USB with no Input board or Screen attached
 - [`docs/MIDI_CC_MAP.md`](docs/MIDI_CC_MAP.md) — MIDI CC implementation chart: the same control surface over 7-bit CC, for a panel app or a DAW (generated, along with the Open Stage Control session in `tools/panels/`)
 - [`docs/MAINBOARD_ABSORPTION.md`](docs/MAINBOARD_ABSORPTION.md) — plan to absorb Mainboard into DCO
-- `AUTOTUNE.md`, `SYSTEM_OVERVIEW.md`, `FILE_INDEX.md` (some docs may still mention DCO4; prefer this README for monosynth facts)
+- `AUTOTUNE.md`, `SYSTEM_OVERVIEW.md`, `FILE_INDEX.md`
 
 Removed dead code lives under `_removed/` and is not compiled.

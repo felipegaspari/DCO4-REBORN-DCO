@@ -4,7 +4,7 @@ DCO4-REBORN is a **fully digitally controlled analog polysynth**, forked from DC
 
 The shipping instrument is **three firmwares** (Mainboard absorbed into DCO). Board-specific details live in each board folder / docs.
 
-**DCO board:** RP2040 or RP2350 (**A** with helper, or **B** solo), **4 MIDI voices × 2 oscillators**, freq on PIO (pio0+pio1, 8 SMs), amp via RANGE HW PWM (no dither), EnvDCO/VCA/VCF, LFOs. RP2350: 4 sub-osc SMs on pio2 (pins TBD). Opt-in CV PWM / mux is **not live** (DCO3 leftover collides with 8-osc pins). Autotune stack retained (PW center/limits + amp-comp).
+**DCO board:** RP2040 or RP2350 (**A** with helper, or **B** solo), **4 MIDI voices × 2 oscillators**, freq on PIO (pio0+pio1, 8 SMs), amp via RANGE HW PWM (no dither), **PW PWM ×4** (live), EnvDCO/VCA/VCF, LFOs. RP2350: 4 sub-osc SMs on pio2 (pins TBD). Cut/Res/VCA/dist/levels/wave-mux **firmware kept**, flags off, not wired. Autotune stack retained (PW center/limits + amp-comp).
 
 **Dual MCU (concept):** RP2350A + helper RP2040 sharing Input TX — see [`DUAL_MCU.md`](DUAL_MCU.md). `DCO/` keeps full IO code for a later RP2350B-only build.
 
@@ -16,7 +16,7 @@ The shipping instrument is **three firmwares** (Mainboard absorbed into DCO). Bo
 
 | Board | Repo / folder | MCU | Owns |
 |-------|---------------|-----|------|
-| **DCO (voice + hub)** | `DCO/` | RP2040 or RP2350A/B | MIDI, 4×2 PIO DCOs, EnvDCO/VCA/VCF, LFOs, cal, LittleFS; Input UART (panel + gap). Cut/Res/VCA CV + osc wave/level **code** retained but not live until pin remap. Full dist/mode/FX **code** for solo-B |
+| **DCO (voice + hub)** | `DCO/` | RP2040 or RP2350A/B | MIDI, 4×2 PIO DCOs, PW ×4, EnvDCO/VCA/VCF, LFOs, cal, LittleFS; Input UART (panel + gap). Cut/Res/VCA/mux **code** retained, flags off, not wired. Full dist/mode/FX **code** for solo-B |
 | **Voice aux** | [`VOICE-AUX/`](../../VOICE-AUX/) | RP2040 | RX-only on Input TX; AS3320 mode, dist Drive/Mix, FX stubs — [`DUAL_MCU.md`](DUAL_MCU.md) |
 | **Input controller** | `INPUT-CONTROLLER/` | RP2040 | Front panel, presets; UART to voice (fanout to DCO ± aux); relays gap `'x'` 154 → Screen |
 | **Screen controller** | `SCREEN-CONTROLLER/` | RP2040 | ILI9488 + LVGL; UI from Input; gap relayed by Input |
@@ -36,7 +36,7 @@ flowchart LR
   Fan --> Aux["RP2040 aux RX-only"]
   DCO -->|"DCO Serial2 TX GP20 to Input Serial1 RX GP1\ngap x 154 + cal 155"| Input
   Input -->|"Input Serial2 TX GP4: UI + gap forward"| Screen["Screen"]
-  DCO --> AnalogFront["Osc + Cut/Res/VCA CV"]
+  DCO --> AnalogFront["Osc + RANGE + PW"]
   Aux --> AnalogPost["Mode + Dist + FX"]
 ```
 
@@ -63,7 +63,7 @@ Note edges never leave the DCO. `noteStart[]` / `noteEnd[]` drive EnvDCO/EnvVCA/
 
 | Flag | Default | Role |
 |------|---------|------|
-| `ENABLE_CV_OUTS` / `WAVE_MUX` | off | Hardware CV / mux / level PWM writers |
+| `ENABLE_CV_OUTS` / `WAVE_MUX` | off | Cut/Res/VCA/dist/levels/mux writers — **kept compiled-out** for later expansion; not used on this board. PW PWM is independent (always live). |
 
 The serial topology is no longer switchable: Serial1 is DIN MIDI, Serial2 is the Input link. The old `ENABLE_INPUT_UART`, `ENABLE_SCREEN_UART` and `ENABLE_LEGACY_MAINBOARD_LINK` flags were removed with the Mainboard and SerialPIO paths.
 
