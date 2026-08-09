@@ -4,6 +4,7 @@ Complete inventory of **live compile-time flags** that change codegen, RAM, IO, 
 
 - **Deep float/fixed math:** [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
 - **Profiler usage:** [`BENCHMARKING.md`](BENCHMARKING.md)
+- **SRAM / heap / stack:** [`MEMORY.md`](MEMORY.md) (`__not_in_flash_func`, dump cmd 13, pin policy)
 - **Live source of truth for engine/IO toggles:** top of [`../DCO.ino`](../DCO.ino) before includes
 
 **Override order:** flags set in `DCO.ino` before `#include` win. Header `#ifndef` / library fallbacks apply only when the sketch left them unset.
@@ -29,6 +30,7 @@ Unless overridden, RP2350 and RP2040 ship the same engine shape:
 | PIO RESET | `ENABLE_PIO_RESET_INVERT` on |
 | RANGE amp PWM | `RANGE0_PIO_DITHER_TEST` on (PIO dither; comment out = slice PWM) |
 | Profiler (tree as checked in) | `RUNNING_AVERAGE` + `RUNNING_AVERAGE_PERIOD` on; FINE off |
+| Mem diag (dump 13) | `ENABLE_MEM_DIAG` on; runtime polls on |
 
 Confirm with the `engine:` / `io:` lines in the profiler banner ([`bench.h`](../bench.h)).
 
@@ -53,7 +55,7 @@ Both branches currently set the same values via `#ifndef`:
 |--------|----------|--------|----------|
 | `AMP_COMP_METHOD_DEFAULT` | `2` (FIXED) | Initial `amp_comp_method` | [`amp_comp.h`](../amp_comp.h), runtime cmds 20–22 |
 | `PITCH_INTERP_MODE` | `PITCH_INTERP_RATIO_Q16` | Selects one interpolator + its tables | [`voices.ino`](../voices.ino), pitch benches |
-| `HIGH_PRECISION_CLKDIV` | `1` | Fixed-voice 64-bit clkdiv (~4 µs/voice); `0` = fast Q4 | `voice_task_fixed_point` |
+| `HIGH_PRECISION_CLKDIV` | `1` | Fixed-voice Q8 64/32 clkdiv (~4 µs/voice); `0` = fast Q4 32-bit. Cmds 32–33 A/B. | `voice_task_fixed_point`, [`clkdiv_bench.ino`](../clkdiv_bench.ino) |
 
 Float voice / amp / CV are **not** defined by board defaults (enable only in overrides).
 
@@ -85,15 +87,22 @@ Math detail: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
 | `RUNNING_AVERAGE` | **on** | Hot-path profiler (`bench.h`); paced `bench_out_*` | [`bench.h`](../bench.h), benches |
 | `RUNNING_AVERAGE_FINE` | off | Extra tiny-stage probes (opt barrier) | `BENCH_FBEGIN` / `FEND` |
 | `RUNNING_AVERAGE_PERIOD` | **on** | Period probes only; stage probes compile out; overrides FINE | `bench.h` |
-| `BENCH_PATH_STATS` | off | Porta path-tag trees + walk-step sums; needs `RUNNING_AVERAGE` | [`voices.ino`](../voices.ino) |
+| `BENCH_STAGE_STRIDE` | `9` | MAIN/FINE stage probes every Nth loop (`1` = every iter); note-on always; needs `RUNNING_AVERAGE` | [`bench.h`](../bench.h), [`DCO.ino`](../DCO.ino) |
+| `BENCH_USE_SYSTICK` | `1` | SysTick for PERIOD + stages; `0` → 1 µs timer for all probes. Dump window still 1 µs. | [`bench.h`](../bench.h), [`DCO.ino`](../DCO.ino) |
+| `BENCH_PERIOD_MAX_US` | `2000` | Discard PERIOD samples longer than this (autotune / wrap-looking stalls) | [`bench.h`](../bench.h), [`DCO.ino`](../DCO.ino) |
+| `BENCH_PATH_STATS` | off | All path bumps + `-- Path counters --` dump; needs `RUNNING_AVERAGE`; no-op under PERIOD | [`bench.h`](../bench.h), [`voices.ino`](../voices.ino) |
 | `CLKDIV_BENCHMARK` | off | Float vs double clkdiv sample; needs `RUNNING_AVERAGE` | float voice path |
 | `AMP_COMP_BENCHMARK` | off | Amp speed/accuracy cmds 24–25; needs `RUNNING_AVERAGE` + `USE_FLOAT_AMP_COMP` | [`amp_comp_bench.ino`](../amp_comp_bench.ino) |
+| `ENABLE_MEM_DIAG` | **on** | Cmd 13 RAM dump + `loop`/`loop1` polls; comment out = empty inlines. Runtime 14/15 disable/enable polls | [`mem_diag.h`](../mem_diag.h), [`MEMORY.md`](MEMORY.md) |
+
+Pitch interp cmds **28–29** and fixed clkdiv HP cmds **32–33** need `RUNNING_AVERAGE` only (no extra flag): [`pitch_interp_bench.ino`](../pitch_interp_bench.ino), [`clkdiv_bench.ino`](../clkdiv_bench.ino).
 
 ### 1.6 Board / IO
 
 | Define | Shipping | Effect | Consumed |
 |--------|----------|--------|----------|
 | `ENABLE_USB_CONTROL` | **on** | Panel protocol on USB CDC (`dco_control`) | [`Serial.h`](../Serial.h) / [`Serial.ino`](../Serial.ino), bench TX |
+| `SERIAL_FRAMING_COBS` | **off** | On-wire COBS(`inner`)+`0x00` instead of RAW inner. A/B vs default; host: `dco_control --cobs` or `DCO_SERIAL_COBS=1`. | [`serial_frame.h`](../serial_frame.h) / [`serial_parser.h`](../serial_parser.h), [`DCO.ino`](../DCO.ino) |
 | `ENABLE_CV_OUTS` | off | Hardware CV / OSC level PWM writers | [`PWM.ino`](../PWM.ino), [`cv_out.ino`](../cv_out.ino), [`globals.h`](../globals.h) pins |
 | `ENABLE_WAVE_MUX` | off | Wave mux GPIO / shift-register path | globals pin block, wave mux |
 | `ENABLE_VOICE_AUX` | off | Skip local Dist/filter writers (aux owns them) | [`PWM.ino`](../PWM.ino), globals |
@@ -115,6 +124,7 @@ Sketch sets these **before** including the library (library has its own fallback
 | `ADSR_BEZIER_NATIVE_Q15` | `1` | **`0`** | `1` = primary amp domain Q15; `0` = DAC-primary + optional cache |
 | `ADSR_BEZIER_Q15_DYADIC` | `1` | `1` | NATIVE=1: peak 32768 vs 32767 A/B |
 | `ADSR_BEZIER_UPDATE_Q15_CACHE` | `1` | `1` | Refresh Q15 in `getWave`; ignored when NATIVE=1 |
+| `ADSR_BEZIER_SRAM_HOT` | **`1`** | **`0`** | `1` = RP2040 `__not_in_flash_func` on `getWave` / `noteOn` / `noteOff` (static SRAM, not heap — [`MEMORY.md`](MEMORY.md)) |
 
 Derived: `ADSR_BEZIER_PHASE_SCALE_U64` (`1` when shift > 22).
 
@@ -125,6 +135,7 @@ Derived: `ADSR_BEZIER_PHASE_SCALE_U64` (`1` when shift > 22).
 | Define | DCO shipping | Library fallback if unset | Effect |
 |--------|-------------:|---------------------------|--------|
 | `MO_LFO_USE_Q15` | `1` | **`0`** | Preferred-path hint / pragma only; API always has `getWave` + `getWaveQ15` |
+| `MO_LFO_SRAM_HOT` | **`1`** | **`0`** | `1` = RP2040 `__not_in_flash_func` on `getWaveQ15` + `_advanceUnitQ15` (static SRAM — [`MEMORY.md`](MEMORY.md)) |
 | `LFO_SINE_TABLE_BITS` | `9` | `9` (in mo-lfo if unset) | Sine LUT size `1<<bits` |
 
 ---
@@ -159,7 +170,7 @@ Comment-only (not a live define): `ENABLE_PIO_MIDI` — PIO2 reserved in comment
 | File | Define | Shipping | Effect |
 |------|--------|----------|--------|
 | [`noise.h`](../noise.h) | `NOISE_ENGINE` | fallback `0` if sketch omit | DCO sets `1` in `DCO.ino` |
-| [`bench.h`](../bench.h) | `BENCH_USE_SYSTICK` | `1` | SysTick cycle counter; `0` → 1 µs timer for all probes |
+| [`bench.h`](../bench.h) | `BENCH_USE_SYSTICK` / `BENCH_PERIOD_MAX_US` | sketch wins | Header `#ifndef` fallbacks only if unset in [`DCO.ino`](../DCO.ino) |
 | [`amp_comp.h`](../amp_comp.h) | `AMP_COMP_METHOD_DEFAULT` | fallback `AMP_COMP_FIXED` | Only if unset before include |
 | [`voices.ino`](../voices.ino) | `DCO_DEBUG_REPORT` | `0` | `1` = serial dump of OSC1 frequency stages |
 
@@ -171,8 +182,8 @@ Headers that only **consume** flags (no new feature `#define`): `voices.h`, `cv_
 
 | Library | Flag interaction |
 |---------|------------------|
-| ADSR_Bezier | Defaults differ on `NATIVE_Q15` (`0` in lib vs `1` in DCO). Always set via [`adsr.h`](../adsr.h). |
-| mo-lfo | `MO_LFO_USE_Q15` lib default `0`; DCO forces `1` in [`LFO.h`](../LFO.h). |
+| ADSR_Bezier | Defaults differ on `NATIVE_Q15` (`0` in lib vs `1` in DCO) and `SRAM_HOT` (`0` vs `1`). Always set via [`adsr.h`](../adsr.h). |
+| mo-lfo | `MO_LFO_USE_Q15` / `MO_LFO_SRAM_HOT` lib default `0`; DCO forces `1` in [`LFO.h`](../LFO.h). |
 | DCO_Noise | Reads `NOISE_ENGINE` / `ENABLE_NOISE_OUT`; fallback engine `0`. |
 
 ---
@@ -185,8 +196,9 @@ Headers that only **consume** flags (no new feature `#define`): `voices.h`, `cv_
 | Noise engine / PIO white pin | `DCO.ino` noise block |
 | Profiler on/off / period-only | `DCO.ino` profiling block |
 | USB panel / CV HW / aux / RESET invert | `DCO.ino` BOARD / IO |
-| ADSR phase / native Q15 A/B | [`adsr.h`](../adsr.h) before library include |
-| LFO Q15 hint / sine table bits | [`LFO.h`](../LFO.h) |
+| ADSR phase / native Q15 / SRAM hot A/B | [`adsr.h`](../adsr.h) before library include |
+| LFO Q15 hint / SRAM hot / sine table bits | [`LFO.h`](../LFO.h) |
+| Heap / stack / RAM-text dump | Diagnostics cmd **13**; polls flag `ENABLE_MEM_DIAG` + runtime 14/15 — [`MEMORY.md`](MEMORY.md) |
 | FS cal load | [`globals.h`](../globals.h) `ENABLE_FS_CALIBRATION` |
 | OSC1 debug prints | [`voices.ino`](../voices.ino) `DCO_DEBUG_REPORT` |
 

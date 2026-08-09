@@ -167,7 +167,7 @@ enum ParamId : uint16_t {
   PARAM_UI_CALIBRATION_DISMISS   = 199,
   PARAM_UI_CALIBRATION_MENU_MODE = 200,
 
-  // Reserved / screen-only extras (future expansion)
+  // Pulse width (was Input 'f' block). Voice engine stores PW[0] = value / 4.
   PARAM_PW_VALUE                 = 210,
   PARAM_LFO3_SPEED               = 211,
   PARAM_LFO3_WAVEFORM            = 212,
@@ -184,6 +184,9 @@ enum ParamId : uint16_t {
 
   // Character amount (0..128). dco_control Character tab; storage only for now.
   PARAM_CHARACTER                = 221,
+
+  // EnvVCA → VCA amount (was Input 'e' block).
+  PARAM_ADSR1_TO_VCA             = 222,
 
   // --- Calibration flags (shared) ------------------------------------
   PARAM_CALIBRATION_FLAG         = 150,
@@ -205,8 +208,11 @@ enum ParamId : uint16_t {
   // 3 = period probe at a high divider. See DCO/docs/PIO_OSCILLATORS.md section 12.
   // 10 = dump profiler once, 11 = reset profiler, 12 = toggle ~1 Hz dump
   // (RUNNING_AVERAGE builds only). See DCO/docs/BENCHMARKING.md.
+  // 13 = SRAM / heap / per-core stack dump (ENABLE_MEM_DIAG; runtime polls on).
+  // 14 / 15 = mem_diag loop polls off / on. See MEMORY.md.
   // 20–22 amp-comp method, 24–25 amp benches, 26–27 note retrig, 28–29 pitch benches.
   // 30 = force-seed fake amp-comp + PW tables.
+  // 32–33 fixed clkdiv HP0 vs HP1 speed/accuracy (RUNNING_AVERAGE).
   // 200–50000 = set pioPulseLength (reset pulse Y cycles); unsigned 16-bit on wire.
   // Also reloads running SMs via pio_defer_request_reset_pulse_all().
   // Packed Character jitter setters (unsigned 16-bit, hi|lo, lo = 0..128):

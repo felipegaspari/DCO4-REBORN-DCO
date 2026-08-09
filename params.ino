@@ -10,7 +10,7 @@
 // High-level flow:
 //   1) Some control source (front panel, STM32, MIDI, editor) decides that
 //      parameter P should change to value V.
-//   2) It sends P and V over the link (e.g. via Serial 'p'/'w'/'x' commands).
+//   2) It sends P and V over the link (Serial 'p', or a 1 ms ADSR/filter block).
 //   3) The receiver ends up calling:
 //         update_parameters(paramNumber, paramValue);
 //   4) update_parameters() looks up paramNumber in paramTable[] and calls
@@ -30,11 +30,9 @@
 //      and sends values in the range/format your apply function expects.
 //
 // Notes:
-//   - The transport is 16-bit (int16_t) for this router. For values derived
-//     from larger types (e.g. 'x' 32-bit commands), the conversion happens
-//     before calling update_parameters(), preserving the old behavior.
+//   - The transport is 16-bit (int16_t) for this router.
 //   - If an unknown paramNumber is received, update_parameters() simply
-//     ignores it (same as the old default: case).
+//     ignores it.
 
 
 // ---- Apply functions for each parameter (invoked only via paramTable / update_parameters) ----
@@ -507,6 +505,17 @@ static void apply_param_adsr2_decay_curve(int16_t v) {
   ADSR_VCF_change_decay_curve(ADSR2DecayCurveVal);
 }
 
+// PARAM_PW_VALUE: pulse width 0..4095; voice engine uses PW[0] at /4 scale.
+static void apply_param_pw_value(int16_t v) {
+  uint16_t pwRaw = (uint16_t)constrain((int)v, 0, 4095);
+  PW[0] = pwRaw / 4;
+}
+
+// PARAM_ADSR1_TO_VCA: EnvVCA → VCA amount (was the 'e' block).
+static void apply_param_adsr1_to_vca(int16_t v) {
+  ADSR1toVCA = v;
+}
+
 // PARAM_PWM_POTS_CONTROL_MANUAL: manual PWM pot control flag.
 static void apply_param_pwm_pots_manual(int16_t v) {
   PWMPotsControlManual = (v != 0);
@@ -596,6 +605,8 @@ static void apply_param_manual_calibration_store(int16_t /*v*/) {
 // 10 / 11 / 12 drive the profiler in bench.h and only do anything in a RUNNING_AVERAGE
 // build. The dump is asynchronous: it asks both cores for a snapshot and core 0 prints
 // once both have answered, so this handler never blocks the audio core.
+// 13 dumps heap + per-core stack (mem_diag; needs ENABLE_MEM_DIAG; runtime polls on).
+// 14 / 15 disable / enable mem_diag loop polls (A/B vs profiler without rebuild).
 static void apply_param_debug_command(int16_t v) {
   // Wire may pack unsigned 16-bit (param16u); reinterpret before small-opcode switch.
   uint32_t n = (uint16_t)v;
@@ -628,6 +639,53 @@ static void apply_param_debug_command(int16_t v) {
     case 3:
       pio_period_probe(0, 20000);
       break;
+#ifdef ENABLE_MEM_DIAG
+    case 13:
+      if (!mem_diag_runtime_enabled) {
+#ifdef RUNNING_AVERAGE
+        bench_out_reset();
+        bench_out_printf("mem_diag polls=off\n");
+        bench_out_active = true;
+#else
+        Serial.println("mem_diag polls=off");
+#endif
+      } else {
+        mem_diag_request();
+      }
+      break;
+    case 14:
+      mem_diag_runtime_enabled = false;
+#ifdef RUNNING_AVERAGE
+      bench_out_reset();
+      bench_out_printf("mem_diag polls=off\n");
+      bench_out_active = true;
+#else
+      Serial.println("mem_diag polls=off");
+#endif
+      break;
+    case 15:
+      mem_diag_runtime_enabled = true;
+#ifdef RUNNING_AVERAGE
+      bench_out_reset();
+      bench_out_printf("mem_diag polls=on\n");
+      bench_out_active = true;
+#else
+      Serial.println("mem_diag polls=on");
+#endif
+      break;
+#else
+    case 13:
+    case 14:
+    case 15:
+#ifdef RUNNING_AVERAGE
+      bench_out_reset();
+      bench_out_printf("mem_diag polls=compiled out\n");
+      bench_out_active = true;
+#else
+      Serial.println("mem_diag polls=compiled out");
+#endif
+      break;
+#endif
 #ifdef RUNNING_AVERAGE
     case 10:
       bench_dump_request = true;
@@ -689,6 +747,12 @@ static void apply_param_debug_command(int16_t v) {
       break;
     case 29:
       pitch_interp_bench_accuracy_pending = true;
+      break;
+    case 32:
+      clkdiv_hp_bench_speed_pending = true;
+      break;
+    case 33:
+      clkdiv_hp_bench_accuracy_pending = true;
       break;
 #endif
     // Force-write fake amp-comp + PW tables (dev placeholder; dco_control Calibration).
@@ -809,6 +873,8 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_MOD_SLOT7_SOURCE,          apply_param_mod_slot7_source },
   { PARAM_MOD_SLOT7_DEST,            apply_param_mod_slot7_dest },
   { PARAM_MOD_SLOT7_DEPTH,           apply_param_mod_slot7_depth },
+  { PARAM_PW_VALUE,                  apply_param_pw_value },
+  { PARAM_ADSR1_TO_VCA,              apply_param_adsr1_to_vca },
   { PARAM_PWM_POTS_CONTROL_MANUAL,   apply_param_pwm_pots_manual },
   { PARAM_ADSR3_ENABLED,             apply_param_adsr3_enabled },
   { PARAM_FUNCTION_KEY,              apply_param_function_key },
@@ -824,11 +890,15 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
 static const size_t paramTableSize =
   sizeof(paramTable) / sizeof(paramTable[0]);
 
+static void (*paramApplyJump[PARAM_ROUTER_JUMP_SIZE])(int16_t);
+
+void init_param_router() {
+  param_router_build_jump(paramApplyJump, paramTable, paramTableSize);
+}
+
 // Public entry point: called from Serial/MIDI/UI code.
-inline void update_parameters(byte paramNumber, int16_t paramValue) {
-  param_router_apply<int16_t>(paramTable, paramTableSize,
-                              static_cast<uint16_t>(paramNumber),
-                              paramValue);
+inline void update_parameters(uint16_t paramNumber, int16_t paramValue) {
+  param_router_apply_jump(paramApplyJump, paramNumber, paramValue);
 }
 
 

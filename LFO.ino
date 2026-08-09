@@ -41,7 +41,7 @@ void init_LFO2() {
 }
 
 // Update LFO1 Q15 level + per-osc pitch mods (depth_q24 is full-scale octave travel).
-inline void LFO1() {
+void __not_in_flash_func(LFO1)() {
   LFO1Level = LFO1_class.getWaveQ15(micros());
   // Common case: only global LFO1→DCO — one mul, broadcast to all osc slots.
   if (LFO1toOSC1_q24 == 0 && LFO1toOSC2_q24 == 0 && LFO1toOSC3_q24 == 0) {
@@ -60,18 +60,22 @@ inline void LFO1() {
 }
 
 // Update LFO2 Q15 level + OSC2/3 pitch mods (fine + coarse folded).
-inline void LFO2() {
+// DMB after LFO1()+LFO2() stores so Core1 snapshots a coherent mailbox (not SIO FIFO).
+void __not_in_flash_func(LFO2)() {
   LFO2Level = LFO2_class.getWaveQ15(micros());
   lfo2_pitch_mod_q24[LFO2_PITCH_OSC2] =
     applyDepthQ24(LFO2Level, LFO2toOSC2_q24 + LFO2toOSC2_coarse_q24);
   lfo2_pitch_mod_q24[LFO2_PITCH_OSC3] =
     applyDepthQ24(LFO2Level, LFO2toOSC3_q24 + LFO2toOSC3_coarse_q24);
+  __dmb();
 }
 
 // Update per-oscillator drift LFO levels as Q15 (negate wave = legacy polarity).
-inline void DRIFT_LFOs() {
+// Publish mailbox for Core 1: three stores then DMB (not SIO FIFO).
+void __not_in_flash_func(DRIFT_LFOs)() {
   unsigned long currentMicros = micros();
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
     LFO_DRIFT_LEVEL[i] = (int16_t)(-LFO_DRIFT_CLASS[i].getWaveQ15(currentMicros));
   }
+  __dmb();
 }

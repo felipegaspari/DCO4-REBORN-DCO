@@ -10,7 +10,7 @@ A controller value scales into the parameter's native range as
 value = lo + ((hi - lo) * cc + 63) / 127
 ```
 
-so CC 0 lands on `CC 0` below and CC 127 on `CC 127`. Envelope attack, decay and release then go through `linearToExponential(value, 50, 25000)`, the same curve the Input board applies to its faders, because the `'a'`-`'c'` block frames carry those values already exp-mapped.
+so CC 0 lands on `CC 0` below and CC 127 on `CC 127`. Envelope attack, decay and release then go through `linearToExponential(value, 50, 25000)`, the same curve the Input board applies to its faders, because the `'a'`–`'c'` block frames carry those values already exp-mapped.
 
 Menu-style parameters use a 0..127 range so the scaling is an identity and a menu entry can pick an exact native value. Switches scale to 0..1, so under 64 is off and 64 or over is on.
 
@@ -70,7 +70,7 @@ Menu-style parameters use a 0..127 range so the scaling is an identity and a men
 | 45 | EnvDCO times (pitch and PW): Decay | Envelopes | `CC_LOCAL_ADSR_DCO_DECAY` | 0 | 25000 | exp |
 | 46 | EnvDCO times (pitch and PW): Sustain | Envelopes | `CC_LOCAL_ADSR_DCO_SUSTAIN` | 0 | 4095 | linear |
 | 47 | EnvDCO times (pitch and PW): Release | Envelopes | `CC_LOCAL_ADSR_DCO_RELEASE` | 0 | 25000 | exp |
-| 48 | EnvVCA to VCA amount: ADSR1 to VCA | Envelopes | `CC_LOCAL_ADSR1_TO_VCA_AMOUNT` | 0 | 512 | linear |
+| 48 | ADSR1 to VCA | Envelopes | `PARAM_ADSR1_TO_VCA` | 0 | 512 | linear |
 | 49 | VCF keytrack | Filter | `PARAM_VCF_KEYTRACK` | -256 | 255 | linear |
 | 50 | Velocity to VCF | Filter | `PARAM_VELOCITY_TO_VCF` | 0 | 20 | linear |
 | 51 | Resonance amp compensation | Filter | `PARAM_RESONANCE_COMPENSATION` | 0 | 1 | linear |
@@ -84,7 +84,7 @@ Menu-style parameters use a 0..127 range so the scaling is an identity and a men
 | 56 | LFO2 to PW | PWM | `PARAM_LFO2_TO_PW` | 0 | 511 | linear |
 | 57 | ADSR3 to PWM | PWM | `PARAM_ADSR3_TO_PWM` | 0 | 1023 | linear |
 | 58 | PWM pots manual | PWM | `PARAM_PWM_POTS_CONTROL_MANUAL` | 0 | 1 | linear |
-| 59 | Pulse width: PW | PWM | `CC_LOCAL_PW_PW` | 0 | 4095 | linear |
+| 59 | Pulse width | PWM | `PARAM_PW_VALUE` | 0 | 4095 | linear |
 | 60 | LFO1 waveform | LFOs | `PARAM_LFO1_WAVEFORM` | 0 | 127 | linear |
 | 61 | LFO2 waveform | LFOs | `PARAM_LFO2_WAVEFORM` | 0 | 127 | linear |
 | 62 | LFO1 speed | LFOs | `PARAM_LFO1_SPEED` | 0 | 4095 | linear |

@@ -25,7 +25,7 @@
 // Curve applied on the way from a CC to the native value.
 enum : uint8_t {
   MIDI_CC_LINEAR = 0,
-  // Envelope attack/decay/release. The block frames carry these already exp-mapped,
+  // Envelope attack/decay/release. The 'a'–'c' block frames carry these already exp-mapped,
   // because on hardware the Input board applies the curve before transmitting, so a CC
   // has to do the same to feel like the fader.
   MIDI_CC_EXP_TIME = 1,
@@ -35,11 +35,10 @@ enum : uint8_t {
 #define MIDI_CC_EXP_BASE 50.0f
 #define MIDI_CC_EXP_MAX 25000
 
-// Targets for the values that reach the DCO as block frames ('a'-'f') rather than as
-// 'p'/'w' parameter frames, and so have no ParamId: those blocks exist to pack four
-// values into a single frame and keep the Input link cheap, not because the values are
-// second class. Numbered above every ParamId in params_def.h (215 is the highest today)
-// so one uint8_t target can mean either kind and the dispatch stays a single switch.
+// Targets for the values that reach the DCO as 1 ms block frames ('a'–'d') rather than
+// as 'p' parameter frames, and so have no ParamId. Numbered above every ParamId in
+// params_def.h (wire id is uint8; 222 is the highest today) so one uint8_t target can
+// mean either kind and the dispatch stays a single switch.
 //
 // Names are what gen_midi_map.py derives from the Block and BlockField keys in
 // params.py, as CC_LOCAL_<block>_<field> uppercased; the generator checks that each one
@@ -62,14 +61,10 @@ enum : uint8_t {
   CC_LOCAL_ADSR_DCO_SUSTAIN,
   CC_LOCAL_ADSR_DCO_RELEASE,
 
-  CC_LOCAL_ADSR1_TO_VCA_AMOUNT,
-
   CC_LOCAL_FILTER_CUTOFF,
   CC_LOCAL_FILTER_RESONANCE,
   CC_LOCAL_FILTER_ADSR2_TO_VCF,
   CC_LOCAL_FILTER_LFO2_TO_VCF,
-
-  CC_LOCAL_PW_PW,
 };
 
 struct MidiCcEntry {

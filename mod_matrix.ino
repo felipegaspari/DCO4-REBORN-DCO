@@ -5,6 +5,32 @@ static ModSlot g_mod_slots[MOD_SLOT_COUNT];
 static int16_t mod_random_snh_q15 = 0;
 static uint8_t mod_aftertouch = 0;
 static uint8_t mod_wheel = 0;
+// Bit i set when slot i has source, dest, nonzero depth. Hot path skips empty matrix.
+static uint8_t g_mod_live_mask = 0;
+static uint8_t g_mod_pitch_mask = 0;
+
+static void mod_refresh_slot_live(uint8_t slot) {
+  const ModSlot& s = g_mod_slots[slot];
+  const uint8_t bit = (uint8_t)(1u << slot);
+  const bool live = (s.source != MOD_SRC_EMPTY && s.dest != MOD_DEST_EMPTY && s.dest < MOD_DEST_COUNT &&
+                     s.depth != 0);
+  if (live) {
+    g_mod_live_mask |= bit;
+    if (s.dest == MOD_DEST_PITCH) {
+      g_mod_pitch_mask |= bit;
+    } else {
+      g_mod_pitch_mask &= (uint8_t)~bit;
+    }
+  } else {
+    g_mod_live_mask &= (uint8_t)~bit;
+    g_mod_pitch_mask &= (uint8_t)~bit;
+  }
+}
+
+// |src_q15|≤32768, |depth|≤32767 → product fits int32 (no __aeabi_lmul).
+static inline int32_t mod_depth_mul_q15(int32_t src_q15, int16_t depth) {
+  return (src_q15 * (int32_t)depth) >> 15;
+}
 
 volatile int32_t matrix_pitch_mod_q24 = 0;
 
@@ -32,6 +58,8 @@ void mod_matrix_init() {
     g_mod_slots[i].dest = MOD_DEST_EMPTY;
     g_mod_slots[i].depth = 0;
   }
+  g_mod_live_mask = 0;
+  g_mod_pitch_mask = 0;
   mod_random_snh_q15 = 0;
   mod_aftertouch = 0;
   mod_wheel = 0;
@@ -45,6 +73,7 @@ void mod_matrix_set_source(uint8_t slot, int16_t v) {
   } else {
     g_mod_slots[slot].source = (uint8_t)v;
   }
+  mod_refresh_slot_live(slot);
 }
 
 void mod_matrix_set_dest(uint8_t slot, int16_t v) {
@@ -54,11 +83,13 @@ void mod_matrix_set_dest(uint8_t slot, int16_t v) {
   } else {
     g_mod_slots[slot].dest = (uint8_t)v;
   }
+  mod_refresh_slot_live(slot);
 }
 
 void mod_matrix_set_depth(uint8_t slot, int16_t v) {
   if (slot >= MOD_SLOT_COUNT) return;
   g_mod_slots[slot].depth = v;
+  mod_refresh_slot_live(slot);
 }
 
 void mod_matrix_on_note_on() {
@@ -75,7 +106,7 @@ void mod_matrix_set_mod_wheel(uint8_t value) {
 }
 
 // Source as Q15 (±32768 ≈ ±1.0). LFO/ADSR/noise are already Q15 pass-through.
-static int32_t mod_matrix_read_source_q15(uint8_t src) {
+static int32_t mod_matrix_read_source_q15(uint8_t src, int16_t lfo1_q15, int16_t lfo2_q15) {
   switch (src) {
     case MOD_SRC_ADSR3:
       return (int32_t)ADSR1Level_q15[0];
@@ -96,9 +127,9 @@ static int32_t mod_matrix_read_source_q15(uint8_t src) {
     case MOD_SRC_AFTERTOUCH:
       return (int32_t)mod_aftertouch * 258;
     case MOD_SRC_LFO1:
-      return (int32_t)LFO1Level;
+      return (int32_t)lfo1_q15;
     case MOD_SRC_LFO2:
-      return (int32_t)LFO2Level;
+      return (int32_t)lfo2_q15;
     case MOD_SRC_PITCH_BEND:
       return ((int32_t)midi_pitch_bend - 8192) << 2;
     case MOD_SRC_MOD_WHEEL:
@@ -116,17 +147,43 @@ static int32_t mod_matrix_read_source_q15(uint8_t src) {
   }
 }
 
-void mod_matrix_accumulate(int32_t dest_sums[MOD_DEST_COUNT]) {
+void mod_matrix_accumulate(int32_t dest_sums[MOD_DEST_COUNT], int16_t lfo1_q15, int16_t lfo2_q15) {
   memset(dest_sums, 0, sizeof(int32_t) * MOD_DEST_COUNT);
-
-  for (uint8_t i = 0; i < MOD_SLOT_COUNT; i++) {
-    const ModSlot& s = g_mod_slots[i];
-    if (s.source == MOD_SRC_EMPTY || s.dest == MOD_DEST_EMPTY || s.depth == 0) continue;
-    if (s.dest >= MOD_DEST_COUNT) continue;
-
-    const int32_t src_q15 = mod_matrix_read_source_q15(s.source);
-    dest_sums[s.dest] += (int32_t)(((int64_t)src_q15 * (int64_t)s.depth) >> 15);
+  if (g_mod_live_mask == 0) {
+    return;
   }
+
+  uint8_t mask = g_mod_live_mask;
+  for (uint8_t i = 0; mask != 0; i++, mask >>= 1) {
+    if ((mask & 1u) == 0) {
+      continue;
+    }
+    const ModSlot& s = g_mod_slots[i];
+#ifndef ENABLE_CV_OUTS
+    if (s.dest != MOD_DEST_PITCH) {
+      continue;
+    }
+#endif
+    const int32_t src_q15 = mod_matrix_read_source_q15(s.source, lfo1_q15, lfo2_q15);
+    dest_sums[s.dest] += mod_depth_mul_q15(src_q15, s.depth);
+  }
+}
+
+int32_t __not_in_flash_func(mod_matrix_eval_pitch_q24)(int16_t lfo1_q15, int16_t lfo2_q15) {
+  if (g_mod_pitch_mask == 0) {
+    return 0;
+  }
+  int32_t pitch_s = 0;
+  uint8_t mask = g_mod_pitch_mask;
+  for (uint8_t i = 0; mask != 0; i++, mask >>= 1) {
+    if ((mask & 1u) == 0) {
+      continue;
+    }
+    const ModSlot& s = g_mod_slots[i];
+    const int32_t src_q15 = mod_matrix_read_source_q15(s.source, lfo1_q15, lfo2_q15);
+    pitch_s += mod_depth_mul_q15(src_q15, s.depth);
+  }
+  return mod_matrix_pitch_to_q24(pitch_s);
 }
 
 // Convert clamped pitch dest sum (±1023) to Q24 octave without a hot divide.

@@ -8,6 +8,9 @@
 #ifndef MO_LFO_USE_Q15
 #define MO_LFO_USE_Q15 1
 #endif
+#ifndef MO_LFO_SRAM_HOT
+#define MO_LFO_SRAM_HOT 1
+#endif
 
 #define LFO_SINE_TABLE_BITS 9
 
@@ -96,12 +99,13 @@ lfo LFO_DRIFT_CLASS[NUM_OSCILLATORS] = {
 /////////////////////////////////////////////////////////////////
 byte LFO_DRIFT_WAVEFORM = 2;
 float LFO_DRIFT_SPEED_OFFSET[NUM_OSCILLATORS];
-// Drift LFO levels as bipolar Q15 (Core0 write / Core1 read).
-// Polarity: negate Q15 for Mainboard polarity.
+// Drift LFO mailbox: Core0 DRIFT_LFOs() publishes Q15 then DMB; Core1 snapshots
+// once per voice_task into locals. Polarity: negate Q15 for Mainboard polarity.
 volatile int16_t LFO_DRIFT_LEVEL[NUM_OSCILLATORS];
 
 
-// LFO1/LFO2 levels as bipolar Q15 (±32767 ≈ ±1.0). Core0 write / Core1 CV+matrix+PW read.
+// LFO1/LFO2 mailbox: Core0 LFO1()+LFO2() publish Q15 + pitch_mod then DMB;
+// Core1 snapshots once per voice_task / update_CV_outs into locals.
 volatile int16_t LFO1Level;
 byte LFO1Waveform = 3;
 float LFO1Speed = 50;
@@ -112,7 +116,7 @@ int32_t LFO1toDCO_q24 = 0;
 int32_t LFO1toOSC1_q24 = 0;
 int32_t LFO1toOSC2_q24 = 0;
 int32_t LFO1toOSC3_q24 = 0;
-// Core 0 writes, Core 1 reads. Q24 log-frequency additive pitch modifiers.
+// Core 0 writes, Core 1 reads (mailbox + DMB). Q24 log-frequency additive pitch modifiers.
 volatile int32_t lfo1_pitch_mod_q24[LFO1_PITCH_SLOT_COUNT];
 volatile int32_t lfo2_pitch_mod_q24[LFO2_PITCH_SLOT_COUNT];
 
@@ -133,6 +137,7 @@ uint16_t LFO1toDCOVal;
 
 void LFO1();
 void LFO2();
+void DRIFT_LFOs();
 
 
 #endif

@@ -1,13 +1,11 @@
 """The DCO's control surface, as data. The GUI is generated entirely from this file.
 
-Ranges are what the Input board actually transmits, because that is what the DCO's
-apply_param_*() functions in DCO/params.ino expect. Only parameters the DCO actually
-handles are listed: the table mirrors paramTable[] in DCO/params.ino.
+Ranges are what the DCO's apply_param_*() functions in DCO/params.ino expect. Only
+parameters the DCO actually handles are listed: the table mirrors paramTable[] in
+DCO/params.ino.
 
-Everything goes out as a 'p' (16-bit) frame. The Input board uses 'w' (8-bit) for some
-of these, but 'w' sign-extends, so a value like portamento 200 arrives as -56 and only
-survives because the apply function casts back through uint8_t. Sending 'p' with the
-true positive value lands on the same result without depending on that round trip.
+Everything that is not a 1 ms ADSR/filter block goes out as a 4-byte 'p' frame
+(id + int16 LE). ADSR times and the filter block stay packed ('a'–'d').
 """
 
 from __future__ import annotations
@@ -116,7 +114,7 @@ class BlockField:
 
 @dataclass(frozen=True)
 class Block:
-    """A grouped frame ('a'-'f'). Any field change re-sends the whole frame,
+    """A packed 1 ms frame ('a'–'d'). Any field change re-sends the whole frame,
     which is exactly what the Input board does every millisecond."""
 
     key: str
@@ -214,6 +212,7 @@ PARAMS: list[Param] = [
     Param(89, "OSC3 Tri enable", GROUP_OSC, "check", default=0, cc=117),
 
     # --- Envelopes (curves and routing; times live in the a/b/c blocks) ---
+    Param(222, "ADSR1 to VCA", GROUP_ENV, "slider", 0, 512, 512, cc=48),
     Param(126, "EnvDCO (ADSR3) enabled", GROUP_ENV, "check", default=1, cc=24),
     Param(10, "ADSR3 to osc select", GROUP_ENV, "combo", default=0,
           choices=(("0 - OSC1", 0), ("1 - OSC2", 1), ("2 - OSC1+2", 2), ("3 - OSC3", 3), ("4 - all", 4)),
@@ -240,6 +239,8 @@ PARAMS: list[Param] = [
           note="0 = dry, 4095 = full wet; post-LP / pre-HP", cc=82),
 
     # --- PWM ---
+    Param(210, "Pulse width", GROUP_PWM, "slider", 0, 4095, 2048,
+          note="the DCO stores this as value / 4", cc=59),
     Param(45, "LFO2 to PW", GROUP_PWM, "slider", 0, 511, 0, cc=56),
     Param(46, "ADSR3 to PWM", GROUP_PWM, "slider", 0, 1023, 512,
           note="512 is centre; the DCO subtracts 512 internally", cc=57),
@@ -336,9 +337,6 @@ BLOCKS: list[Block] = [
           _adsr_builder(protocol.CMD_ADSR2_BLOCK)),
     Block("adsr_dco", "EnvDCO times (pitch and PW)", GROUP_ENV, _adsr_fields((44, 45, 46, 47)),
           _adsr_builder(protocol.CMD_ADSR3_BLOCK)),
-    Block("adsr1_to_vca", "EnvVCA to VCA amount", GROUP_ENV,
-          (BlockField("amount", "ADSR1 to VCA", 0, 512, 512, cc=48),),
-          lambda v: protocol.adsr1_to_vca(v["amount"])),
     Block("filter", "Filter block", GROUP_FILTER,
           (
               BlockField("cutoff", "Cutoff", 0, 4095, 4095, cc=52),
@@ -347,10 +345,6 @@ BLOCKS: list[Block] = [
               BlockField("lfo2_to_vcf", "LFO2 to cutoff", 0, 512, 0, cc=55),
           ),
           lambda v: protocol.filter_block(v["cutoff"], v["resonance"], v["adsr2_to_vcf"], v["lfo2_to_vcf"])),
-    Block("pw", "Pulse width", GROUP_PWM,
-          (BlockField("pw", "PW", 0, 4095, 2048, cc=59),),
-          lambda v: protocol.pw(v["pw"]),
-          note="the DCO stores this as value / 4"),
 ]
 
 
@@ -361,6 +355,9 @@ DEBUG_COMMANDS = (
     ("PIO topology report", 1),
     ("Period probe, clk_div 2000", 2),
     ("Period probe, clk_div 20000", 3),
+    ("Dump RAM (heap/stack)", 13),
+    ("Mem diag polls off", 14),
+    ("Mem diag polls on", 15),
     ("Note retrig: EXACT_Y", 26),
     ("Note retrig: SYNC_JMP", 27),
 )
@@ -388,6 +385,13 @@ AMP_COMP_COMMANDS = (
 PITCH_INTERP_COMMANDS = (
     ("Pitch: speed bench", 28),
     ("Pitch: accuracy", 29),
+)
+
+# Fixed clkdiv HP0 vs HP1 (PARAM_DEBUG_COMMAND 160). Needs RUNNING_AVERAGE.
+# Private clones — see BENCHMARKING.md §10. No live HP switch.
+CLKDIV_HP_COMMANDS = (
+    ("Clkdiv: speed bench", 32),
+    ("Clkdiv: accuracy", 33),
 )
 
 # Calibration-tab debug actions (PARAM_DEBUG_COMMAND 160). Not synth params.

@@ -35,6 +35,10 @@
 #define ADSR_BEZIER_UPDATE_Q15_CACHE 1
 #endif
 
+#ifndef ADSR_BEZIER_SRAM_HOT
+#define ADSR_BEZIER_SRAM_HOT 1
+#endif
+
 #include "_build_libs/ADSR_Bezier/ADSR_Bezier.h"
 
 

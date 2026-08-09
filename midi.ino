@@ -54,6 +54,9 @@ void init_midi() {
   MIDI_SERIAL.setHandleProgramChange(handleProgramChange);
   MIDI_SERIAL.setHandlePitchBend(handlePitchBend);
   MIDI_SERIAL.setHandleAfterTouchChannel(handleAfterTouchChannel);
+
+  MIDI_USB.turnThruOff();
+  MIDI_SERIAL.turnThruOff();
 }
 
 
@@ -101,10 +104,9 @@ void midi_cc_handle(uint8_t number, uint8_t value) {
   }
 }
 
-// Route a scaled value to its target. Table parameters take the normal router; the block
-// values have no ParamId, because the 'a'-'f' frames exist to pack four of them into one
-// frame for the Input link, so they are written here exactly as input_handle_*() in
-// Serial.ino writes them.
+// Route a scaled value to its target. Table parameters take the normal router; ADSR/filter
+// block values have no ParamId (1 ms packed 'a'–'d' frames), so they are written here
+// exactly as input_handle_*() in Serial.ino writes them. PW and EnvVCA→VCA are ParamIds.
 void midi_cc_apply(uint8_t target, int16_t value) {
   switch (target) {
     case CC_LOCAL_ADSR_VCA_ATTACK:      ADSR_VCA_attack  = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCA_A); break;
@@ -122,8 +124,6 @@ void midi_cc_apply(uint8_t target, int16_t value) {
     case CC_LOCAL_ADSR_DCO_SUSTAIN:     ADSR1_sustain = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_S); break;
     case CC_LOCAL_ADSR_DCO_RELEASE:     ADSR1_release = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_R); break;
 
-    case CC_LOCAL_ADSR1_TO_VCA_AMOUNT:  ADSR1toVCA = value; break;
-
     // CUTOFF/RESONANCE are used live in update_CV_outs; only mod depths need scale bake.
     // Input 'd' bakes ADSR2+LFO2 once for the filter block (depths in the same payload).
     case CC_LOCAL_FILTER_CUTOFF:        CUTOFF     = (uint16_t)value; break;
@@ -131,10 +131,7 @@ void midi_cc_apply(uint8_t target, int16_t value) {
     case CC_LOCAL_FILTER_ADSR2_TO_VCF:  ADSR2toVCF = value;           cv_bake_adsr2_to_vcf_scale(); break;
     case CC_LOCAL_FILTER_LFO2_TO_VCF:   LFO2toVCF  = (uint16_t)value; cv_bake_lfo2_to_vcf_scale(); break;
 
-    // The voice engine uses PW[0] at quarter scale, as the 'f' frame does.
-    case CC_LOCAL_PW_PW:                PW[0] = (uint16_t)value / 4; break;
-
-    default:                            update_parameters((byte)target, value); break;
+    default:                            update_parameters((uint16_t)target, value); break;
   }
 }
 

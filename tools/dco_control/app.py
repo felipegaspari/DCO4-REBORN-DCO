@@ -6,13 +6,15 @@ tested with no Input board and no Screen attached. Notes are not handled here: t
 already enumerates as a USB MIDI device, so play it from a MIDI keyboard or VMPK.
 
 Requires the firmware to be built with ENABLE_USB_CONTROL (see DCO/DCO.ino).
+Match SERIAL_FRAMING_COBS with --cobs or DCO_SERIAL_COBS=1.
 
-    python3 app.py [--port /dev/ttyACM0] [--theme dark|light]
+    python3 app.py [--port /dev/ttyACM0] [--theme dark|light] [--cobs]
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import queue
 import sys
 import threading
@@ -156,7 +158,14 @@ class Link:
 
 
 class App:
-    def __init__(self, root: tk.Tk, preferred_port: str | None, mode: str = "dark") -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        preferred_port: str | None,
+        mode: str = "dark",
+        cobs: bool = False,
+    ) -> None:
+        protocol.use_cobs = cobs
         self.root = root
         self.link = Link()
         self.pending: dict[str, bytes] = {}  # dedup key -> most recent frame
@@ -456,6 +465,7 @@ class App:
         self.status_var.set(f"connected to {device}")
         self._set_status_dot(True)
         self.log(f"[link] connected to {device} -- pushing UI state\n")
+        self.log(f"[link] framing={'COBS' if protocol.use_cobs else 'RAW'}\n")
         n = self.send_all()
         self.log(f"[link] pushed UI state ({n} frames)\n")
 
@@ -690,7 +700,7 @@ class App:
             self._env_times.columnconfigure(c, weight=1, uniform="env")
         self._build_env_curves_row(times)
 
-        row = self._add_block(parent, self.blocks_by_key["adsr1_to_vca"], 1, columnspan=3)
+        row = 1
         for p in params.PARAMS:
             if p.group == params.GROUP_ENV and p.pid not in ENV_CURVE_RESTART_PIDS:
                 row = self._add_param(parent, p, row)
@@ -1070,7 +1080,9 @@ class App:
         panel_specs = (
             ("Diagnostics", params.DEBUG_COMMANDS,
              "Output appears in the log below. Period probes only hold while no note "
-             "is playing. Note retrig 26/27 A/B EXACT_Y vs SYNC_JMP (needs oscSync ≥ 1); "
+             "is playing. Dump RAM (13) prints heap + per-core stack (needs ENABLE_MEM_DIAG). "
+             "14/15 disable/enable mem_diag loop polls (A/B vs profiler). "
+             "Note retrig 26/27 A/B EXACT_Y vs SYNC_JMP (needs oscSync ≥ 1); "
              "Board ack note_retrig=… when RUNNING_AVERAGE.", 0, 0),
             ("Hot-path profiler", params.BENCH_COMMANDS,
              "Needs RUNNING_AVERAGE in the firmware (otherwise these are no-ops). "
@@ -1088,6 +1100,11 @@ class App:
              "Speed/accuracy (28–29) need RUNNING_AVERAGE (paced Board output). "
              "Compares FLOAT / RATIO_Q16 / Q12 (private tables; Q20 slope is inside RATIO). "
              "Profiler dump (10) prints build: … pitch=… flags.", 1, 1),
+            ("Clkdiv HP0 / HP1", params.CLKDIV_HP_COMMANDS,
+             "Speed/accuracy (32–33) need RUNNING_AVERAGE (paced Board output). "
+             "Compares fixed-voice HP1 (Q8 64/32) vs HP0 (Q4) private clones. "
+             "Float voice ignores HIGH_PRECISION_CLKDIV; live_clkdiv= in the report.",
+             2, 0),
         )
         self._diag_panels = []
         for title, commands, note, grid_row, grid_col in panel_specs:
@@ -1210,7 +1227,7 @@ class App:
 
     def _enqueue(self, key: str, frame: bytes) -> None:
         """Stage a frame; last write for the same key wins until the next flush."""
-        self.pending[key] = frame
+        self.pending[key] = protocol.stuff(frame)
 
     def queue_param(self, pid: int, value: int) -> None:
         """Stage a 16-bit parameter frame (coalesced by the 20 ms flush)."""
@@ -1230,7 +1247,7 @@ class App:
         if not self.link.is_open:
             self.log("[link] not connected\n")
             return
-        self.link.send(frame)
+        self.link.send(protocol.stuff(frame))
 
     def _flush_pending(self) -> int:
         """Send staged frames if connected. Clears only after a successful send."""
@@ -1312,10 +1329,15 @@ def main() -> None:
     ap.add_argument("--port", help="serial device, e.g. /dev/ttyACM0 (default: auto-detect)")
     ap.add_argument("--theme", choices=theme.MODES, default="dark",
                     help="colour scheme; also switchable from the toolbar (default: dark)")
+    ap.add_argument("--cobs", action="store_true",
+                    help="COBS on-wire framing (match firmware SERIAL_FRAMING_COBS)")
     args = ap.parse_args()
 
+    env_cobs = os.environ.get("DCO_SERIAL_COBS", "").strip().lower() in ("1", "true", "yes")
+    cobs = args.cobs or env_cobs
+
     root = tk.Tk()
-    App(root, args.port, args.theme)
+    App(root, args.port, args.theme, cobs=cobs)
     root.mainloop()
 
 

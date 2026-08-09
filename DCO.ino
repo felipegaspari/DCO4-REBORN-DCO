@@ -25,17 +25,22 @@
 // ENGINE — board defaults (Arduino core: PICO_RP2350 / else)
 // =============================================================================
 #if defined(PICO_RP2350)
-// RP2350: ship fixed Q24/Q16 voice + Q15 CV (same buses as RP2040). Float paths remain
-// available via overrides below for A/B. FPU is unused on the live hot path by default.
-#ifndef AMP_COMP_METHOD_DEFAULT
-#define AMP_COMP_METHOD_DEFAULT 2  // FIXED
-#endif
-#ifndef PITCH_INTERP_MODE
-#define PITCH_INTERP_MODE PITCH_INTERP_RATIO_Q16
-#endif
-#ifndef HIGH_PRECISION_CLKDIV
-#define HIGH_PRECISION_CLKDIV 1  // fixed-voice clkdiv; ~4µs/voice 64-bit
-#endif
+  // RP2350 has an FPU: float voice + float amp-comp dual-build (LUT + Q8 for A/B).
+  #ifndef USE_FLOAT_VOICE_TASK
+    #define USE_FLOAT_VOICE_TASK
+  #endif
+  #ifndef PITCH_INTERP_MODE
+    #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT_FAST
+  #endif
+  #ifndef USE_FLOAT_AMP_COMP
+    #define USE_FLOAT_AMP_COMP
+  #endif
+  #ifndef AMP_COMP_METHOD_DEFAULT
+    #define AMP_COMP_METHOD_DEFAULT 0   // FLOAT_QUAD (0); LUT=1, FIXED=2 — cmds 20–22
+  #endif
+  #ifndef HIGH_PRECISION_CLKDIV
+    #define HIGH_PRECISION_CLKDIV 1     // fixed-voice clkdiv only; ignored by float voice
+  #endif
 #else
 // RP2040 / fallback: fixed voice + lean Q8 amp (no float amp tables / LUT RAM).
 // CV outs stay fixed-point (no USE_FLOAT_CV_OUTS) — soft-float would choke Core1.
@@ -48,6 +53,12 @@
 #ifndef HIGH_PRECISION_CLKDIV
 #define HIGH_PRECISION_CLKDIV 1  // 1 = ~4µs/voice 64-bit div; 0 = ~1µs fast Q-format
 #endif
+#endif
+
+// Note-on sync retrigger (oscSync >= 1): 0 = EXACT_Y (Y load + phase hold), 1 = SYNC_JMP
+// (restart jmp only; degree offsets need EXACT_Y). Runtime: cmds 26/27.
+#ifndef NOTE_RETRIG_MODE_DEFAULT
+#define NOTE_RETRIG_MODE_DEFAULT 0
 #endif
 
 // =============================================================================
@@ -104,28 +115,53 @@
 // codegen; for measuring that distortion, not for leaving on.
 // RUNNING_AVERAGE_PERIOD: only loop/loop1 BENCH_PERIOD; stage probes compile out.
 // Overrides FINE. Needs RUNNING_AVERAGE.
-// BENCH_PATH_STATS: porta path-tag if/else + walk-step sums in voices.ino.
-// Needs RUNNING_AVERAGE; path bumps still no-op under PERIOD. Leave off for shipping.
+// BENCH_PATH_STATS: all path bumps (amp/ratio/porta + walk-step sums) and dump
+// `-- Path counters --`. Needs RUNNING_AVERAGE; still no-op under PERIOD. Leave off for shipping.
+// BENCH_STAGE_STRIDE: MAIN/FINE stage probes every Nth loop (default 9). 1 = every iter.
+// BENCH_PERIOD is always every iter (speed truth). Note-on family always records.
+// BENCH_USE_SYSTICK: 1 = SysTick for PERIOD + stages; 0 = 1 us timer for all probes.
+// Dump window (1 s gate) always uses bench_us_now(). BENCH_PERIOD_MAX_US: discard PERIOD
+// samples longer than this (autotune / wrap-looking stalls).
 #define RUNNING_AVERAGE
 // #define RUNNING_AVERAGE_FINE
- #define RUNNING_AVERAGE_PERIOD
+// #define RUNNING_AVERAGE_PERIOD
 // #define BENCH_PATH_STATS
+#ifndef BENCH_STAGE_STRIDE
+#define BENCH_STAGE_STRIDE 9
+#endif
+#ifndef BENCH_USE_SYSTICK
+#define BENCH_USE_SYSTICK 1
+#endif
+#ifndef BENCH_PERIOD_MAX_US
+#define BENCH_PERIOD_MAX_US 20000
+#endif
+// ENABLE_MEM_DIAG: SRAM/heap dump (cmd 13) + loop/loop1 polls. Default on.
+// Comment out for a zero-cost match to pre-mem_diag period-only dumps.
+// Runtime 14/15 disable/enable polls without rebuild (dump 13 ignored while off).
+#define ENABLE_MEM_DIAG
 
 // Float vs double clkdiv comparison in voice_task_float; needs RUNNING_AVERAGE.
 // #define CLKDIV_BENCHMARK
+// Fixed HP0 vs HP1 clkdiv one-shots: debug cmds 32/33; needs RUNNING_AVERAGE only
+// (no extra flag; leave CLKDIV_BENCHMARK commented).
 
 // Amp-comp speed/accuracy reports (debug cmds 24–25); needs RUNNING_AVERAGE + USE_FLOAT_AMP_COMP.
 // #define AMP_COMP_BENCHMARK
 
+#ifdef AMP_COMP_BENCHMARK
+  #define USE_FLOAT_AMP_COMP
+#endif
 // =============================================================================
 // BOARD / IO
 // =============================================================================
 // Serial hub: Serial2 GP20/21 is the only peer link (Input panel protocol + 'x'
 // gap/cal TX). Screen is reached by Input relaying gap 154 on its Screen port.
 
-// Accept Input panel protocol on USB CDC too (tools/dco_control). Comment out for
+// Accept slim panel protocol on USB CDC too (tools/dco_control). Comment out for
 // production: stray terminal bytes are read as frame headers while enabled.
 #define ENABLE_USB_CONTROL
+
+// #define SERIAL_FRAMING_COBS  // A/B vs default RAW; host: dco_control --cobs
 
 // All RANGE pins via dithered PIO PWM (wrap 4666, 3-frame → ~14000). Comment out
 // to restore hardware PWM slices on RANGE_PINS[].
@@ -147,11 +183,7 @@
 // working. Leave commented for active-high / direct FET discharge. See PIO_OSCILLATORS.md.
 #define ENABLE_PIO_RESET_INVERT
 
-// Note-on sync retrigger (oscSync >= 1): 0 = EXACT_Y (Y load + phase hold), 1 = SYNC_JMP
-// (restart jmp only; degree offsets need EXACT_Y). Runtime: cmds 26/27.
-#ifndef NOTE_RETRIG_MODE_DEFAULT
-#define NOTE_RETRIG_MODE_DEFAULT 0
-#endif
+
 
 #include <Adafruit_TinyUSB.h>
 #include <MIDI.h>
@@ -188,6 +220,7 @@
 #include "PWM.h"
 #include "utils.h"
 #include "Timer_micros.h"
+#include "mem_diag.h"
 
 #include "LFO.h"
 #include "adsr.h"
@@ -204,13 +237,13 @@
 
 // Core 0 boot: USB, UART serial, MIDI handlers, LFOs, board fix pins, calibration input pin.
 void setup() {
-  //set_sys_clock_khz(250000, true);  // pass kHz constant — not sysClock macro
-  sys_clock_hz_refresh();
+  sys_clock_hz_refresh();  // Arduino already set clk_sys; cache real Hz for clkdiv
   // EEPROM.begin(512);
   bench_init_core();  // SysTick is per core; core 1 arms its own in setup1()
   init_micros_timers();
   init_usb();
   init_serial();
+  init_param_router();
   init_midi();
 
   init_LFOs();
@@ -237,8 +270,7 @@ void setup() {
 // Clears calibrationFlag so the init_DCO_calibration block below is currently unreachable.
 void setup1() {
 
-  //set_sys_clock_khz(250000, true);  // pass kHz constant — not sysClock macro
-  sys_clock_hz_refresh();
+  sys_clock_hz_refresh();  // Arduino already set clk_sys; cache real Hz for clkdiv
 
   bench_init_core();
   init_micros_timers();
@@ -276,9 +308,10 @@ void setup1() {
   }
 }
 
-// Core 0 forever loop: MIDI read, Serial2 parser; ~50 µs LFO1 + LFO2 + drift.
-void loop() {
+// Core 0 forever loop: MIDI every iter; Serial2 + USB CDC on 1 ms; ~50 µs LFO1 + LFO2 + drift.
+void __not_in_flash_func(loop)() {
   BENCH_PERIOD(loop0_period);
+  BENCH_SAMPLE_TICK();
 
   {
     BENCH_BEGIN(loop0_microsTimer);
@@ -289,8 +322,10 @@ void loop() {
   {
     BENCH_BEGIN(loop0_midi);
     uint8_t midi_budget = MIDI_DRAIN_BYTE_BUDGET;
-    while (midi_budget > 0 && MIDI_USB.read()) {
-      midi_budget--;
+    if (TinyUSBDevice.mounted()) {
+      while (midi_budget > 0 && MIDI_USB.read()) {
+        midi_budget--;
+      }
     }
     midi_budget = MIDI_DRAIN_BYTE_BUDGET;
     while (midi_budget > 0 && MIDI_SERIAL.read()) {
@@ -301,10 +336,12 @@ void loop() {
 
   {
     BENCH_BEGIN(loop0_serial);
-    serial_panel_task();
+    if (timer1msFlag) {
+      serial_panel_task();
 #ifdef ENABLE_USB_CONTROL
-    serial_usb_task();
+      serial_usb_task();
 #endif
+    }
     BENCH_END(loop0_serial);
   }
 
@@ -333,11 +370,13 @@ void loop() {
   // Snapshot core 0's probes and print once core 1 has handed its own over. All profiler
   // serial traffic happens here, never on the audio core.
   bench_poll_core0();
+  mem_diag_poll_core0();
 }
 
 // Core 1 forever loop: soft timers; auto/manual calibration OR ADSR + voice_task_main.
-void loop1() {
+void __not_in_flash_func(loop1)() {
   BENCH_PERIOD(loop1_period);
+  BENCH_SAMPLE_TICK();
 
   {
     BENCH_BEGIN(loop1_microsTimer);
@@ -403,4 +442,5 @@ void loop1() {
 
   // Hand this core's counters to core 0, which does all the printing.
   bench_service(1);
+  mem_diag_poll_core1();
 }

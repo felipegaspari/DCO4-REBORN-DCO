@@ -10,15 +10,22 @@
 // barrier the compiler cannot move work across. RUNNING_AVERAGE_PERIOD keeps only
 // BENCH_PERIOD (loop / loop1); all BENCH_BEGIN/END stage probes and path counters compile
 // out — use that for a true loop baseline without intermediate probe tax. PERIOD overrides FINE.
-// BENCH_PATH_STATS (DCO.ino): porta path-tag trees and walk-step sums in voices.ino.
+// BENCH_PATH_STATS (DCO.ino): all path bumps (amp/ratio/porta + walk-step sums) and the
+// dump `-- Path counters --` block. Off = no-ops even with RUNNING_AVERAGE. PERIOD still wins.
+// BENCH_STAGE_STRIDE (default 9): MAIN/FINE stage probes every Nth loop; BENCH_PERIOD always.
+// Note-on family (BENCH_T_RARE) always records. 1 = every-iter MAIN (old tax).
+// BENCH_USE_SYSTICK (DCO.ino, default 1): SysTick for PERIOD + stages; 0 = 1 us timer for all.
+// BENCH_PERIOD_MAX_US (DCO.ino, default 2000): discard PERIOD samples longer than this
+// (autotune / wrap-looking stalls). Dump window (1 s gate) always uses bench_us_now().
 //
 // Time source: SysTick, read as a free-running 24-bit down-counter clocked from clk_sys.
 // RP2040's Cortex-M0+ has no DWT cycle counter, so SysTick is the only single-cycle source
 // available on both chips. Resolution is one clk_sys cycle (4.4 ns at 225 MHz).
 //
-// Range: 24 bits wraps after 2^24 cycles — ~74.5 ms at 225 MHz, ~126 ms at 133 MHz. Anything
-// that can outlast that must use BENCH_PERIOD(), which reads the 1 us timer instead. The
-// report flags any probe whose max lands near the wrap so a silent overflow is visible.
+// Range: 24 bits wraps after 2^24 cycles — ~74.5 ms at 225 MHz, ~126 ms at 133 MHz.
+// BENCH_PERIOD() uses the same SysTick clock as stages when BENCH_USE_SYSTICK; samples
+// longer than BENCH_PERIOD_MAX_US are discarded. The 1 us timer remains for the dump
+// window gate only. The report flags any probe whose max lands near the wrap.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -37,6 +44,10 @@ void print_amp_comp_bench();
 extern volatile bool pitch_interp_bench_speed_pending;
 extern volatile bool pitch_interp_bench_accuracy_pending;
 void print_pitch_interp_bench();
+// Defined in clkdiv_bench.ino; HP0 vs HP1 speed/accuracy when RUNNING_AVERAGE.
+extern volatile bool clkdiv_hp_bench_speed_pending;
+extern volatile bool clkdiv_hp_bench_accuracy_pending;
+void print_clkdiv_hp_bench();
 
 extern volatile bool pio_probe_report_pending;
 void pio_probe_report_flush();
@@ -57,9 +68,16 @@ static inline const char *bench_pitch_interp_mode_name() {
 
 // Set to 0 to fall back to the 1 us timer for every probe, e.g. if SysTick turns out to be
 // claimed by the core (a FreeRTOS build uses it; plain arduino-pico drives millis()/micros()
-// from time_us_64() and leaves it alone).
+// from time_us_64() and leaves it alone). Sketch (DCO.ino) wins when set before include.
 #ifndef BENCH_USE_SYSTICK
 #define BENCH_USE_SYSTICK 1
+#endif
+#ifndef BENCH_PERIOD_MAX_US
+#define BENCH_PERIOD_MAX_US 2000
+#endif
+#if BENCH_PERIOD_MAX_US < 1
+#undef BENCH_PERIOD_MAX_US
+#define BENCH_PERIOD_MAX_US 1
 #endif
 
 // ---------------------------------------------------------------------------
@@ -73,7 +91,7 @@ static inline const char *bench_pitch_interp_mode_name() {
 // ---------------------------------------------------------------------------
 #define BENCH_PROBES(X)                                                                       \
   /* --- Core 0: loop() --- */                                                                \
-  X(loop0_period,      0, BENCH_US,  BENCH_T_MAIN, BENCH_NONE,          "loop period")         \
+  X(loop0_period,      0, BENCH_PERIOD_KIND, BENCH_T_MAIN, BENCH_NONE,  "loop period")         \
   X(loop0_microsTimer, 0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "microsTimer")         \
   X(loop0_midi,        0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "MIDI read")           \
   X(loop0_serial,      0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "serial panel/USB")    \
@@ -81,7 +99,7 @@ static inline const char *bench_pitch_interp_mode_name() {
   X(loop0_lfo2,        0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "LFO2")                \
   X(loop0_drift,       0, BENCH_CYC, BENCH_T_MAIN, BENCH_loop0_period,  "drift LFOs")          \
   /* --- Core 1: loop1() --- */                                                               \
-  X(loop1_period,      1, BENCH_US,  BENCH_T_MAIN, BENCH_NONE,          "loop1 period")        \
+  X(loop1_period,      1, BENCH_PERIOD_KIND, BENCH_T_MAIN, BENCH_NONE,  "loop1 period")        \
   X(loop1_microsTimer, 1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "microsTimer2")        \
   X(loop1_noise,       1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "noise_gens")          \
   X(loop1_noise_refill,1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_noise,   "noise refill")        \
@@ -100,15 +118,15 @@ static inline const char *bench_pitch_interp_mode_name() {
   X(vt_ratio_interp,   1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "ratio interpolate")   \
   X(vt_freq_scale_post,1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "apply ratio")         \
   X(vt_clk_div,        1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "clkdiv math")         \
-  X(vt_phase_align,    1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "phase align")         \
+  X(vt_phase_align,    1, BENCH_CYC, BENCH_T_RARE, BENCH_voice_task,    "phase align")         \
   /* Exact split on note-on frames next to hot phase_align (not inside note-on block). */ \
-  X(vt_retrig_split,   1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "retrig period split") \
+  X(vt_retrig_split,   1, BENCH_CYC, BENCH_T_RARE, BENCH_voice_task,    "retrig period split") \
   X(vt_chan_level,     1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "amp comp")            \
   X(vt_pio_write,      1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "PIO put/exec")        \
-  X(vt_note_retrig,    1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "note-on retrigger")   \
+  X(vt_note_retrig,    1, BENCH_CYC, BENCH_T_RARE, BENCH_voice_task,    "note-on retrigger")   \
   /* One SM-apply probe: fine MAIN slices mis-attribute cold XIP across load/jmp/enable. */ \
-  X(vt_retrig_sm_apply,1, BENCH_CYC, BENCH_T_MAIN, BENCH_vt_note_retrig,"retrig SM apply")     \
-  X(vt_retrig_pwm,     1, BENCH_CYC, BENCH_T_MAIN, BENCH_vt_note_retrig,"retrig RANGE PWM")    \
+  X(vt_retrig_sm_apply,1, BENCH_CYC, BENCH_T_RARE, BENCH_vt_note_retrig,"retrig SM apply")     \
+  X(vt_retrig_pwm,     1, BENCH_CYC, BENCH_T_RARE, BENCH_vt_note_retrig,"retrig RANGE PWM")    \
   X(vt_range_pwm,      1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "RANGE PWM")           \
   X(vt_pwm_calc,       1, BENCH_CYC, BENCH_T_FINE, BENCH_voice_task,    "PW arithmetic")       \
   X(vt_pw_update,      1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "PW level + write")
@@ -124,10 +142,25 @@ enum BenchId {
 // Probe unit. BENCH_CYC values are clk_sys cycles, BENCH_US values are microseconds.
 #define BENCH_CYC 0
 #define BENCH_US  1
+#if BENCH_USE_SYSTICK
+#define BENCH_PERIOD_KIND BENCH_CYC
+#else
+#define BENCH_PERIOD_KIND BENCH_US
+#endif
 
 // Probe tier. FINE probes only collect when RUNNING_AVERAGE_FINE is defined.
+// RARE (note-on family) always records even when MAIN stages are sampled 1/N.
 #define BENCH_T_MAIN 0
 #define BENCH_T_FINE 1
+#define BENCH_T_RARE 2
+
+#ifndef BENCH_STAGE_STRIDE
+#define BENCH_STAGE_STRIDE 9
+#endif
+#if BENCH_STAGE_STRIDE < 1
+#undef BENCH_STAGE_STRIDE
+#define BENCH_STAGE_STRIDE 1
+#endif
 
 // ---------------------------------------------------------------------------
 // Time source. Kept outside the RUNNING_AVERAGE guard so CLKDIV_BENCHMARK can use it
@@ -138,6 +171,8 @@ enum BenchId {
 // Cost of one back-to-back bench_now() pair, subtracted from every cycle sample.
 uint32_t bench_overhead_cyc = 0;
 uint32_t bench_cycles_per_us = 1;
+// PERIOD discard cap in the same unit as BENCH_PERIOD samples (cyc or us).
+uint32_t bench_period_max_raw = 0xFFFFFFFFu;
 
 // Wall-clock span each core's current set of samples was collected over, used for the
 // "share of the core's time" column.
@@ -163,7 +198,7 @@ static inline uint32_t bench_span(uint32_t start, uint32_t end) {
 }
 #endif
 
-// Free-running 1 us reading for the loop-period probes, which can outlast the 24-bit wrap.
+// Free-running 1 us reading for the dump window / 1 s gate (not loop-period probes).
 static inline uint32_t bench_us_now(void) {
   return timer_hw->timerawl;
 }
@@ -173,6 +208,12 @@ static inline uint32_t bench_us_now(void) {
 inline void bench_init_core() {
   bench_cycles_per_us = clock_get_hz(clk_sys) / 1000000u;
   if (bench_cycles_per_us == 0u) bench_cycles_per_us = 1u;
+#if BENCH_USE_SYSTICK
+  bench_period_max_raw = bench_cycles_per_us * (uint32_t)BENCH_PERIOD_MAX_US;
+#else
+  bench_period_max_raw = (uint32_t)BENCH_PERIOD_MAX_US;
+#endif
+  if (bench_period_max_raw == 0u) bench_period_max_raw = 1u;
 
 #if BENCH_USE_SYSTICK
   systick_hw->csr = 0u;
@@ -327,12 +368,7 @@ struct BenchPathStat {
 BenchPathStat bench_path_live;
 BenchPathStat bench_path_snap;
 
-#ifdef RUNNING_AVERAGE_PERIOD
-// Period-only: no path bumps (same spirit as stage BENCH_BEGIN/END no-ops).
-#define BENCH_PATH_INC(field) ((void)0)
-static inline void bench_path_walk_steps(uint32_t) {}
-static inline void bench_path_amp_walk_steps(uint32_t) {}
-#else
+#if defined(BENCH_PATH_STATS) && !defined(RUNNING_AVERAGE_PERIOD)
 // Same gate as BENCH_PERIOD: do not bump while paced dump TX is active.
 #define BENCH_PATH_INC(field) do {                                        \
     if (!bench_out_active) bench_path_live.field++;                       \
@@ -351,6 +387,11 @@ static inline void bench_path_amp_walk_steps(uint32_t steps) {
     bench_path_live.amp_walk_steps_max = steps;
   }
 }
+#else
+// No path bumps without BENCH_PATH_STATS (or under PERIOD-only).
+#define BENCH_PATH_INC(field) ((void)0)
+static inline void bench_path_walk_steps(uint32_t) {}
+static inline void bench_path_amp_walk_steps(uint32_t) {}
 #endif
 
 // Cross-core report handshake. Each core snapshots and clears its own probes, so no lock is
@@ -360,6 +401,10 @@ volatile bool bench_core_ready[2] = { false, false };
 volatile bool bench_periodic = false;
 // Bumped on snapshot/reset so BENCH_PERIOD drops its static prev (no straddling old window).
 volatile uint8_t bench_period_gen = 0;
+
+// Stage-probe sampling: BENCH_PERIOD every iter; MAIN/FINE every BENCH_STAGE_STRIDE loops.
+uint32_t bench_sample_ctr[2] = { 0, 0 };
+bool bench_stage_on[2] = { false, false };
 
 static inline void bench_stat_add(BenchStat *s, uint32_t d) {
   s->sum += d;
@@ -376,6 +421,40 @@ static inline void bench_add_cyc(uint8_t id, uint32_t start) {
   bench_stat_add(&bench_stats[id], (d > bench_overhead_cyc) ? (d - bench_overhead_cyc) : 0u);
 }
 
+// Sampled MAIN/FINE: scale sum/n by STRIDE so mean/%win match a full-rate dump; min/max stay d.
+static inline void bench_add_cyc_sampled(uint8_t id, uint32_t start) {
+  const uint32_t d0 = bench_span(start, bench_now());
+  if (bench_out_active) return;
+  const uint32_t d = (d0 > bench_overhead_cyc) ? (d0 - bench_overhead_cyc) : 0u;
+  BenchStat *s = &bench_stats[id];
+  const uint32_t stride = (uint32_t)BENCH_STAGE_STRIDE;
+  s->sum += d * stride;
+  if (s->n == 0u || d < s->min) s->min = d;
+  if (d > s->max) s->max = d;
+  s->n += stride;
+}
+
+static inline uint32_t bench_stage_begin(uint8_t id) {
+  if (bench_desc[id].tier == BENCH_T_RARE) {
+    return bench_now();
+  }
+  if (!bench_stage_on[get_core_num() & 1u]) {
+    return 0u;
+  }
+  return bench_now();
+}
+
+static inline void bench_stage_end(uint8_t id, uint32_t start) {
+  if (bench_desc[id].tier == BENCH_T_RARE) {
+    bench_add_cyc(id, start);
+    return;
+  }
+  if (!bench_stage_on[get_core_num() & 1u]) {
+    return;
+  }
+  bench_add_cyc_sampled(id, start);
+}
+
 static inline void bench_add_raw(uint8_t id, uint32_t d) {
   bench_stat_add(&bench_stats[id], d);
 }
@@ -383,33 +462,74 @@ static inline void bench_add_raw(uint8_t id, uint32_t d) {
 // Interval between successive arrivals. While a report is draining over USB, only refresh
 // the previous timestamp — never record — so dump TX cannot inflate period max on either core.
 // Generation check invalidates prev after snapshot/reset so the first delta cannot include
-// time from the previous collection window.
+// time from the previous collection window. SysTick CVR can be 0, so a separate ok flag
+// is the valid-prev sentinel (not prev==0). Spans above bench_period_max_raw are dropped.
+#if BENCH_USE_SYSTICK
 #define BENCH_PERIOD(id)                                                  \
   do {                                                                    \
     static uint32_t bench_prev_##id = 0u;                                 \
     static uint8_t bench_gen_##id = 0u;                                   \
+    static uint8_t bench_ok_##id = 0u;                                    \
+    const uint32_t bench_t_##id = bench_now();                            \
+    const uint8_t bench_g_##id = bench_period_gen;                        \
+    if (bench_gen_##id != bench_g_##id) {                                 \
+      bench_gen_##id = bench_g_##id;                                      \
+      bench_ok_##id = 0u;                                                 \
+    }                                                                     \
+    if (bench_ok_##id && !bench_out_active) {                             \
+      const uint32_t d = bench_span(bench_prev_##id, bench_t_##id);       \
+      if (d > 0u && d <= bench_period_max_raw) {                          \
+        bench_add_raw(BENCH_##id, d);                                     \
+      }                                                                   \
+    }                                                                     \
+    bench_prev_##id = bench_t_##id;                                       \
+    bench_ok_##id = 1u;                                                   \
+  } while (0)
+#else
+#define BENCH_PERIOD(id)                                                  \
+  do {                                                                    \
+    static uint32_t bench_prev_##id = 0u;                                 \
+    static uint8_t bench_gen_##id = 0u;                                   \
+    static uint8_t bench_ok_##id = 0u;                                    \
     const uint32_t bench_us_##id = bench_us_now();                        \
     const uint8_t bench_g_##id = bench_period_gen;                        \
     if (bench_gen_##id != bench_g_##id) {                                 \
       bench_gen_##id = bench_g_##id;                                      \
-      bench_prev_##id = 0u;                                               \
+      bench_ok_##id = 0u;                                                 \
     }                                                                     \
-    if (bench_prev_##id != 0u && !bench_out_active) {                     \
-      bench_add_raw(BENCH_##id, bench_us_##id - bench_prev_##id);         \
+    if (bench_ok_##id && !bench_out_active) {                             \
+      const uint32_t d = bench_us_##id - bench_prev_##id;                  \
+      if (d > 0u && d <= bench_period_max_raw) {                          \
+        bench_add_raw(BENCH_##id, d);                                     \
+      }                                                                   \
     }                                                                     \
     bench_prev_##id = bench_us_##id;                                      \
+    bench_ok_##id = 1u;                                                   \
   } while (0)
+#endif
 
 #ifdef RUNNING_AVERAGE_PERIOD
+#define BENCH_SAMPLE_TICK() ((void)0)
 #define BENCH_BEGIN(id)  ((void)0)
 #define BENCH_END(id)    ((void)0)
 #define BENCH_FBEGIN(id) ((void)0)
 #define BENCH_FEND(id)   ((void)0)
 #else
+#define BENCH_SAMPLE_TICK()                                               \
+  do {                                                                    \
+    const uint8_t bench_c_ = get_core_num() & 1u;                         \
+    uint32_t bench_n_ = ++bench_sample_ctr[bench_c_];                     \
+    if (bench_n_ >= (uint32_t)BENCH_STAGE_STRIDE) {                       \
+      bench_sample_ctr[bench_c_] = 0u;                                    \
+      bench_stage_on[bench_c_] = true;                                    \
+    } else {                                                              \
+      bench_stage_on[bench_c_] = false;                                   \
+    }                                                                     \
+  } while (0)
 // volatile start: force a real store/load so back-to-back probes cannot CSE timestamps.
 // Do NOT wrap in do/while — voice_task declares locals inside a probe and uses them after END.
-#define BENCH_BEGIN(id) volatile uint32_t bench_t_##id = bench_now()
-#define BENCH_END(id)   bench_add_cyc(BENCH_##id, bench_t_##id)
+#define BENCH_BEGIN(id) volatile uint32_t bench_t_##id = bench_stage_begin(BENCH_##id)
+#define BENCH_END(id)   bench_stage_end(BENCH_##id, bench_t_##id)
 #ifdef RUNNING_AVERAGE_FINE
 #define BENCH_FBEGIN(id) BENCH_BEGIN(id)
 #define BENCH_FEND(id)   BENCH_END(id)
@@ -534,7 +654,7 @@ inline void bench_print_row(uint8_t id, const char *indent) {
   // ~70% of the 24-bit range (~52 ms at 225 MHz). Past that the span is almost certainly
   // a wrap, not a real stage duration — say so rather than printing a plausible lie.
   if (d.kind == BENCH_CYC && s.max > ((BENCH_TIMER_MASK * 7u) / 10u)) {
-    bench_out_println("                             ^^ max near 24-bit wrap: use BENCH_PERIOD");
+    bench_out_println("                             ^^ max near 24-bit wrap (stall or overflow)");
   }
 }
 
@@ -675,19 +795,31 @@ inline void bench_print_path_counters() {
 
 // Format the report into bench_out_buf (no Serial I/O).
 inline void bench_print_report() {
-#ifdef RUNNING_AVERAGE_PERIOD
-  const char *probe_mode = "period only";
-#elif defined(RUNNING_AVERAGE_FINE)
-  const char *probe_mode = "fine probes on";
-#else
-  const char *probe_mode = "fine probes off";
-#endif
-
   char line[192];
   bench_out_puts("\n");
   bench_out_println("=================== DCO BENCH ===================");
-  snprintf(line, sizeof(line), "clk_sys %lu MHz   probe overhead %lu cyc   %s",
-           (unsigned long)bench_cycles_per_us, (unsigned long)bench_overhead_cyc, probe_mode);
+#ifdef RUNNING_AVERAGE_PERIOD
+  snprintf(line, sizeof(line), "clk_sys %lu MHz   probe overhead %lu cyc   period only",
+           (unsigned long)bench_cycles_per_us, (unsigned long)bench_overhead_cyc);
+#elif defined(RUNNING_AVERAGE_FINE)
+#if BENCH_STAGE_STRIDE > 1
+  snprintf(line, sizeof(line),
+           "clk_sys %lu MHz   probe overhead %lu cyc   fine probes on, stages every %u",
+           (unsigned long)bench_cycles_per_us, (unsigned long)bench_overhead_cyc,
+           (unsigned)BENCH_STAGE_STRIDE);
+#else
+  snprintf(line, sizeof(line), "clk_sys %lu MHz   probe overhead %lu cyc   fine probes on",
+           (unsigned long)bench_cycles_per_us, (unsigned long)bench_overhead_cyc);
+#endif
+#elif BENCH_STAGE_STRIDE > 1
+  snprintf(line, sizeof(line),
+           "clk_sys %lu MHz   probe overhead %lu cyc   stages every %u",
+           (unsigned long)bench_cycles_per_us, (unsigned long)bench_overhead_cyc,
+           (unsigned)BENCH_STAGE_STRIDE);
+#else
+  snprintf(line, sizeof(line), "clk_sys %lu MHz   probe overhead %lu cyc   fine probes off",
+           (unsigned long)bench_cycles_per_us, (unsigned long)bench_overhead_cyc);
+#endif
   bench_out_println(line);
 
   // Compile-time engine flags + live runtime selectors (amp method / note retrig).
@@ -728,13 +860,18 @@ inline void bench_print_report() {
   bench_out_println(line);
 
   snprintf(line, sizeof(line),
-           "adsr:   phase=%d float=%d micros=%d native_q15=%d dyadic=%d q15_cache=%d",
+           "adsr:   phase=%d float=%d micros=%d native_q15=%d dyadic=%d q15_cache=%d sram_hot=%d",
            (int)ADSR_BEZIER_PHASE_SHIFT,
            (int)ADSR_BEZIER_USE_FLOAT,
            (int)ADSR_BEZIER_USE_MICROS,
            (int)ADSR_BEZIER_NATIVE_Q15,
            (int)ADSR_BEZIER_Q15_DYADIC,
-           (int)ADSR_BEZIER_UPDATE_Q15_CACHE);
+           (int)ADSR_BEZIER_UPDATE_Q15_CACHE,
+           (int)ADSR_BEZIER_SRAM_HOT);
+  bench_out_println(line);
+
+  snprintf(line, sizeof(line), "lfo:    sram_hot=%d",
+           (int)MO_LFO_SRAM_HOT);
   bench_out_println(line);
 
   snprintf(line, sizeof(line), "noise:  engine=%d out=%d",
@@ -777,13 +914,18 @@ inline void bench_print_report() {
   );
   bench_out_println(line);
 
-  snprintf(line, sizeof(line), "bench:  clkdiv=%d amp_comp=%d",
+  snprintf(line, sizeof(line), "bench:  clkdiv=%d amp_comp=%d path_stats=%d",
 #ifdef CLKDIV_BENCHMARK
            1,
 #else
            0,
 #endif
 #ifdef AMP_COMP_BENCHMARK
+           1,
+#else
+           0,
+#endif
+#ifdef BENCH_PATH_STATS
            1
 #else
            0
@@ -796,7 +938,13 @@ inline void bench_print_report() {
   bench_print_core(0);
   bench_out_puts("\n");
   bench_print_core(1);
-#ifndef RUNNING_AVERAGE_PERIOD
+#if !defined(RUNNING_AVERAGE_PERIOD) && (BENCH_STAGE_STRIDE > 1)
+  snprintf(line, sizeof(line),
+           "Stage probes every %u loops (means/%%win scaled; period every iter; note-on always).",
+           (unsigned)BENCH_STAGE_STRIDE);
+  bench_out_println(line);
+#endif
+#if defined(BENCH_PATH_STATS) && !defined(RUNNING_AVERAGE_PERIOD)
   bench_print_path_counters();
 #endif
   bench_out_println("=================================================");
@@ -882,6 +1030,15 @@ inline void bench_poll_core0() {
     bench_out_active = (bench_out_len > 0u);
     bench_out_drain_chunk();
   }
+
+  // One-shot fixed clkdiv HP0 vs HP1 (PARAM_DEBUG_COMMAND 32/33).
+  if (!bench_out_active &&
+      (clkdiv_hp_bench_speed_pending || clkdiv_hp_bench_accuracy_pending)) {
+    bench_out_reset();
+    print_clkdiv_hp_bench();
+    bench_out_active = (bench_out_len > 0u);
+    bench_out_drain_chunk();
+  }
 }
 
 #else  // !RUNNING_AVERAGE
@@ -889,6 +1046,7 @@ inline void bench_poll_core0() {
 #define BENCH_BEGIN(id)  ((void)0)
 #define BENCH_END(id)    ((void)0)
 #define BENCH_PERIOD(id) ((void)0)
+#define BENCH_SAMPLE_TICK() ((void)0)
 #define BENCH_FBEGIN(id) ((void)0)
 #define BENCH_FEND(id)   ((void)0)
 #define BENCH_PATH_INC(field) ((void)0)

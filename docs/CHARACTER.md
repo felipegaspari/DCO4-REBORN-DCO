@@ -2,7 +2,7 @@
 
 Master **Character** amount scales three diagnostic “imperfection” axes that modulate live synthesis from existing `noiseLevel[]` samples. No extra noise generators are added — Character only reads the fleet already filled in `loop1` ([`noise.h`](../noise.h)).
 
-Related: [`MOD_MATRIX.md`](MOD_MATRIX.md) (Noise 0–3 as matrix sources), [`BENCHMARKING.md`](BENCHMARKING.md) §10 (noise engines). PCM5102 listen of a local noise fleet is on voice-aux ([`../../VOICE-AUX/docs/I2S_NOISE.md`](../../VOICE-AUX/docs/I2S_NOISE.md)), not this Character path.
+Related: [`MOD_MATRIX.md`](MOD_MATRIX.md) (Noise 0–3 as matrix sources), [`BENCHMARKING.md`](BENCHMARKING.md) §11 (noise engines). PCM5102 listen of a local noise fleet is on voice-aux ([`../../VOICE-AUX/docs/I2S_NOISE.md`](../../VOICE-AUX/docs/I2S_NOISE.md)), not this Character path.
 
 ---
 

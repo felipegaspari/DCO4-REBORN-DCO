@@ -85,7 +85,7 @@ Everything from the **filter through the end of the chain** that is **not** cuto
 
 | Domain | Mechanism / IDs | Dual-MCU owner |
 |--------|-----------------|----------------|
-| Osc / wave / level / notes / ADSR / LFO→voice | `'a'..'f'`, `'p'`/`'w'`, mux, level PWM | **RP2350** |
+| Osc / wave / level / notes / ADSR / LFO→voice | `'a'`–`'d'`, `'p'`, mux, level PWM | **RP2350** |
 | Cut / Res (+ `'d'` mods), VCA | `'d'`, envs, `PARAM_VCA_LEVEL` 43, … | **RP2350** |
 | Dist Drive / Mix | `PARAM_DIST_DRIVE` **52**, `PARAM_DIST_MIX` **53** | **RP2040** ([`VOICE-AUX/`](../../VOICE-AUX/)) |
 | AS3320 mode | `PARAM_FILTER_MODE` **54** | **RP2040** |
@@ -93,7 +93,7 @@ Everything from the **filter through the end of the chain** that is **not** cuto
 | FX (reserved) | **55–56** commented in `params_def.h` | **RP2040** later |
 | Upstream `'x'` 154/155 | DCO TX only | **RP2350** |
 
-Aux parses `'p'`/`'w'` only for apply; `'a'..'f'` / `'q'` are discarded after framing.
+Aux parses `'p'` only for apply; `'a'`–`'d'` / `'q'` are discarded after framing.
 
 ---
 

@@ -38,6 +38,7 @@
 #include "noise.h"
 #include "character_jitter.h"
 #include "Timer_micros.h"
+#include "mem_diag.h"
 
 #include "LFO.h"
 #include "adsr.h"

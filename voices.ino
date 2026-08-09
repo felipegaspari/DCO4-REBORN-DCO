@@ -4,6 +4,22 @@
 // Enable/disable detailed DCO debug report (including OSC1 frequency stages)
 #define DCO_DEBUG_REPORT 0
 
+static void amp_chan_levels_fixed(int64_t freq_q24_A, int64_t freq_q24_B, int64_t freq_q24_C,
+                                  uint8_t oscA, uint8_t oscB, uint8_t oscC,
+                                  uint16_t *outA, uint16_t *outB, uint16_t *outC);
+#if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
+int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex);
+#endif
+#if PITCH_INTERP_MODE == PITCH_INTERP_Q12
+int32_t interpolatePitchMultiplierIntQ16_cached(int32_t xQ16, int dcoIndex);
+#endif
+#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
+float interpolateRatioFloat_cached(float x, int dcoIndex);
+#endif
+#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
+float interpolateRatioFloat_cached_fast(float x, int dcoIndex);
+#endif
+
 #if HIGH_PRECISION_CLKDIV
 // HP1: (sys<<24)/freq_q24 via Q8 Hz → 64/32 div (not 64/64).
 static inline uint32_t hp1_total_cycles_q8(uint32_t sys_hz, int64_t freq_q24) {
@@ -384,7 +400,7 @@ static inline float q24_to_float(int32_t q) {
 #ifndef USE_FLOAT_VOICE_TASK
 // Fixed-point realtime voice engine (portamento, modifiers, clkdiv, amp, PIO/PWM/PW).
 // Selected by voice_task_main() when USE_FLOAT_VOICE_TASK is not defined.
-inline void voice_task_fixed_point() {
+void __not_in_flash_func(voice_task_fixed_point)() {
   // Track portamento-time and mode changes between calls so we can smoothly
   // retime the glide without introducing pitch discontinuities.
   static uint32_t last_portamento_time = 0;
@@ -407,9 +423,6 @@ inline void voice_task_fixed_point() {
   BENCH_END(vt_pitchbend);
 
   last_midi_pitch_bend = midi_pitch_bend;
-
-  // Hoist volatile PW depth once per task (ADSR uses precomputed ADSR1toPWM_scale).
-  const int16_t local_LFO2toPW = LFO2toPW;
 
   // Latch note-on edges for every voice slot (para may set flags on 1/2).
   for (int k = 0; k < NUM_VOICES; k++) {
@@ -694,30 +707,45 @@ inline void voice_task_fixed_point() {
       BENCH_END(vt_unison_mod);
 
       BENCH_BEGIN(vt_drift_mod);
-      // Drift: applyDepthQ24 avoids int64 mul on M0+ (same as LFO pitch depths).
+      // Snapshot Core 0 mailbox once, then applyDepthQ24 on locals (no volatile-in-mul).
       const int32_t driftScale_q24 = drift_pitch_scale_q24;
+      const int16_t driftA = LFO_DRIFT_LEVEL[DCO_A];
+      const int16_t driftB = LFO_DRIFT_LEVEL[DCO_B];
+      const int16_t driftC = LFO_DRIFT_LEVEL[DCO_C];
       int32_t DETUNE_DRIFT_OSC1_q24 =
-        (driftScale_q24 != 0) ? applyDepthQ24(LFO_DRIFT_LEVEL[DCO_A], driftScale_q24) : 0;
+        (driftScale_q24 != 0) ? applyDepthQ24(driftA, driftScale_q24) : 0;
       int32_t DETUNE_DRIFT_OSC2_q24 =
-        (driftScale_q24 != 0) ? applyDepthQ24(LFO_DRIFT_LEVEL[DCO_B], driftScale_q24) : 0;
+        (driftScale_q24 != 0) ? applyDepthQ24(driftB, driftScale_q24) : 0;
       int32_t DETUNE_DRIFT_OSC3_q24 =
-        (driftScale_q24 != 0) ? applyDepthQ24(LFO_DRIFT_LEVEL[DCO_C], driftScale_q24) : 0;
+        (driftScale_q24 != 0) ? applyDepthQ24(driftC, driftScale_q24) : 0;
       BENCH_END(vt_drift_mod);
 
-      BENCH_BEGIN(vt_modifiers);
-      // Combine modifiers in Q24 (faithful to original float path)
-      // Unison is applied per-osc below; shared part is pitchbend + epsilon only (LFO1 per osc).
-      // Character pitch jitter stacks after matrix when scale nonzero.
-      // Q24 octave-fraction sums fit int32 for normal depths (no int64).
-      int32_t modifiersBase_q24 =
-        calcPitchbend_q24 + Q24_ONE_EPS + matrix_pitch_mod_q24;
-      if (char_pitch_scale_q15) {
-        modifiersBase_q24 += character_pitch_delta_q24();
+      int32_t modifiersBase_q24;
+      int32_t freqModifiers_q24;
+      int32_t freq2Modifiers_q24;
+      int32_t freq3Modifiers_q24;
+      {
+        // Snapshot LFO pitch mailbox here only (short live range; not across clkdiv/amp/RANGE).
+        const int32_t local_lfo1_osc1 = lfo1_pitch_mod_q24[LFO1_PITCH_OSC1];
+        const int32_t local_lfo1_osc2 = lfo1_pitch_mod_q24[LFO1_PITCH_OSC2];
+        const int32_t local_lfo1_osc3 = lfo1_pitch_mod_q24[LFO1_PITCH_OSC3];
+        const int32_t local_lfo2_osc2 = lfo2_pitch_mod_q24[LFO2_PITCH_OSC2];
+        const int32_t local_lfo2_osc3 = lfo2_pitch_mod_q24[LFO2_PITCH_OSC3];
+        BENCH_BEGIN(vt_modifiers);
+        // Combine modifiers in Q24 (faithful to original float path)
+        // Unison is applied per-osc below; shared part is pitchbend + epsilon only (LFO1 per osc).
+        // Character pitch jitter stacks after matrix when scale nonzero.
+        // Q24 octave-fraction sums fit int32 for normal depths (no int64).
+        modifiersBase_q24 =
+          calcPitchbend_q24 + Q24_ONE_EPS + matrix_pitch_mod_q24;
+        if (char_pitch_scale_q15) {
+          modifiersBase_q24 += character_pitch_delta_q24();
+        }
+        freqModifiers_q24 = ADSRModifierOSC1_q24 + DETUNE_DRIFT_OSC1_q24 + modifiersBase_q24 + unisonMODIFIER_OSC1_q24 + local_lfo1_osc1;
+        freq2Modifiers_q24 = ADSRModifierOSC2_q24 + DETUNE_DRIFT_OSC2_q24 + modifiersBase_q24 + unisonMODIFIER_OSC2_q24 + local_lfo1_osc2 + local_lfo2_osc2;
+        freq3Modifiers_q24 = ADSRModifierOSC3_q24 + DETUNE_DRIFT_OSC3_q24 + modifiersBase_q24 + unisonMODIFIER_OSC3_q24 + local_lfo1_osc3 + local_lfo2_osc3;
+        BENCH_END(vt_modifiers);
       }
-      int32_t freqModifiers_q24 = ADSRModifierOSC1_q24 + DETUNE_DRIFT_OSC1_q24 + modifiersBase_q24 + unisonMODIFIER_OSC1_q24 + lfo1_pitch_mod_q24[LFO1_PITCH_OSC1];
-      int32_t freq2Modifiers_q24 = ADSRModifierOSC2_q24 + DETUNE_DRIFT_OSC2_q24 + modifiersBase_q24 + unisonMODIFIER_OSC2_q24 + lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] + lfo2_pitch_mod_q24[LFO2_PITCH_OSC2];
-      int32_t freq3Modifiers_q24 = ADSRModifierOSC3_q24 + DETUNE_DRIFT_OSC3_q24 + modifiersBase_q24 + unisonMODIFIER_OSC3_q24 + lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] + lfo2_pitch_mod_q24[LFO2_PITCH_OSC3];
-      BENCH_END(vt_modifiers);
 
       BENCH_BEGIN(vt_freq_scale_x);
 
@@ -883,35 +911,9 @@ inline void voice_task_fixed_point() {
       }
 
       BENCH_BEGIN(vt_chan_level);
-
       uint16_t chanLevel, chanLevel2, chanLevel3;
-
-      // Q24 Hz → Q8 Hz (FREQ_FRAC_BITS); one rounded shift (was Q24→Q16→Q8).
-      int32_t freqFx_A = (int32_t)((freq_q24_A + (1LL << 15)) >> 16);
-      int32_t freqFx_B = (int32_t)((freq_q24_B + (1LL << 15)) >> 16);
-      int32_t freqFx_C = (int32_t)((freq_q24_C + (1LL << 15)) >> 16);
-      switch (syncMode) {
-        case 0:
-          chanLevel = get_chan_level_lookup_fast(freqFx_A, DCO_A);
-          chanLevel2 = get_chan_level_lookup_fast(freqFx_B, DCO_B);
-          chanLevel3 = get_chan_level_lookup_fast(freqFx_C, DCO_C);
-          break;
-        case 1:
-          chanLevel = get_chan_level_lookup_fast((freqFx_A > freqFx_B ? freqFx_A : freqFx_B), DCO_A);
-          chanLevel2 = get_chan_level_lookup_fast(freqFx_B, DCO_B);
-          chanLevel3 = get_chan_level_lookup_fast(freqFx_C, DCO_C);
-          break;
-        case 2:
-          chanLevel = get_chan_level_lookup_fast(freqFx_A, DCO_A);
-          chanLevel2 = get_chan_level_lookup_fast((freqFx_A > freqFx_B ? freqFx_A : freqFx_B), DCO_B);
-          chanLevel3 = get_chan_level_lookup_fast(freqFx_C, DCO_C);
-          break;
-        default:
-          chanLevel = get_chan_level_lookup_fast(freqFx_A, DCO_A);
-          chanLevel2 = get_chan_level_lookup_fast(freqFx_B, DCO_B);
-          chanLevel3 = get_chan_level_lookup_fast(freqFx_C, DCO_C);
-          break;
-      }
+      amp_chan_levels_fixed(freq_q24_A, freq_q24_B, freq_q24_C, DCO_A, DCO_B, DCO_C,
+                            &chanLevel, &chanLevel2, &chanLevel3);
       BENCH_END(vt_chan_level);
 
       BENCH_BEGIN(vt_pio_write);
@@ -1072,6 +1074,8 @@ inline void voice_task_fixed_point() {
         // Shared PW PWM when any oscillator has analog Pulse enabled (DG411).
         const bool pulseOn = waveEnable[0][1] || waveEnable[1][1] || waveEnable[2][1];
         if (pulseOn) {
+          const int16_t local_LFO2Level = LFO2Level;
+          const int16_t local_LFO2toPW = LFO2toPW;
           BENCH_FBEGIN(vt_pwm_calc);
           // Optimized: This version avoids storing large intermediate products.
           // The multiplication and shift are combined into one expression per modulator,
@@ -1080,7 +1084,7 @@ inline void voice_task_fixed_point() {
           int32_t adsr1_delta =
             ((int32_t)ADSR1Level_q15[i] * ADSR1toPWM_scale) >> 15;
           int32_t lfo2_delta =
-            ((int32_t)LFO2Level * (int32_t)local_LFO2toPW) >> 15;
+            ((int32_t)local_LFO2Level * (int32_t)local_LFO2toPW) >> 15;
           int32_t pw_calc = (int32_t)DIV_COUNTER_PW - 1 - lfo2_delta - PW[0] + adsr1_delta
                             + character_pw_delta();
 
@@ -1126,7 +1130,7 @@ inline void voice_task_main() {
 
 #ifdef USE_FLOAT_VOICE_TASK
 // Float realtime voice engine (same stages as voice_task_fixed_point, in Hz). Board default on RP2350.
-inline void voice_task_float() {
+void __not_in_flash_func(voice_task_float)() {
     // --- Track portamento control changes exactly as in original ---
     static uint32_t last_portamento_time = 0;
     static uint8_t  last_portamento_mode = PORTA_MODE_SLEW;
@@ -1152,9 +1156,6 @@ inline void voice_task_float() {
     BENCH_END(vt_pitchbend);
 
     last_midi_pitch_bend = midi_pitch_bend;
-  
-    // Cache volatile PW depth (ADSR uses ADSR1toPWM_scale).
-    const int16_t local_LFO2toPW   = LFO2toPW;
 
     // Latch note-on edges for every voice slot (para may set flags on 1/2).
     for (int k = 0; k < NUM_VOICES; k++) {
@@ -1421,31 +1422,45 @@ inline void voice_task_float() {
       BENCH_END(vt_unison_mod);
 
       BENCH_BEGIN(vt_drift_mod);
-      // --- 2.6 Drift modifiers (float); LFO_DRIFT_LEVEL is mo-lfo Q15 ---
+      // Snapshot Core 0 mailbox once (same as fixed engine).
       float driftScale = q24_to_float(drift_pitch_scale_q24) * (1.0f / 32767.0f);
-      float DETUNE_DRIFT_OSC1 = (drift_pitch_scale_q24 != 0) ? (float)LFO_DRIFT_LEVEL[DCO_A] * driftScale : 0.0f;
-      float DETUNE_DRIFT_OSC2 = (drift_pitch_scale_q24 != 0) ? (float)LFO_DRIFT_LEVEL[DCO_B] * driftScale : 0.0f;
-      float DETUNE_DRIFT_OSC3 = (drift_pitch_scale_q24 != 0) ? (float)LFO_DRIFT_LEVEL[DCO_C] * driftScale : 0.0f;
+      const int16_t driftA = LFO_DRIFT_LEVEL[DCO_A];
+      const int16_t driftB = LFO_DRIFT_LEVEL[DCO_B];
+      const int16_t driftC = LFO_DRIFT_LEVEL[DCO_C];
+      float DETUNE_DRIFT_OSC1 = (drift_pitch_scale_q24 != 0) ? (float)driftA * driftScale : 0.0f;
+      float DETUNE_DRIFT_OSC2 = (drift_pitch_scale_q24 != 0) ? (float)driftB * driftScale : 0.0f;
+      float DETUNE_DRIFT_OSC3 = (drift_pitch_scale_q24 != 0) ? (float)driftC * driftScale : 0.0f;
       BENCH_END(vt_drift_mod);
 
-      BENCH_BEGIN(vt_modifiers);
-      float lfo1_osc1        = q24_to_float(lfo1_pitch_mod_q24[LFO1_PITCH_OSC1]);
-      float lfo1_osc2        = q24_to_float(lfo1_pitch_mod_q24[LFO1_PITCH_OSC2]);
-      float lfo1_osc3        = q24_to_float(lfo1_pitch_mod_q24[LFO1_PITCH_OSC3]);
-      float lfo2_osc2        = q24_to_float(lfo2_pitch_mod_q24[LFO2_PITCH_OSC2]);
-      float lfo2_osc3        = q24_to_float(lfo2_pitch_mod_q24[LFO2_PITCH_OSC3]);
-      float eps              = q24_to_float(Q24_ONE_EPS);
-      float pitchBendF   = calcPitchbend;
+      float freqModifiers1;
+      float freqModifiers2;
+      float freqModifiers3;
+      {
+        // Snapshot LFO pitch mailbox here only (short live range; same as fixed).
+        const int32_t local_lfo1_osc1 = lfo1_pitch_mod_q24[LFO1_PITCH_OSC1];
+        const int32_t local_lfo1_osc2 = lfo1_pitch_mod_q24[LFO1_PITCH_OSC2];
+        const int32_t local_lfo1_osc3 = lfo1_pitch_mod_q24[LFO1_PITCH_OSC3];
+        const int32_t local_lfo2_osc2 = lfo2_pitch_mod_q24[LFO2_PITCH_OSC2];
+        const int32_t local_lfo2_osc3 = lfo2_pitch_mod_q24[LFO2_PITCH_OSC3];
+        BENCH_BEGIN(vt_modifiers);
+        float lfo1_osc1        = q24_to_float(local_lfo1_osc1);
+        float lfo1_osc2        = q24_to_float(local_lfo1_osc2);
+        float lfo1_osc3        = q24_to_float(local_lfo1_osc3);
+        float lfo2_osc2        = q24_to_float(local_lfo2_osc2);
+        float lfo2_osc3        = q24_to_float(local_lfo2_osc3);
+        float eps              = q24_to_float(Q24_ONE_EPS);
+        float pitchBendF   = calcPitchbend;
   
-      // Character pitch jitter stacks after matrix when scale nonzero.
-      float modifiersBase = pitchBendF + eps + q24_to_float(matrix_pitch_mod_q24);
-      if (char_pitch_scale_q15) {
-        modifiersBase += q24_to_float(character_pitch_delta_q24());
+        // Character pitch jitter stacks after matrix when scale nonzero.
+        float modifiersBase = pitchBendF + eps + q24_to_float(matrix_pitch_mod_q24);
+        if (char_pitch_scale_q15) {
+          modifiersBase += q24_to_float(character_pitch_delta_q24());
+        }
+        freqModifiers1 = ADSRModifierOSC1 + DETUNE_DRIFT_OSC1 + modifiersBase + unisonMODIFIER_OSC1 + lfo1_osc1;
+        freqModifiers2 = ADSRModifierOSC2 + DETUNE_DRIFT_OSC2 + modifiersBase + unisonMODIFIER_OSC2 + lfo1_osc2 + lfo2_osc2;
+        freqModifiers3 = ADSRModifierOSC3 + DETUNE_DRIFT_OSC3 + modifiersBase + unisonMODIFIER_OSC3 + lfo1_osc3 + lfo2_osc3;
+        BENCH_END(vt_modifiers);
       }
-      float freqModifiers1 = ADSRModifierOSC1 + DETUNE_DRIFT_OSC1 + modifiersBase + unisonMODIFIER_OSC1 + lfo1_osc1;
-      float freqModifiers2 = ADSRModifierOSC2 + DETUNE_DRIFT_OSC2 + modifiersBase + unisonMODIFIER_OSC2 + lfo1_osc2 + lfo2_osc2;
-      float freqModifiers3 = ADSRModifierOSC3 + DETUNE_DRIFT_OSC3 + modifiersBase + unisonMODIFIER_OSC3 + lfo1_osc3 + lfo2_osc3;
-      BENCH_END(vt_modifiers);
 
       BENCH_BEGIN(vt_freq_scale_x);
       // --- 2.7 Multiplier table & ratio interpolation (float version) ---
@@ -1694,11 +1709,13 @@ inline void voice_task_float() {
 
         const bool pulseOn = waveEnable[0][1] || waveEnable[1][1] || waveEnable[2][1];
         if (pulseOn) {
+          const int16_t local_LFO2Level = LFO2Level;
+          const int16_t local_LFO2toPW = LFO2toPW;
           BENCH_FBEGIN(vt_pwm_calc);
           float adsr1_delta =
             ((float)ADSR1Level_q15[i] * (float)ADSR1toPWM_scale) * (1.0f / 32768.0f);
           float lfo2_delta =
-            ((float)LFO2Level * (float)local_LFO2toPW) * (1.0f / 32767.0f);
+            ((float)local_LFO2Level * (float)local_LFO2toPW) * (1.0f / 32767.0f);
           float pw_calc =
               (float)DIV_COUNTER_PW - 1.0f
             - (float)PW[0]
@@ -1845,13 +1862,41 @@ void setSyncMode() {
   }
 }
 
+// Q24→Q8 + syncMode switch + 3× lookup. SRAM so vt_chan_level is not a flash caller.
+static void __not_in_flash_func(amp_chan_levels_fixed)(int64_t freq_q24_A, int64_t freq_q24_B,
+                                                      int64_t freq_q24_C, uint8_t oscA, uint8_t oscB,
+                                                      uint8_t oscC, uint16_t *outA, uint16_t *outB,
+                                                      uint16_t *outC) {
+  const int32_t freqFx_A = (int32_t)((freq_q24_A + (1LL << 15)) >> 16);
+  const int32_t freqFx_B = (int32_t)((freq_q24_B + (1LL << 15)) >> 16);
+  const int32_t freqFx_C = (int32_t)((freq_q24_C + (1LL << 15)) >> 16);
+  const uint8_t sm = syncMode;
+  switch (sm) {
+    case 1:
+      *outA = get_chan_level_lookup_fast((freqFx_A > freqFx_B ? freqFx_A : freqFx_B), oscA);
+      *outB = get_chan_level_lookup_fast(freqFx_B, oscB);
+      *outC = get_chan_level_lookup_fast(freqFx_C, oscC);
+      break;
+    case 2:
+      *outA = get_chan_level_lookup_fast(freqFx_A, oscA);
+      *outB = get_chan_level_lookup_fast((freqFx_A > freqFx_B ? freqFx_A : freqFx_B), oscB);
+      *outC = get_chan_level_lookup_fast(freqFx_C, oscC);
+      break;
+    default:
+      *outA = get_chan_level_lookup_fast(freqFx_A, oscA);
+      *outB = get_chan_level_lookup_fast(freqFx_B, oscB);
+      *outC = get_chan_level_lookup_fast(freqFx_C, oscC);
+      break;
+  }
+}
+
 /**
  * @brief Fast amplitude compensation lookup (Q8 Hz) for fixed path / AMP_COMP_FIXED.
  *
  * Window rule matches float: first i with freqRow[i] <= x < freqRow[i+2].
  * Find: per-osc ampWinCache → walk → full scan (same as FLOAT_QUAD).
  */
-uint16_t get_chan_level_lookup_fast(int32_t x, uint8_t voiceN) {
+uint16_t __not_in_flash_func(get_chan_level_lookup_fast)(int32_t x, uint8_t voiceN) {
   const int32_t* freqRow   = ampCompFrequencyArray[voiceN];
   const int32_t* ampRow    = ampCompArray[voiceN];
   const int32_t* xBaseRow  = xBaseWIN[voiceN];
@@ -1967,7 +2012,7 @@ uint16_t get_chan_level_lookup_fast(int32_t x, uint8_t voiceN) {
  * @brief Pure-float quadratic amp-comp (Hz domain). Live FLOAT_QUAD.
  * Window find: per-osc cache → walk → full scan (first-match [Hz[w], Hz[w+2]]).
  */
-uint16_t get_chan_level_float_quad(float freqHz, uint8_t voiceN) {
+uint16_t __not_in_flash_func(get_chan_level_float_quad)(float freqHz, uint8_t voiceN) {
   if (freqHz <= ampCompFrequencyHz[voiceN][0]) {
     BENCH_PATH_INC(amp_clamp);
     return (uint16_t)ampCompArray[voiceN][0];
@@ -2043,7 +2088,7 @@ uint16_t get_chan_level_float_quad(float freqHz, uint8_t voiceN) {
   return (uint16_t)round(interpolatedValue);
 }
 
-uint16_t get_chan_level_lut(float freqHz, uint8_t voiceN) {
+uint16_t __not_in_flash_func(get_chan_level_lut)(float freqHz, uint8_t voiceN) {
   if (freqHz <= 0.0f) return ampCompLut[voiceN][0];
   if (freqHz >= (float)AMP_COMP_MAX_HZ) return ampCompLut[voiceN][AMP_COMP_MAX_HZ];
   // Nearest integer Hz (not trunc) — same single table load, lower quantize bias.
@@ -2189,7 +2234,7 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
 
 // Cached variant: pass DCO index to reuse last segment and avoid binary search
 #if PITCH_INTERP_MODE == PITCH_INTERP_Q12
-inline int32_t interpolatePitchMultiplierIntQ16_cached(int32_t xQ16, int dcoIndex) {
+int32_t __not_in_flash_func(interpolatePitchMultiplierIntQ16_cached)(int32_t xQ16, int dcoIndex) {
   int32_t xInt = xQ16 >> 16;
   if (xInt <= xMultiplierTable[0]) {
     return yMultiplierTable[0];
@@ -2235,7 +2280,7 @@ inline int32_t interpolatePitchMultiplierIntQ16_cached(int32_t xQ16, int dcoInde
 #if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
 // xQ16 and tables are natural Q16 (1.0 = 65536). Returns frequency ratio as Q16.
 // Miss path: O(1) trunc±1 (same idea as FLOAT_FAST) — avoids walk under LFO thrash.
-inline int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex) {
+int32_t __not_in_flash_func(interpolateRatioQ16_cached)(int32_t xQ16, int dcoIndex) {
   // Endpoints match initMultiplierTables (-1 / 3) in Q16.
   static constexpr int32_t kPitchX0_Q16 = -65536; // -1.0
   static constexpr int32_t kPitchX1_Q16 = 196608; // 3.0
@@ -2291,7 +2336,7 @@ inline int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex) {
 #if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
 // x = pitch modifier in ~[-1, 3]; returns frequency ratio directly (tables are unscaled).
 // Walk + bsearch find (A/B vs FLOAT_FAST).
-inline float interpolateRatioFloat_cached(float x, int dcoIndex) {
+float __not_in_flash_func(interpolateRatioFloat_cached)(float x, int dcoIndex) {
   if (x <= xMultiplierTableF[0]) {
     BENCH_PATH_INC(ratio_clamp);
     return yMultiplierTableF[0];
@@ -2359,9 +2404,9 @@ inline float interpolateRatioFloat_cached(float x, int dcoIndex) {
 
 #if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
 // Trunc+clamp±1 find; same lerp as walk. Keep ±1 even when walk_steps≈0 (live ballast).
-// noinline: isolate codegen from voice_task_float.
+// noinline: isolate codegen from voice_task_float (distinct SRAM symbol).
 __attribute__((noinline))
-float interpolateRatioFloat_cached_fast(float x, int dcoIndex) {
+float __not_in_flash_func(interpolateRatioFloat_cached_fast)(float x, int dcoIndex) {
   // Endpoints match initMultiplierTables (-1 / 3).
   if (x <= -1.0f) {
     BENCH_PATH_INC(ratio_clamp);

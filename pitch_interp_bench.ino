@@ -27,10 +27,13 @@ static constexpr int PIB_BENCH_OSCS = 1;
 static float   pib_xF[PIB_SIZE];
 static float   pib_yF[PIB_SIZE];
 static float   pib_slopeF[PIB_SIZE - 1];
-static int32_t pib_x[PIB_SIZE];
+static int32_t pib_x[PIB_SIZE];           // Q12 ×10000 table-units
 static int32_t pib_y[PIB_SIZE];
-static int32_t pib_slopeQ20[PIB_SIZE - 1];
 static int32_t pib_slopeQ12[PIB_SIZE - 1];
+static int32_t pib_xQ16[PIB_SIZE];        // live RATIO: native Q16 (1.0 = 65536)
+static int32_t pib_yQ16[PIB_SIZE];
+static int32_t pib_slopeQ16[PIB_SIZE - 1];
+static int32_t pib_slopeQ20[PIB_SIZE - 1]; // accuracy oracle on native Q16 knots (not live)
 static int16_t pib_cache[NUM_OSCILLATORS];
 static bool    pib_ready = false;
 
@@ -41,12 +44,17 @@ static constexpr float PITCH_BENCH_MOD_MIN = -1.0f;
 static constexpr float PITCH_BENCH_MOD_MAX = 3.0f;
 static constexpr float PITCH_BENCH_MOD_STEP = 0.0001f;       // seq (+ accuracy)
 static constexpr float PITCH_BENCH_MOD_STEP_JUMP = 0.05f;
-// Fixed-voice speed grid: same domain as integer table-units (mod*scale).
+// Fixed-voice Q12 speed grid: ×10000 table-units.
 static constexpr int32_t PIB_XINT_MIN = -PIB_SCALE;       // -10000
 static constexpr int32_t PIB_XINT_MAX = 3 * PIB_SCALE;    //  30000
 static constexpr int32_t PIB_XINT_STEP_SEQ = 1;
 static constexpr int32_t PIB_XINT_STEP_JUMP =
     (int32_t)(PITCH_BENCH_MOD_STEP_JUMP * (float)PIB_SCALE + 0.5f); // 500
+// Fixed-voice RATIO speed grid: native xQ16 (live clamp domain).
+static constexpr int32_t PIB_XQ16_MIN = -65536;   // -1.0
+static constexpr int32_t PIB_XQ16_MAX = 196608;   //  3.0
+static constexpr int32_t PIB_XQ16_STEP_SEQ = 7;     // ≈0.0001
+static constexpr int32_t PIB_XQ16_STEP_JUMP = 3277; // ≈0.05
 
 // |cents| histogram for p50/p95/p99 (linear bins over 0..HIST_MAX).
 static constexpr int PIB_HIST_BINS = 64;
@@ -97,19 +105,28 @@ static void pib_ensure_tables() {
       x = (-1.00 + (fraction * (double)i));
       y_value = (float)expInterpolationSolveY(x + 1.00, 1.00, 3.00, 0.50, 2.00);
     }
-    // FLOAT: natural modifier / ratio. Fixed: scaled int table-units (scale=10000).
+    // FLOAT: natural modifier / ratio. Q12: ×10000. RATIO: native Q16 (1.0 = 65536).
     pib_xF[i] = (float)x;
     pib_yF[i] = y_value;
     pib_x[i]  = (int32_t)(x * (double)PIB_SCALE);
     pib_y[i]  = (int32_t)(y_value * (double)PIB_SCALE);
+    pib_xQ16[i] = (int32_t)(x * 65536.0 + (x >= 0.0 ? 0.5 : -0.5));
+    pib_yQ16[i] = (int32_t)((double)y_value * 65536.0 + 0.5);
   }
 
   for (int i = 0; i < PIB_SIZE - 1; ++i) {
-    int32_t dx = pib_x[i + 1] - pib_x[i];
-    if (dx == 0) dx = 1;
-    int32_t dy = pib_y[i + 1] - pib_y[i];
-    pib_slopeQ20[i] = (int32_t)((((int64_t)dy << 20) + (dx > 0 ? dx / 2 : -dx / 2)) / (int64_t)dx);
-    pib_slopeQ12[i] = (int32_t)((((int64_t)dy << 12) + (dx > 0 ? dx / 2 : -dx / 2)) / (int64_t)dx);
+    int32_t dx12 = pib_x[i + 1] - pib_x[i];
+    if (dx12 == 0) dx12 = 1;
+    int32_t dy12 = pib_y[i + 1] - pib_y[i];
+    pib_slopeQ12[i] = (int32_t)((((int64_t)dy12 << 12) + (dx12 > 0 ? dx12 / 2 : -dx12 / 2)) / (int64_t)dx12);
+
+    int32_t dx16 = pib_xQ16[i + 1] - pib_xQ16[i];
+    if (dx16 == 0) dx16 = 1;
+    int32_t dy16 = pib_yQ16[i + 1] - pib_yQ16[i];
+    pib_slopeQ16[i] = (int32_t)((((int64_t)dy16 << 16) + (dx16 > 0 ? dx16 / 2 : -dx16 / 2)) / (int64_t)dx16);
+    // Non-live accuracy oracle: Q20 lerp on the same native Q16 knots.
+    pib_slopeQ20[i] = (int32_t)((((int64_t)dy16 << 20) + (dx16 > 0 ? dx16 / 2 : -dx16 / 2)) / (int64_t)dx16);
+
     float dxF = pib_xF[i + 1] - pib_xF[i];
     if (dxF == 0.0f) dxF = 1.0f;
     pib_slopeF[i] = (pib_yF[i + 1] - pib_yF[i]) / dxF;
@@ -119,24 +136,24 @@ static void pib_ensure_tables() {
   pib_ready = true;
 }
 
-static int pib_find_seg_int(int32_t xInt, int dcoIndex) {
+static int pib_find_seg_int(const int32_t *xTab, int32_t x, int dcoIndex) {
   int low = pib_cache[dcoIndex];
-  if (low < 0 || low > PIB_SIZE - 2 || !(pib_x[low] <= xInt && xInt < pib_x[low + 1])) {
+  if (low < 0 || low > PIB_SIZE - 2 || !(xTab[low] <= x && x < xTab[low + 1])) {
     if (low >= 0 && low < PIB_SIZE - 1) {
-      if (xInt >= pib_x[low + 1]) {
-        while (low < PIB_SIZE - 2 && xInt >= pib_x[low + 1]) low++;
-      } else if (xInt < pib_x[low]) {
-        while (low > 0 && xInt < pib_x[low]) low--;
+      if (x >= xTab[low + 1]) {
+        while (low < PIB_SIZE - 2 && x >= xTab[low + 1]) low++;
+      } else if (x < xTab[low]) {
+        while (low > 0 && x < xTab[low]) low--;
       }
     }
-    if (!(low >= 0 && low < PIB_SIZE - 1 && pib_x[low] <= xInt && xInt < pib_x[low + 1])) {
+    if (!(low >= 0 && low < PIB_SIZE - 1 && xTab[low] <= x && x < xTab[low + 1])) {
       int l = 0, h = PIB_SIZE - 1;
       while (l <= h) {
         int m = (l + h) >> 1;
-        if (pib_x[m] <= xInt && xInt < pib_x[m + 1]) {
+        if (xTab[m] <= x && x < xTab[m + 1]) {
           low = m;
           break;
-        } else if (xInt < pib_x[m]) {
+        } else if (x < xTab[m]) {
           h = m - 1;
         } else {
           l = m + 1;
@@ -189,7 +206,8 @@ static float pib_interp_float(float modifier, int dcoIndex) {
 }
 
 // Same lerp as pib_interp_float; find matches live interpolateRatioFloat_cached_fast
-// (cache hit or trunc+clamp±1, plain lerp). Accuracy should match FLOAT (~0¢).
+// (cache hit or trunc+clamp±1, plain lerp). noinline matches live codegen isolation.
+__attribute__((noinline))
 static float pib_interp_float_fast(float modifier, int dcoIndex) {
   if (modifier <= -1.0f) return pib_yF[0];
   if (modifier >= 3.0f) return pib_yF[PIB_SIZE - 1];
@@ -214,40 +232,52 @@ static float pib_interp_float_fast(float modifier, int dcoIndex) {
   return pib_yF[low] + pib_slopeF[low] * (modifier - pib_xF[low]);
 }
 
+// Live interpolateRatioQ16_cached clone: native Q16 x/y, slopeQ16, trunc±1 find,
+// fused ratio return (y is already frequency ratio Q16).
 static int32_t pib_interp_ratio_q16(int32_t xQ16, int dcoIndex) {
-  int32_t xInt = xQ16 >> 16;
-  if (xInt <= pib_x[0]) {
-    uint64_t num0 = ((uint64_t)(uint32_t)pib_y[0] << 16) + 5000u;
-    return (int32_t)((num0 * 0xD1B71759ULL) >> 45);
+  static constexpr int32_t kPitchX0_Q16 = -65536;
+  static constexpr int32_t kPitchX1_Q16 = 196608;
+  if (xQ16 <= kPitchX0_Q16) return pib_yQ16[0];
+  if (xQ16 >= kPitchX1_Q16) return pib_yQ16[PIB_SIZE - 1];
+
+  const int lastSeg = PIB_SIZE - 2;
+  int low = pib_cache[dcoIndex];
+  if (low >= 0 && low <= lastSeg &&
+      pib_xQ16[low] <= xQ16 && xQ16 < pib_xQ16[low + 1]) {
+    // cache hit
+  } else {
+    static constexpr int kPitchInvDx = PIB_SIZE / 4; // 50
+    int cand = (int)(((int64_t)(xQ16 - kPitchX0_Q16) * (int64_t)kPitchInvDx) >> 16);
+    if (cand < 0) cand = 0;
+    else if (cand > lastSeg) cand = lastSeg;
+    if (cand < lastSeg && xQ16 >= pib_xQ16[cand + 1]) ++cand;
+    else if (cand > 0 && xQ16 < pib_xQ16[cand]) --cand;
+    low = cand;
+    pib_cache[dcoIndex] = (int16_t)low;
   }
-  if (xInt >= pib_x[PIB_SIZE - 1]) {
-    uint64_t numN = ((uint64_t)(uint32_t)pib_y[PIB_SIZE - 1] << 16) + 5000u;
-    return (int32_t)((numN * 0xD1B71759ULL) >> 45);
-  }
-  int low = pib_find_seg_int(xInt, dcoIndex);
-  int32_t deltaQ16 = xQ16 - (pib_x[low] << 16);
-  int32_t yTab = pib_y[low] +
-                 (int32_t)((((int64_t)deltaQ16 * (int64_t)pib_slopeQ20[low]) + (1LL << 35)) >> 36);
-  uint64_t num = ((uint64_t)(uint32_t)yTab << 16) + 5000u;
-  return (int32_t)((num * 0xD1B71759ULL) >> 45);
+  const int32_t delta = xQ16 - pib_xQ16[low];
+  return pib_yQ16[low] + (((delta * pib_slopeQ16[low]) + (1 << 15)) >> 16);
 }
 
 static int32_t pib_interp_y_q12(int32_t xQ16, int dcoIndex) {
   int32_t xInt = xQ16 >> 16;
   if (xInt <= pib_x[0]) return pib_y[0];
   if (xInt >= pib_x[PIB_SIZE - 1]) return pib_y[PIB_SIZE - 1];
-  int low = pib_find_seg_int(xInt, dcoIndex);
+  int low = pib_find_seg_int(pib_x, xInt, dcoIndex);
   int32_t deltaQ12 = (xQ16 - (pib_x[low] << 16)) >> 4;
   return pib_y[low] + (int32_t)((((int64_t)deltaQ12 * (int64_t)pib_slopeQ12[low]) + (1LL << 23)) >> 24);
 }
 
+// Non-live accuracy oracle: Q20 lerp on native Q16 knots. Returns ratio Q16.
 static int32_t pib_interp_y_q20(int32_t xQ16, int dcoIndex) {
-  int32_t xInt = xQ16 >> 16;
-  if (xInt <= pib_x[0]) return pib_y[0];
-  if (xInt >= pib_x[PIB_SIZE - 1]) return pib_y[PIB_SIZE - 1];
-  int low = pib_find_seg_int(xInt, dcoIndex);
-  int32_t deltaQ16 = xQ16 - (pib_x[low] << 16);
-  return pib_y[low] + (int32_t)((((int64_t)deltaQ16 * (int64_t)pib_slopeQ20[low]) + (1LL << 35)) >> 36);
+  static constexpr int32_t kPitchX0_Q16 = -65536;
+  static constexpr int32_t kPitchX1_Q16 = 196608;
+  if (xQ16 <= kPitchX0_Q16) return pib_yQ16[0];
+  if (xQ16 >= kPitchX1_Q16) return pib_yQ16[PIB_SIZE - 1];
+  int low = pib_find_seg_int(pib_xQ16, xQ16, dcoIndex);
+  int32_t delta = xQ16 - pib_xQ16[low];
+  return pib_yQ16[low] +
+         (int32_t)((((int64_t)delta * (int64_t)pib_slopeQ20[low]) + (1LL << 19)) >> 20);
 }
 
 // Live fixed-voice yTab → ratioQ16 (same reciprocal as voices.ino vt_freq_scale_post).
@@ -256,7 +286,8 @@ static inline int32_t pib_y_to_ratio_q16(int32_t yTab) {
   return (int32_t)((num * 0xD1B71759ULL) >> 45);
 }
 
-// All methods take pitch modifier in [-1,3]. FLOAT uses it directly; fixed scale → table Q16.
+// All methods take pitch modifier in [-1,3]. FLOAT uses it directly.
+// RATIO / Q20 ref: lroundf(mod*65536) like float-voice A/B. Q12: ×10000 glue.
 static float pitch_bench_call(uint8_t method, float modifier, int dco) {
   switch (method) {
     case PITCH_BENCH_FLOAT:
@@ -264,8 +295,7 @@ static float pitch_bench_call(uint8_t method, float modifier, int dco) {
     case PITCH_BENCH_FLOAT_FAST:
       return pib_interp_float_fast(modifier, dco);
     case PITCH_BENCH_RATIO_Q16: {
-      float xTab = modifier * (float)PIB_SCALE;
-      int32_t xQ16 = (int32_t)lroundf(xTab * 65536.0f);
+      int32_t xQ16 = (int32_t)lroundf(modifier * 65536.0f);
       return (float)pib_interp_ratio_q16(xQ16, dco) * (1.0f / 65536.0f);
     }
     case PITCH_BENCH_Q12: {
@@ -274,10 +304,9 @@ static float pitch_bench_call(uint8_t method, float modifier, int dco) {
       return (float)pib_interp_y_q12(xQ16, dco) / (float)PIB_SCALE;
     }
     case PITCH_BENCH_Q20_REF: {
-      // Private accuracy reference (slopeQ20 y → ratio); not a selectable live mode.
-      float xTab = modifier * (float)PIB_SCALE;
-      int32_t xQ16 = (int32_t)lroundf(xTab * 65536.0f);
-      return (float)pib_interp_y_q20(xQ16, dco) / (float)PIB_SCALE;
+      // Private accuracy reference (Q20 lerp on native Q16 knots); not a live mode.
+      int32_t xQ16 = (int32_t)lroundf(modifier * 65536.0f);
+      return (float)pib_interp_y_q20(xQ16, dco) * (1.0f / 65536.0f);
     }
     default:
       return 1.0f;
@@ -289,14 +318,14 @@ static double pib_cents_abs(float cand, float ref) {
   return fabs(1200.0 * log2((double)cand / (double)ref));
 }
 
-// True when modifier maps to an int-table knot (scaled x matches a knot).
+// True when modifier maps to a native-Q16 knot (live RATIO / Q20-ref domain).
 static bool pib_is_knot(float modifier) {
-  int32_t xi = (int32_t)lroundf(modifier * (float)PIB_SCALE);
+  int32_t xi = (int32_t)lroundf(modifier * 65536.0f);
   int l = 0, h = PIB_SIZE - 1;
   while (l <= h) {
     int m = (l + h) >> 1;
-    if (pib_x[m] == xi) return true;
-    if (pib_x[m] < xi) l = m + 1;
+    if (pib_xQ16[m] == xi) return true;
+    if (pib_xQ16[m] < xi) l = m + 1;
     else h = m - 1;
   }
   return false;
@@ -342,15 +371,23 @@ static uint32_t pib_mod_samples_per_osc(float modStep) {
   return n;
 }
 
+static uint32_t pib_q16_samples(int32_t step) {
+  uint32_t n = 0;
+  for (int32_t x = PIB_XQ16_MIN; x <= PIB_XQ16_MAX; x += step) ++n;
+  return n;
+}
+
 // Timed flag-path speed run for one method. `repeats` replays the grid (jump uses
 // many passes so call count ≈ seq). Cache reset once at start — jump steps still miss.
-static void pib_speed_run(uint8_t method, float modStep, int32_t xIntStep,
+static void pib_speed_run(uint8_t method, float modStep, int32_t xIntStep, int32_t xQ16Step,
                           uint32_t repeats, uint32_t *outCalls, uint64_t *outUs) {
   pib_reset_cache();
   uint32_t t0 = micros();
   uint32_t calls = 0;
 
 #ifdef USE_FLOAT_VOICE_TASK
+  (void)xIntStep;
+  (void)xQ16Step;
   volatile float sink = 0.0f;
   static constexpr float Q16_TO_F = 1.0f / 65536.0f;
   for (uint32_t r = 0; r < repeats; ++r) {
@@ -362,19 +399,13 @@ static void pib_speed_run(uint8_t method, float modStep, int32_t xIntStep,
           sink += pib_interp_float(mod, o);
         } else if (method == PITCH_BENCH_FLOAT_FAST) {
           sink += pib_interp_float_fast(mod, o);
-        } else {
+        } else if (method == PITCH_BENCH_RATIO_Q16) {
+          int32_t xQ16 = (int32_t)lroundf(mod * 65536.0f);
+          sink += (float)pib_interp_ratio_q16(xQ16, o) * Q16_TO_F;
+        } else if (method == PITCH_BENCH_Q12) {
           float xTab = mod * (float)PIB_SCALE;
           int32_t xQ16 = (int32_t)lroundf(xTab * 65536.0f);
-          switch (method) {
-            case PITCH_BENCH_RATIO_Q16:
-              sink += (float)pib_interp_ratio_q16(xQ16, o) * Q16_TO_F;
-              break;
-            case PITCH_BENCH_Q12:
-              sink += (float)pib_interp_y_q12(xQ16, o) / (float)PIB_SCALE;
-              break;
-            default:
-              break;
-          }
+          sink += (float)pib_interp_y_q12(xQ16, o) / (float)PIB_SCALE;
         }
         ++calls;
       }
@@ -398,22 +429,24 @@ static void pib_speed_run(uint8_t method, float modStep, int32_t xIntStep,
       }
     }
     (void)sink;
+  } else if (method == PITCH_BENCH_RATIO_Q16) {
+    volatile int32_t sink = 0;
+    for (uint32_t r = 0; r < repeats; ++r) {
+      for (uint8_t o = 0; o < PIB_BENCH_OSCS; ++o) {
+        for (int32_t xQ16 = PIB_XQ16_MIN; xQ16 <= PIB_XQ16_MAX; xQ16 += xQ16Step) {
+          sink += pib_interp_ratio_q16(xQ16, o);
+          ++calls;
+        }
+      }
+    }
+    (void)sink;
   } else {
     volatile int32_t sink = 0;
     for (uint32_t r = 0; r < repeats; ++r) {
       for (uint8_t o = 0; o < PIB_BENCH_OSCS; ++o) {
         for (int32_t xInt = PIB_XINT_MIN; xInt <= PIB_XINT_MAX; xInt += xIntStep) {
           const int32_t xQ16 = xInt << 16;
-          switch (method) {
-            case PITCH_BENCH_RATIO_Q16:
-              sink += pib_interp_ratio_q16(xQ16, o);
-              break;
-            case PITCH_BENCH_Q12:
-              sink += pib_y_to_ratio_q16(pib_interp_y_q12(xQ16, o));
-              break;
-            default:
-              break;
-          }
+          sink += pib_y_to_ratio_q16(pib_interp_y_q12(xQ16, o));
           ++calls;
         }
       }
@@ -428,24 +461,26 @@ static void pib_speed_run(uint8_t method, float modStep, int32_t xIntStep,
 }
 
 static void pib_speed_print_table(const char *pattern, float modStep, int32_t xIntStep,
-                                  uint32_t repeats,
+                                  int32_t xQ16Step, uint32_t repeats,
                                   const uint32_t *totalCalls, const uint64_t *totalUs) {
-  double refUs = (double)totalUs[PITCH_BENCH_FLOAT];
-  if (refUs < 1.0) refUs = 1.0;
+  double refMeanNs = ((double)totalUs[PITCH_BENCH_FLOAT] * 1000.0) /
+                     (double)totalCalls[PITCH_BENCH_FLOAT];
+  if (refMeanNs < 1e-9) refMeanNs = 1e-9;
 
   bench_out_printf("-- pattern=%s  step=%.4f repeats=%lu oscs=%d",
                    pattern, (double)modStep, (unsigned long)repeats, PIB_BENCH_OSCS);
 #ifndef USE_FLOAT_VOICE_TASK
-  bench_out_printf("  xIntStep=%ld", (long)xIntStep);
+  bench_out_printf("  xIntStep=%ld xQ16Step=%ld", (long)xIntStep, (long)xQ16Step);
 #else
   (void)xIntStep;
+  (void)xQ16Step;
 #endif
   bench_out_println("");
   bench_out_println("method       calls    totalUs   meanNs  pctVsFloat");
   bench_out_println("------------ -------- --------- -------- ----------");
   for (uint8_t method = 0; method < PITCH_BENCH_METHODS; ++method) {
     double meanNs = ((double)totalUs[method] * 1000.0) / (double)totalCalls[method];
-    double pct = 100.0 * (double)totalUs[method] / refUs;
+    double pct = 100.0 * meanNs / refMeanNs;
     bench_out_printf("%-12s %8lu %9lu %8.2f %10.1f\n",
                      pitch_bench_method_name(method),
                      (unsigned long)totalCalls[method],
@@ -465,27 +500,35 @@ void pitch_interp_bench_run_speed() {
   if (jumpPerOsc > 0 && seqPerOsc > jumpPerOsc) {
     jumpRepeats = (seqPerOsc + jumpPerOsc - 1u) / jumpPerOsc;
   }
+  const uint32_t q16Seq = pib_q16_samples(PIB_XQ16_STEP_SEQ);
+  const uint32_t q16Jump = pib_q16_samples(PIB_XQ16_STEP_JUMP);
+  uint32_t ratioJumpRepeats = 1;
+  if (q16Jump > 0 && q16Seq > q16Jump) {
+    ratioJumpRepeats = (q16Seq + q16Jump - 1u) / q16Jump;
+  }
 
   struct Pattern {
     const char *name;
     float modStep;
     int32_t xIntStep;
+    int32_t xQ16Step;
     uint32_t repeats;
   };
   const Pattern patterns[2] = {
-    {"seq",  PITCH_BENCH_MOD_STEP,      PIB_XINT_STEP_SEQ,  1u},
-    {"jump", PITCH_BENCH_MOD_STEP_JUMP, PIB_XINT_STEP_JUMP, jumpRepeats},
+    {"seq",  PITCH_BENCH_MOD_STEP,      PIB_XINT_STEP_SEQ,  PIB_XQ16_STEP_SEQ,  1u},
+    {"jump", PITCH_BENCH_MOD_STEP_JUMP, PIB_XINT_STEP_JUMP, PIB_XQ16_STEP_JUMP, jumpRepeats},
   };
 
   bench_out_println("=== PITCH INTERP BENCH ===");
   bench_out_printf("live_pitch=%s (private tables; does not touch voice)\n",
                    pitch_bench_live_mode_name());
 #ifdef USE_FLOAT_VOICE_TASK
-  bench_out_printf("speed=flag-path voice=FLOAT (to float ratio; int modes incl. lroundf)\n");
+  bench_out_printf("speed=flag-path voice=FLOAT (to float ratio; RATIO lroundf(mod*65536))\n");
 #else
-  bench_out_printf("speed=flag-path voice=FIXED (to ratioQ16; Q* incl. y->ratio; FLOAT*=ref)\n");
+  bench_out_printf("speed=flag-path voice=FIXED (RATIO native xQ16; Q12 y->ratio; FLOAT*=ref)\n");
 #endif
-  bench_out_printf("FLOAT=walk find  FLOAT_FAST=live trunc+clamp±1 find  pctVsFloat vs FLOAT\n");
+  bench_out_printf("RATIO=native Q16 slopeQ16 trunc±1  Q12=×10000 slopeQ12\n");
+  bench_out_printf("FLOAT=walk find  FLOAT_FAST=live trunc+clamp±1 noinline  pctVsFloat vs FLOAT meanNs\n");
   bench_out_printf("seq=walk-favorable  jump=miss-heavy (live-like under pitch mod)\n");
   bench_out_printf("grid=mod %.4f..%.4f\n",
                    (double)PITCH_BENCH_MOD_MIN, (double)PITCH_BENCH_MOD_MAX);
@@ -494,11 +537,18 @@ void pitch_interp_bench_run_speed() {
     uint32_t totalCalls[PITCH_BENCH_METHODS] = {0};
     uint64_t totalUs[PITCH_BENCH_METHODS] = {0};
     for (uint8_t method = 0; method < PITCH_BENCH_METHODS; ++method) {
+      uint32_t reps = patterns[p].repeats;
+#ifndef USE_FLOAT_VOICE_TASK
+      if (method == PITCH_BENCH_RATIO_Q16 && p == 1) reps = ratioJumpRepeats;
+#else
+      (void)ratioJumpRepeats;
+#endif
       pib_speed_run(method, patterns[p].modStep, patterns[p].xIntStep,
-                    patterns[p].repeats, &totalCalls[method], &totalUs[method]);
+                    patterns[p].xQ16Step, reps,
+                    &totalCalls[method], &totalUs[method]);
     }
     pib_speed_print_table(patterns[p].name, patterns[p].modStep, patterns[p].xIntStep,
-                          patterns[p].repeats, totalCalls, totalUs);
+                          patterns[p].xQ16Step, patterns[p].repeats, totalCalls, totalUs);
   }
   bench_out_println("=========================");
 }
@@ -611,8 +661,10 @@ void pitch_interp_bench_run_accuracy() {
   uint32_t nSamples = vsFloat[0].n;
 
   bench_out_println("=== PITCH INTERP ACCURACY ===");
-  bench_out_printf("live_pitch=%s | grid=mod %.4f..%.4f step=%.4f oscs=%d | n=%lu\n",
-                   pitch_bench_live_mode_name(),
+  bench_out_printf("live_pitch=%s | RATIO=native Q16 slopeQ16 trunc±1 | "
+                   "Q20 ref=non-live Q20 lerp on Q16 knots\n",
+                   pitch_bench_live_mode_name());
+  bench_out_printf("grid=mod %.4f..%.4f step=%.4f oscs=%d | n=%lu\n",
                    (double)PITCH_BENCH_MOD_MIN, (double)PITCH_BENCH_MOD_MAX,
                    (double)PITCH_BENCH_MOD_STEP, PIB_BENCH_OSCS, (unsigned long)nSamples);
 
@@ -644,7 +696,7 @@ void pitch_interp_bench_run_accuracy() {
   }
 
   // --- Section 2: vs Q20 (float table-gap + int slope A/B) ---
-  bench_out_println("\n-- vs Q20 ref (FLOAT*≈table gap; RATIO/Q12 = slope A/B) --");
+  bench_out_println("\n-- vs Q20 ref (native Q16 knots; FLOAT*≈table gap; RATIO=slopeQ16 vs Q20) --");
   bench_out_println("method       mean¢    max¢   p50¢   p95¢   p99¢  >0.01¢% >0.1¢%");
   for (int i = 0; i < N_SLOPE; ++i) {
     Acc &a = vsQ20[i];

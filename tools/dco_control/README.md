@@ -12,9 +12,14 @@ keyboard, VMPK, or anything else that can reach an ALSA MIDI port.
 ## 1. Firmware requirement
 
 The board must be built with `ENABLE_USB_CONTROL`, which is on by default in
-[`DCO.ino`](../../DCO.ino). It makes the USB serial port accept the same frames
-the Input board sends on its UART, using the same handler table, so nothing about the
-board's behaviour changes — it just gains a second place those frames can arrive from.
+[`DCO.ino`](../../DCO.ino). USB CDC uses the same slim inner frames and handler LUT as
+Serial2 (`serial_input_protocol.h`). The Input board firmware still sends the older BE
+format until it is updated; this tool is the live control path.
+
+On-wire framing defaults to **RAW** (inner bytes as-is). To A/B **COBS** (`COBS(inner)+0x00`),
+uncomment `#define SERIAL_FRAMING_COBS` in [`DCO.ino`](../../DCO.ino) and start this tool
+with `--cobs` or `DCO_SERIAL_COBS=1`. Mismatch (firmware RAW + tool `--cobs`, or the reverse)
+looks like ignored controls; the tool logs `[link] framing=...` on connect.
 
 The sketch also needs the TinyUSB stack, which it already required for USB MIDI. From the
 DCO sketch folder (the parent of `tools/`):
@@ -28,7 +33,7 @@ Without `usbstack=tinyusb` the build fails with
 `#error TinyUSB is not selected, please select it in "Tools->Menu->USB Stack"`.
 
 Leave `ENABLE_USB_CONTROL` commented out for production. While it is on, any stray
-`a`-`f`, `p`, `w` or `q` byte typed into a serial terminal is read as a frame header.
+`a`-`d`, `p` or `q` byte typed into a serial terminal is read as a frame header.
 
 ## 2. Install
 
@@ -46,6 +51,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 python3 app.py                      # auto-detects the DCO3-MONO port
 python3 app.py --port /dev/ttyACM0  # or name it explicitly
 python3 app.py --theme light        # dark is the default
+python3 app.py --cobs               # match firmware SERIAL_FRAMING_COBS
+DCO_SERIAL_COBS=1 python3 app.py    # same via env
 ```
 
 Pick the port and press **Connect**. The tool **automatically pushes the sound patch**
@@ -147,6 +154,11 @@ section 12 of that file, which nothing else in the firmware invokes:
   readings to `pio_solve_period_model()` to confirm the weight and overhead constants.
   **Only works with no note playing** — `voice_task_main()` pushes a fresh divider every frame
   for a held note, which immediately overwrites what the probe set.
+- **Dump RAM (heap/stack)** (`PARAM_DEBUG_COMMAND` 13) prints heap total/used/free and
+  remaining stack on both cores. Needs `ENABLE_MEM_DIAG` (default on). **Mem diag polls
+  off/on** (14/15) stop the per-loop poll so period-only profiler dumps match older
+  benches without a rebuild; dump 13 is ignored while off. Comment out `ENABLE_MEM_DIAG`
+  for a hard zero-cost match. See [`DCO/docs/MEMORY.md`](../../docs/MEMORY.md).
 
 On the same tab, the **Hot-path profiler** buttons drive `PARAM_DEBUG_COMMAND` values
 10 / 11 / 12. They only do anything when the firmware is built with `RUNNING_AVERAGE`; see
@@ -242,18 +254,18 @@ it refuses to run on a collision or a reserved controller.
 
 ## 8. Protocol notes
 
-Frames are exactly what the Input board sends, per
-[`DCO/serial_input_protocol.h`](../../serial_input_protocol.h): one command byte, then
-a fixed-length big-endian payload. `'p'` and `'w'` end in a finish byte of 1; the `'a'`-`'f'`
-block frames do not.
+Frames match [`DCO/serial_input_protocol.h`](../../serial_input_protocol.h) /
+[`DCO/serial_frame.h`](../../serial_frame.h): one command byte, then a fixed little-endian
+payload (RAW on the wire today; COBS can wrap the same inner frames later). There is no
+finish byte.
 
-Two details that are easy to get wrong:
-
-- **Everything is sent as `'p'` (16-bit), even parameters the Input board sends as `'w'`.**
-  `'w'` carries a signed 8-bit value, so portamento 200 arrives as -56 and only comes out
-  right because the apply function casts back through `uint8_t`. A `'p'` frame with the
-  true positive value lands on the same result without relying on that round trip.
+- **`'p'`** — `[id:u8][value:i16 LE]` (4 bytes total). Pulse width (`PARAM_PW_VALUE` 210)
+  and EnvVCA→VCA (`PARAM_ADSR1_TO_VCA` 222) use this, not dedicated `'e'`/`'f'` commands.
+- **`'a'`/`'b'`/`'c'`/`'d'`** — packed 1 ms ADSR / filter blocks (9 bytes total).
 - **Envelope attack, decay and release are exp-mapped on the wire** (0..25000), while
   sustain is linear (0..4095). `protocol.lin_to_exp()` replicates
   `linearToExponential(v, 50, 25000)` from the Input board so a slider here feels like the
   physical fader. The CC layer in the firmware applies the same curve, for the same reason.
+
+The Input board firmware still speaks the old BE + finish format until it is updated;
+this tool talks to the DCO over USB only.

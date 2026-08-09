@@ -1,4 +1,5 @@
-// Soft VCA/VCF/reso CV math (~10 kHz with ADSR). Always-on: Q15 matrix, lerp>>12, note-60.
+// Soft VCA/VCF/reso CV math (~10 kHz with ADSR). Matrix→pitch always.
+// Analog VCA/VCF/AS2164/PWM only when ENABLE_CV_OUTS. Always-on: Q15 matrix, lerp>>12, note-60.
 // USE_FLOAT_CV_OUTS: float VCA/VCF/keytrack/drift (A/B override).
 // Else: fixed Q15 / integer path (shipping default both MCUs).
 #include "include_all.h"
@@ -83,8 +84,20 @@ void cv_update_mod_scales() {
   cv_bake_lfo1_to_vca_scale();
 }
 
-// Hot path (~10 kHz with ADSR): EnvVCA/EnvVCF + LFO + keytrack/vel → soft CV levels.
-void update_CV_outs() {
+// Hot path (~10 kHz with ADSR): matrix→pitch always; analog VCA/VCF only if ENABLE_CV_OUTS.
+void __not_in_flash_func(update_CV_outs)() {
+#ifndef ENABLE_CV_OUTS
+  if (manualCalibrationFlag) {
+    matrix_pitch_mod_q24 = 0;
+    return;
+  }
+  matrix_pitch_mod_q24 = mod_matrix_eval_pitch_q24(LFO1Level, LFO2Level);
+  return;
+#else
+  // Snapshot Core0 LFO mailbox once (VCA/VCF + matrix LFO1/LFO2 sources).
+  const int16_t local_LFO1Level = LFO1Level;
+  const int16_t local_LFO2Level = LFO2Level;
+
   if (timer1msFlag2) {
     if (RESONANCEAmpCompensation) {
       // Always-on integer (both float/fixed CV builds).
@@ -113,9 +126,10 @@ void update_CV_outs() {
 
     if (analogDrift != 0) {
       // LFO_DRIFT_LEVEL is mo-lfo Q15 (±32767); full scale → ≈ analogDrift CV units.
+      const int16_t local_drift0 = LFO_DRIFT_LEVEL[0];
       const float drift_scale = (float)analogDrift * (1.0f / 32767.0f);
       for (byte i = 0; i < NUM_VOICES; i++) {
-        VCF_DRIFT[i] = (float)LFO_DRIFT_LEVEL[0] * drift_scale;
+        VCF_DRIFT[i] = (float)local_drift0 * drift_scale;
       }
     } else {
       for (byte i = 0; i < NUM_VOICES; i++) {
@@ -136,8 +150,9 @@ void update_CV_outs() {
     }
 
     if (analogDrift != 0) {
+      const int16_t local_drift0 = LFO_DRIFT_LEVEL[0];
       const int16_t drift_cv =
-        (int16_t)(((int64_t)LFO_DRIFT_LEVEL[0] * (int64_t)vcf_drift_scale_q15) >> 15);
+        (int16_t)(((int64_t)local_drift0 * (int64_t)vcf_drift_scale_q15) >> 15);
       for (byte i = 0; i < NUM_VOICES; i++) {
         VCF_DRIFT[i] = drift_cv;
       }
@@ -151,7 +166,7 @@ void update_CV_outs() {
 
   int32_t mod_sums[MOD_DEST_COUNT];
   if (!manualCalibrationFlag) {
-    mod_matrix_accumulate(mod_sums);
+    mod_matrix_accumulate(mod_sums, local_LFO1Level, local_LFO2Level);
     matrix_pitch_mod_q24 = mod_matrix_pitch_to_q24(mod_sums[MOD_DEST_PITCH]);
   } else {
     memset(mod_sums, 0, sizeof(mod_sums));
@@ -160,8 +175,8 @@ void update_CV_outs() {
   const int32_t matrix_cutoff = mod_sums[MOD_DEST_VCF_CUTOFF];
 
 #ifdef USE_FLOAT_CV_OUTS
-  const int16_t LFO1toVCA_calc = (int16_t)((float)LFO1Level * LFO1toVCA_scale);
-  const float LFO2toVCF_mod = (float)LFO2Level * LFO2toVCF_scale;
+  const int16_t LFO1toVCA_calc = (int16_t)((float)local_LFO1Level * LFO1toVCA_scale);
+  const float LFO2toVCF_mod = (float)local_LFO2Level * LFO2toVCF_scale;
   // Q15 env → u12-ish for float depth formulas (same as >> 3).
   static constexpr float ADSR_Q15_TO_U12 = 1.0f / 8.0f;
   const float ADSR2toVCFcalculated =
@@ -201,9 +216,9 @@ void update_CV_outs() {
   }
 #else
   const int16_t LFO1toVCA_calc =
-    (int16_t)(((int64_t)LFO1Level * (int64_t)LFO1toVCA_scale_q15) >> 15);
+    (int16_t)(((int64_t)local_LFO1Level * (int64_t)LFO1toVCA_scale_q15) >> 15);
   const int32_t LFO2toVCF_mod =
-    (int32_t)(((int64_t)LFO2Level * (int64_t)LFO2toVCF_scale_q15) >> 15);
+    (int32_t)(((int64_t)local_LFO2Level * (int64_t)LFO2toVCF_scale_q15) >> 15);
   const int32_t ADSR2toVCFcalculated =
     (int32_t)(((int64_t)ADSR_VCF_Level_q15 * (int64_t)ADSR2toVCF_scale_q15) >> 15);
   const int32_t ADSR2toVCF2calculated =
@@ -256,9 +271,8 @@ void update_CV_outs() {
     RESONANCE_PWM[1] = RESONANCE;
   }
 
-#ifdef ENABLE_CV_OUTS
   write_cv_pwm_raw(VCF_PWM[0], RESONANCE_PWM, VCA_PWM[0], dist_out, dist_mix_out);
-#endif
+#endif  // ENABLE_CV_OUTS
 }
 
 // Manual calibration (Mainboard setPWMOutsManualCalibration): filter wide open, VCA barely

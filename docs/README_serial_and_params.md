@@ -1,328 +1,79 @@
 ## Serial & Parameter Protocol – Usage Guide
 
-This document explains how to use the shared **serial** and **parameter** infrastructure in any MCU project in the DCO4 system (DCO board, mainboard, screen, input board, etc.).
-
-The goal: you can copy the library headers into a new project, define a few hooks, and immediately speak the same protocol.
-
----
-
-## 1. Shared “library” headers
-
-These files are intended to be MCU‑agnostic and copy‑pasteable between projects:
-
-- `params_def.h` – canonical `enum ParamId : uint16_t` for the whole system.
-- `param_router.h` – generic table‑driven parameter router (`ParamDescriptorT` + `param_router_apply`).
-- `serial_param_protocol.h` – decode helpers for `'p'/'w'/'x'` parameter frames into `ParamFrame { id, value }`.
-- `serial_protocol.h` – command bytes and payload sizes for the **mainboard ↔ DCO** link (`'n','o','f','s','p','w','x'`).
-- `serial_input_protocol.h` – command bytes and payload sizes for the **input board → mainboard** link (`'a'..'f','p','w','q'`).
-- `serial_parser.h` – generic non‑blocking state‑machine parser (`SerialParserContext`, `SerialCommandDef`, `serial_parser_process_byte`).
-
-You can treat these as the “library core.”
-
-**DCO repo note:** this board now ships `serial_input_protocol.h` and speaks the Input panel protocol on its `Serial2` — that is its only peer *board* link since the Mainboard was archived. Both directions land on the Input's `Serial1`: the DCO's `Serial2` RX (GP21) is fed by the Input's TX (GP0), and the DCO's `Serial2` TX (GP20) drives the Input's RX (GP1).
-
-**USB bench link:** when built with `ENABLE_USB_CONTROL`, the DCO also accepts the *same* Input panel frames on its USB CDC port (`Serial`), via `serial_usb_task()` in `Serial.ino`. It is a second `SerialParserContext` pointed at the same `inputSerialCommands` table, so the handlers cannot tell the two links apart. This is how the host tool in [`tools/dco_control`](../tools/dco_control/README.md) drives the board with no Input or Screen attached. Only host → DCO is framed; DCO → host stays plain debug text.
-
-**MIDI CC link:** a third path, and the only one that is not frame-based. `handleControlChange()` in `midi.ino` looks the controller up in the generated `midiCcMap[]` (see [`MIDI_CC_MAP.md`](MIDI_CC_MAP.md)), scales it into the parameter's native range, and hands it to `midi_cc_apply()`. Table parameters go on to `update_parameters()` like any frame; the values that normally arrive as `'a'`-`'f'` block frames are written to their globals right there in the switch, since those blocks exist to pack four values into one frame for the Input link and so have no `ParamId` of their own. Adding a `ParamId` for them would be the wrong fix: it would put a second, slower route to the same globals in the table.
+Shared **inner** serial + parameter infrastructure for DCO4-family MCUs. On this board
+(DCO3-MONOSYNTH) the only peer UART is Serial2 ↔ Input; USB CDC (`ENABLE_USB_CONTROL`)
+speaks the same inner frames for [`tools/dco_control`](../tools/dco_control/README.md).
 
 ---
 
-## 2. Using the parameter protocol in a new MCU
+## 1. Headers
 
-### 2.1. Set up `params_def.h` and `param_router.h`
+| Header | Role |
+|--------|------|
+| `params_def.h` | Canonical `enum ParamId : uint16_t` (wire id is still `uint8`) |
+| `param_router.h` | `ParamDescriptorT` table + O(1) jump dispatch |
+| `serial_input_protocol.h` | Command bytes + payload sizes (`'a'`–`'d'`, `'p'`, `'q'`) |
+| `serial_param_protocol.h` | LE encode/decode for `'p'`; legacy `'x'` TX helper |
+| `serial_frame.h` | Buffer COBS encode/decode + `serial_frame_stuff` / `unstuff` / `write()`. Default RAW; `#define SERIAL_FRAMING_COBS` wraps `COBS(inner)+0x00` |
+| `serial_parser.h` | Non-blocking parser: 256-entry cmd LUT, idle timeout (`SERIAL_FRAME_TIMEOUT_US` = 500 µs), drain budget 64. RAW fixed-length or COBS accumulate-until-`0x00` |
+| `serial_protocol.h` | Compatibility stub → `serial_input_protocol.h` (Mainboard `'n'`/`'o'`/`'s'` retired) |
 
-1. **Include the shared headers** in your new project:
+**USB bench link:** `serial_usb_task()` uses a second `SerialParserContext` and the same LUT as Serial2. Only host → DCO is framed; DCO → host is plain debug text. Panel Serial2 and USB CDC drain on Core 0 `timer1msFlag` (~1 ms). USB/DIN MIDI still runs every `loop()`. CDC drain is skipped when the host has not opened `Serial`.
 
-   ```cpp
-   #include "params_def.h"
-   #include "param_router.h"
-   ```
-
-2. **Pick the value type** this MCU will use for incoming parameters:
-
-   - DCO‑style: `int16_t`.
-   - Mainboard‑style: `int32_t`.
-
-3. **Create a router module** (`params.ino` / `.cpp`) on the new MCU:
-
-   ```cpp
-   using ParamValueT     = int16_t;          // or int32_t
-   using ParamDescriptor = ParamDescriptorT<ParamValueT>;
-
-   // Board-specific apply functions:
-   static void apply_param_lfo1_waveform(ParamValueT v) {
-     LFO1Waveform = (int8_t)v;
-     LFO1_class.setWaveForm(LFO1Waveform);
-   }
-
-   static void apply_param_voice_mode(ParamValueT v) {
-     voiceMode = (uint8_t)v;
-     setVoiceMode();
-   }
-
-   // Parameter table:
-   static const ParamDescriptor paramTable[] = {
-     { PARAM_LFO1_WAVEFORM, apply_param_lfo1_waveform },
-     { PARAM_VOICE_MODE,    apply_param_voice_mode    },
-     // ...more params...
-   };
-
-   static const size_t paramTableSize =
-     sizeof(paramTable) / sizeof(paramTable[0]);
-
-   // Public entry point:
-   inline void update_parameters(uint16_t rawId, ParamValueT value) {
-     param_router_apply<ParamValueT>(
-       paramTable,
-       paramTableSize,
-       rawId,
-       value
-     );
-   }
-   ```
-
-4. Anywhere in this MCU you can now call `update_parameters(paramId, value)` and let the router dispatch.
+**MIDI CC:** `midi_cc_apply()` writes ADSR/filter block globals directly (`CC_LOCAL_*`). Everything else, including `PARAM_PW_VALUE` and `PARAM_ADSR1_TO_VCA`, goes through `update_parameters()`.
 
 ---
 
-## 3. Using `'p'/'w'/'x'` serial parameter frames
+## 2. Inner frames (handlers always see this)
 
-### 3.1. Include the protocol helpers
+Little-endian multi-byte fields. No finish byte. `0x00` is reserved (COBS delimiter) and is never a command.
 
-```cpp
-#include "serial_param_protocol.h"
-#include "serial_protocol.h"   // for mainboard<->DCO-style links
-#include "serial_parser.h"
-```
+| Cmd | Payload | Meaning |
+|-----|---------|---------|
+| `'a'`/`'b'`/`'c'` | 8 | ADSR A,D,S,R as `uint16`. A/D/R exp-mapped 0..25000; S linear. Direct globals + dirty flags — **not** `update_parameters` |
+| `'d'` | 8 | `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF` + scale bake |
+| `'p'` | 3 | `[id:u8][value:i16]` → `update_parameters` |
+| `'q'` | 8 | Preset name, 8 ASCII chars |
 
-### 3.2. Write parameter frame handlers
+On-wire **default** = inner (RAW). **`#define SERIAL_FRAMING_COBS`:** `COBS(cmd+payload) + 0x00`. Handlers still see inner only. Host A/B: `dco_control --cobs` or `DCO_SERIAL_COBS=1` (must match firmware or controls look ignored). Codec is buffer-in/buffer-out so a later SPI link can reuse `serial_frame_unstuff` after reading until `0x00`.
 
-These are per‑link but structurally the same on every MCU:
+**DCO → Input TX** still uses legacy `'x'` + id + u32 LE + finish=1 (`serialSendParam32`, gap 154 / cal 155) until Input is updated. That path bypasses `serial_frame_write()`.
 
-```cpp
-static void link_handle_param16(char, const uint8_t* payload, uint8_t len) {
-  if (len != SERIAL_PAYLOAD_LEN_PARAM_16) return;
-  ParamFrame frame;
-  decode_param_p(payload, frame);
-  update_parameters(frame.id, (ParamValueT)frame.value);
-}
-
-static void link_handle_param8(char, const uint8_t* payload, uint8_t len) {
-  if (len != SERIAL_PAYLOAD_LEN_PARAM_8) return;
-  ParamFrame frame;
-  decode_param_w(payload, frame);
-  update_parameters(frame.id, (ParamValueT)frame.value);
-}
-
-static void link_handle_param32(char, const uint8_t* payload, uint8_t len) {
-  if (len != SERIAL_PAYLOAD_LEN_PARAM_32) return;
-  ParamFrame frame;
-  decode_param_x(payload, frame);
-  // cast or truncate as appropriate:
-  update_parameters(frame.id, (ParamValueT)frame.value);
-}
-```
-
-### 3.3. Hook into the generic serial parser
-
-1. Define a command table for this UART:
-
-   ```cpp
-   static const SerialCommandDef linkCommands[] = {
-     { SERIAL_CMD_PARAM_16, SERIAL_PAYLOAD_LEN_PARAM_16, link_handle_param16 },
-     { SERIAL_CMD_PARAM_8,  SERIAL_PAYLOAD_LEN_PARAM_8,  link_handle_param8  },
-     { SERIAL_CMD_PARAM_32, SERIAL_PAYLOAD_LEN_PARAM_32, link_handle_param32 },
-     // add non-param commands here (see next section)
-   };
-   ```
-
-2. Allocate a parser context:
-
-   ```cpp
-   static SerialParserContext linkParser = {
-     SERIAL_WAIT_FOR_CMD,
-     0,
-     {0},
-     0,
-     0,
-     0
-   };
-   ```
-
-3. In your serial task for that UART:
-
-   ```cpp
-   inline void link_serial_task(HardwareSerial& port) {
-     uint32_t now = micros();
-     serial_parser_check_timeout(linkParser, now);
-
-     while (port.available() > 0) {
-       uint8_t b = port.read();
-       now = micros();
-       serial_parser_process_byte(
-         linkParser,
-         linkCommands,
-         sizeof(linkCommands) / sizeof(linkCommands[0]),
-         b,
-         now
-       );
-     }
-   }
-   ```
-
-Now this link speaks the shared `'p'/'w'/'x'` protocol and uses the generic parser.
+The Input board still *sends* the old BE + `'w'`/`'e'`/`'f'` + finish format. Flash Input before using the panel UART; USB `dco_control` is the live path.
 
 ---
 
-## 4. Adding a new serial command (non‑parameter)
+## 3. Adding a parameter (`ParamId`)
 
-Example: add `'g'` = “global reset” on the mainboard↔DCO link.
+1. Append a new id in `params_def.h` (do not renumber; stay ≤ 255 on the wire).
+2. Implement `apply_param_*` and add one row to `paramTable[]` in `params.ino`.
+3. Call `init_param_router()` at boot (already in `setup()`).
+4. Send `'p'` + id + i16 LE. Host: one `Param` row in `tools/dco_control/params.py`.
 
-### 4.1. Extend `serial_protocol.h`
-
-```cpp
-enum SerialCmd : char {
-  // existing commands...
-  SERIAL_CMD_GLOBAL_RESET = 'g',
-};
-
-static constexpr uint8_t SERIAL_PAYLOAD_LEN_GLOBAL_RESET = 1;
-
-static inline uint8_t serial_protocol_payload_len(char cmd) {
-  switch (cmd) {
-    // existing cases...
-    case SERIAL_CMD_GLOBAL_RESET: return SERIAL_PAYLOAD_LEN_GLOBAL_RESET;
-    default: return 0;
-  }
-}
-```
-
-### 4.2. Implement handlers on receiver MCUs
-
-```cpp
-static void handle_global_reset(char, const uint8_t* payload, uint8_t len) {
-  if (len != SERIAL_PAYLOAD_LEN_GLOBAL_RESET) return;
-  uint8_t flag = payload[0];
-  if (flag) {
-    reset_all_voices();
-    reset_modulation_state();
-  }
-}
-```
-
-Add to that link’s `SerialCommandDef[]`:
-
-```cpp
-{ SERIAL_CMD_GLOBAL_RESET, SERIAL_PAYLOAD_LEN_GLOBAL_RESET, handle_global_reset },
-```
-
-### 4.3. Send the command
-
-On the sender MCU:
-
-```cpp
-inline void serial_send_global_reset(uint8_t flag) {
-  while (Serial2.availableForWrite() < 1) {}
-  uint8_t bytes[2] = { (uint8_t)SERIAL_CMD_GLOBAL_RESET, flag };
-  Serial2.write(bytes, 2);
-}
-```
-
-Always wait on `< 1`, never on the frame length: an RP2040 hardware UART's `availableForWrite()` returns only 0 or 1, not the number of free FIFO bytes, so waiting for more would spin forever. `write()` itself blocks until the whole frame is queued.
+No new serial command unless it is a new **1 ms analog block**.
 
 ---
 
-## 5. Adding a new parameter (`ParamId`) and actions
+## 4. Adding a serial command (rare)
 
-Example: `PARAM_LFO3_TO_VCF` controlling LFO3 depth to filter.
-
-### 5.1. Add `ParamId` in `params_def.h`
-
-In **both** projects’ `params_def.h`:
-
-```cpp
-// choose an unused number
-PARAM_LFO3_TO_VCF = 52,  // LFO3 depth -> filter cutoff
-```
-
-Rules:
-
-- Never renumber existing IDs.
-- Use the **same numeric value** on all MCUs and tools.
-
-### 5.2. Implement `apply_param_*` per MCU
-
-On DCO‑style MCU:
-
-```cpp
-static void apply_param_lfo3_to_vcf(int16_t v) {
-  LFO3toVCFVal = v;
-  float depth  = someMappingFunction(v);
-  LFO3toVCF_q24 = (int32_t)(depth * (1 << 24) + 0.5f);
-}
-
-static const ParamDescriptorT<int16_t> paramTable[] = {
-  // ...
-  { PARAM_LFO3_TO_VCF, apply_param_lfo3_to_vcf },
-};
-```
-
-On mainboard‑style MCU:
-
-```cpp
-static void apply_param_lfo3_to_vcf(int32_t v) {
-  LFO3toVCFVal = (int16_t)v;
-  // optional: update local formulas
-  serialSendParamToDCOFunction(PARAM_LFO3_TO_VCF, (int16_t)v);
-}
-
-static const ParamDescriptorT<int32_t> paramTable[] = {
-  // ...
-  { PARAM_LFO3_TO_VCF, apply_param_lfo3_to_vcf },
-};
-```
-
-The router doesn’t change; the new entry is picked up automatically.
-
-### 5.3. Send the new parameter over serial
-
-From any MCU/tool that sends 16‑bit params:
-
-```cpp
-inline void send_lfo3_to_vcf(uint16_t value) {
-  uint8_t bytes[5] = {
-    (uint8_t)'p',
-    (uint8_t)PARAM_LFO3_TO_VCF,
-    highByte(value),
-    lowByte(value),
-    1  // finish
-  };
-  while (Serial2.availableForWrite() < 1) {}
-  Serial2.write(bytes, 5);
-}
-```
-
-Or use `'x'` + `serialSendParam32ToDCO(...)` if you need 32‑bit values.
+1. Add the cmd + payload length to `serial_input_protocol.h` (`serial_input_payload_len`).
+2. Implement `on_frame` and add a `SerialCommandDef` row in `Serial.ino`.
+3. Keep `0x00` unused. Prefer LE. Send via `serial_frame_write()`, not ad-hoc UART bytes.
 
 ---
 
-## 6. Quick checklist for a new MCU
+## 5. Parser notes
 
-1. **Copy in headers:** `params_def.h`, `param_router.h`, `serial_param_protocol.h`, `serial_protocol.h`, `serial_input_protocol.h` (if needed), `serial_parser.h`.
-2. **Create a `params` module:**
-   - Implement `apply_param_*` functions.
-   - Build a `ParamDescriptorT<ValueT> paramTable[]`.
-   - Implement `update_parameters(rawId, value)` using `param_router_apply`.
-3. **For each UART link:**
-   - Decide which commands it uses (`serial_protocol.h`, `serial_input_protocol.h`, or your own header).
-   - Implement `on_frame` handlers.
-   - Build a `SerialCommandDef[]` table.
-   - Call `serial_parser_process_byte(...)` in that link’s task function.
-4. **When adding new parameters or commands:**
-   - Update the shared header (`params_def.h` or protocol header).
-   - Implement handlers on every MCU that cares.
-   - Keep IDs and frame layouts identical across MCUs.
+- O(1) lookup: `serial_command_table_init()` fills `payload_len[256]` / `on_frame[256]`.
+- Timeout (`SERIAL_FRAME_TIMEOUT_US` = 500 µs) runs only when mid-frame **and** the stream is idle — no `micros()` per byte. COBS: mid-frame means stuffed bytes received, delimiter not yet seen.
+- RAW: cmd LUT + fixed payload. COBS: accumulate until `0x00`, decode, unpack, then LUT length check.
+- Drain snapshots `available()` once, then `read()`s up to `SERIAL_DRAIN_BYTE_BUDGET` (64) so one 1 ms Input burst (incl. COBS ~11 B/block) finishes in a single tick.
 
-Follow this pattern and all MCUs will share the same serial + parameter “language,” with only local DSP/UI logic differing between boards.
+---
 
+## 6. New MCU checklist
 
+1. Copy `params_def.h`, `param_router.h`, `serial_input_protocol.h`, `serial_param_protocol.h`, `serial_frame.h`, `serial_parser.h`.
+2. `paramTable[]` + `init_param_router()` + `update_parameters(uint16_t, int16_t)`.
+3. Per UART: `SerialCommandDef[]` → LUT, `serial_parser_drain()`, `serial_frame_write()` for TX.
+4. Keep ParamIds and inner layouts identical across MCUs.

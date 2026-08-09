@@ -64,6 +64,8 @@ See `docs/` — especially:
 
 - [`docs/BUILD_FLAGS.md`](docs/BUILD_FLAGS.md) — complete compile-time flag catalog (`DCO.ino` + headers + vendored libs)
 - [`docs/ENGINE_OPTIONS.md`](docs/ENGINE_OPTIONS.md) — float vs fixed voice/amp/CV math depth
+- [`docs/BENCHMARKING.md`](docs/BENCHMARKING.md) — hot-path CPU profiler
+- [`docs/MEMORY.md`](docs/MEMORY.md) — SRAM / heap / stack (`__not_in_flash_func`, dump cmd 13)
 - [`docs/PINOUT.md`](docs/PINOUT.md) — provisional hub + CV pin / UART map (Phase 0)
 - [`docs/MOD_MATRIX.md`](docs/MOD_MATRIX.md) — sparse mod matrix (levels / dual reso / Dist Drive)
 - [`docs/CV_MOD_SCALES.md`](docs/CV_MOD_SCALES.md) — VCA/VCF mod depth bakers, Q15 peak math (`/512` vs `/1024`), when to call

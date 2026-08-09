@@ -51,7 +51,7 @@ void init_ADSR() {
 // ~10 kHz: note edges → EnvDCO + EnvVCA + EnvVCF; sample levels.
 // Each noteOn/noteOff/getWave reads micros()/millis() itself — do not share one
 // timestamp across edges + getWave (unsigned delta underflow skips A/R).
-inline void ADSR_update() {
+void __not_in_flash_func(ADSR_update)() {
   for (int i = 0; i < NUM_VOICES; i++) {
     if (noteEnd[i] == 1) {
       ADSRVoices[i].adsr1_voice.noteOff();

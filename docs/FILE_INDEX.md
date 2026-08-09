@@ -6,6 +6,7 @@ Purpose of **every file**, and for each source function: **what it does**, **who
 - Build flags catalog: [`BUILD_FLAGS.md`](BUILD_FLAGS.md)
 - Engine float/fixed math: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
 - Hot-path profiling: [`BENCHMARKING.md`](BENCHMARKING.md)
+- SRAM / heap / stack: [`MEMORY.md`](MEMORY.md)
 - Character / noise jitter: [`CHARACTER.md`](CHARACTER.md)
 - CV mod depth scales: [`CV_MOD_SCALES.md`](CV_MOD_SCALES.md)
 - LFO Q15 bus / pitch depth scales: [`LFO.md`](LFO.md)
@@ -25,18 +26,18 @@ flowchart TD
   fw1["Arduino Core1"] --> setup1["setup1()"]
   fw1 --> loop1["loop1()"]
 
-  setup0 --> initSerial["init_serial / init_midi / init_LFOs"]
+  setup0 --> initSerial["init_serial / init_param_router / init_midi / init_LFOs"]
   setup1 --> initCore1["seed_fake_if_missing / init_FS / init_ADSR / init_pwm / init_pio / init_range_pio_dither / init_voices"]
 
-  loop0 --> midiRead["MIDI_*.read → handle* → note_on/off"]
-  loop0 --> serialTask["serial_panel_task → handlers"]
-  loop0 --> lfo["LFO1 every iter; LFO2/DRIFT ~100µs"]
+  loop0 --> midiRead["MIDI_*.read every loop → handle* → note_on/off"]
+  loop0 --> serialTask["serial_panel/USB on timer1msFlag"]
+  loop0 --> lfo["LFO1/LFO2 ~50µs; drift ~51µs"]
   lfo --> fifo["FIFO Q24 detune → Core1"]
 
   serialTask --> updParam["update_parameters → apply_param_*"]
   updParam -->|calibrationFlag| calBranch
 
-  loop1 --> millis["millisTimer()"]
+  loop1 --> millis["microsTimer2()"]
   loop1 --> calBranch{"calibrationFlag?"}
   calBranch -->|auto| dcoCal["DCO_calibration() blocking"]
   calBranch -->|manual| manCal["voice_task_autotune + DCO_calibration_debug"]
@@ -70,24 +71,26 @@ Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine flags (
 - `setup1()` — Core 1 init: PID, `seed_fake_calibration_tables(false)` if `voiceTables` missing, FS, ADSR, `mod_matrix_init`, amp-comp precompute, PWM, PIO, optional `init_range_pio_dither`, voices; clears cal flags.
   - **Called from:** Arduino framework (Core 1).
   - **When:** Boot once. (`init_DCO_calibration` block below is unreachable — see that function.)
-- `loop()` — Core 0: MIDI read, Serial2 pump, LFO1; ~100 µs LFO2 + drift + FIFO push.
+- `loop()` — Core 0: MIDI USB+DIN every iteration; Serial2 + USB CDC pumps on `timer1msFlag`; LFO1/LFO2 ~50 µs; drift ~51 µs; `bench_poll_core0` + `mem_diag_poll_core0`. `__not_in_flash_func`.
   - **Called from:** Arduino framework (Core 0).
   - **When:** Forever.
-- `loop1()` — Core 1: `millisTimer`; noise fleet; auto/manual cal **or** ADSR + FIFO pop + `voice_task_main`; ends with `bench_service(1)`.
+- `loop1()` — Core 1: `microsTimer2`; noise fleet; auto/manual cal **or** ADSR + FIFO pop + `voice_task_main`; ends with `bench_service(1)` + `mem_diag_poll_core1`. `__not_in_flash_func`.
   - **Called from:** Arduino framework (Core 1).
   - **When:** Forever.
 
-**Key macros:** full catalog in [`BUILD_FLAGS.md`](BUILD_FLAGS.md). Engine: `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `USE_FLOAT_CV_OUTS`, `PITCH_INTERP_MODE` (`FLOAT` / `FLOAT_FAST` / `RATIO_Q16` / `Q12`), `HIGH_PRECISION_CLKDIV`, `AMP_COMP_METHOD_DEFAULT`. Noise: `NOISE_ENGINE`, `ENABLE_NOISE_OUT`. Profiler: `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`, `RUNNING_AVERAGE_PERIOD`, `BENCH_PATH_STATS`. Board/IO: `ENABLE_USB_CONTROL`, `ENABLE_CV_OUTS`, `ENABLE_WAVE_MUX`, `ENABLE_VOICE_AUX`, `ENABLE_PIO_RESET_INVERT`, `RANGE0_PIO_DITHER_TEST`, `NOTE_RETRIG_MODE_DEFAULT`.
+**Key macros:** full catalog in [`BUILD_FLAGS.md`](BUILD_FLAGS.md). Engine: `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `USE_FLOAT_CV_OUTS`, `PITCH_INTERP_MODE` (`FLOAT` / `FLOAT_FAST` / `RATIO_Q16` / `Q12`), `HIGH_PRECISION_CLKDIV`, `AMP_COMP_METHOD_DEFAULT`. Noise: `NOISE_ENGINE`, `ENABLE_NOISE_OUT`. Profiler: `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`, `RUNNING_AVERAGE_PERIOD`, `BENCH_STAGE_STRIDE`, `BENCH_USE_SYSTICK`, `BENCH_PERIOD_MAX_US`, `BENCH_PATH_STATS`, `ENABLE_MEM_DIAG`. Board/IO: `ENABLE_USB_CONTROL`, `ENABLE_CV_OUTS`, `ENABLE_WAVE_MUX`, `ENABLE_VOICE_AUX`, `ENABLE_PIO_RESET_INVERT`, `RANGE0_PIO_DITHER_TEST`, `NOTE_RETRIG_MODE_DEFAULT`.
 
 ### `bench.h`
 
 Hot-path profiler. All storage, ids, nesting and labels are generated from the single
 `BENCH_PROBES` X-macro table, so a probe cannot exist at a call site and be missing from the
-report. Time source is SysTick read as a 24-bit cycle counter (RP2040's M0+ has no DWT), with
-`BENCH_PERIOD()` falling back to the 1 µs timer for spans that can exceed the 24-bit wrap.
-Compiles to nothing without `RUNNING_AVERAGE`. Core0 IO is split into `MIDI read` vs
-`serial panel/USB`. Note-on: `retrig period split` under voice_task_fixed_point; under note-on,
-`retrig SM apply` + `retrig RANGE PWM` (do not slice SM apply — cold XIP mis-ranks kids).
+report. Time source is SysTick read as a 24-bit cycle counter (RP2040's M0+ has no DWT).
+`BENCH_PERIOD()` uses the same SysTick clock (`BENCH_USE_SYSTICK`); samples longer than
+`BENCH_PERIOD_MAX_US` are discarded. The 1 µs timer is the dump-window gate, or all probes
+when `BENCH_USE_SYSTICK` is `0`. Compiles to nothing without `RUNNING_AVERAGE`. Core0 IO is
+split into `MIDI read` vs `serial panel/USB`. Note-on: `retrig period split` under
+voice_task_fixed_point; under note-on, `retrig SM apply` + `retrig RANGE PWM` (do not slice
+SM apply — cold XIP mis-ranks kids).
 
 **Subsystem reference:** [`BENCHMARKING.md`](BENCHMARKING.md).
 
@@ -99,7 +102,7 @@ Compiles to nothing without `RUNNING_AVERAGE`. Core0 IO is split into `MIDI read
   - **Called from:** `BENCH_*` macros; `clkdiv_bench_sample()`.
 - `bench_service()` — Snapshot and clear this core's probes on request.
   - **Called from:** `bench_poll_core0()` for core 0; `loop1()` for core 1.
-- `bench_poll_core0()` — Drive the handshake and print the report; calls `print_clkdiv_bench()`.
+- `bench_poll_core0()` — Drive the handshake and print the report; calls `print_clkdiv_bench()`, `print_amp_comp_bench()`, `print_pitch_interp_bench()`, `print_clkdiv_hp_bench()`.
   - **Called from:** `loop()`.
   - **When:** Every iteration; prints only once both cores have answered a dump request.
 - `bench_reset_all()` — Clear every accumulator.
@@ -107,9 +110,31 @@ Compiles to nothing without `RUNNING_AVERAGE`. Core0 IO is split into `MIDI read
 - `bench_print_report()` / `bench_print_core()` / `bench_print_row()` / `bench_print_unattributed()` — Format the budget table.
   - **Called from:** `bench_poll_core0()`.
 
+### `mem_diag.h`
+
+SRAM/heap/stack dump (cmd **13**). `ENABLE_MEM_DIAG` off → empty `static inline` polls/request. Flag on → inline idle check (`mem_diag_runtime_enabled` then pending) then `.ino` work. See [`MEMORY.md`](MEMORY.md).
+
+**Functions** (inlines when flag on/off)
+- `mem_diag_poll_core1()` / `mem_diag_poll_core0()` — Idle early-out; call `_work` only when a dump is pending and polls are runtime-enabled.
+  - **Called from:** `loop1()` / `loop()`.
+  - **When:** Every iteration; compiles out without `ENABLE_MEM_DIAG`.
+
+### `mem_diag.ino`
+
+Heap + per-core stack snapshot (`ENABLE_MEM_DIAG` only). Works without `RUNNING_AVERAGE`. Core 1 never prints.
+
+**Functions**
+- `mem_diag_request()` — Set pending flag for a dump (no-op if runtime polls off).
+  - **Called from:** `apply_param_debug_command()` value **13**.
+  - **When:** Diagnostics button / USB param.
+- `mem_diag_poll_core1_work()` — Snapshot `rp2040.getFreeStack()` on Core 1.
+  - **Called from:** inline `mem_diag_poll_core1()` when pending.
+- `mem_diag_poll_core0_work()` — Print heap / stacks / layout over USB CDC.
+  - **Called from:** inline `mem_diag_poll_core0()` when Core 1 has answered.
+
 ### `include_all.h`
 
-Umbrella include. **No function definitions.**
+Umbrella include (`mem_diag.h` included). **No function definitions.**
 
 ### `globals.h`
 
@@ -176,12 +201,12 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `voice_task_main()` — Dispatch to float or fixed voice task.
   - **Called from:** `loop1()` (play path); `init_voices()` (boot kick).
   - **When:** Every play-path `loop1` iter + once at boot.
-- `voice_task_fixed_point()` — Fixed-point hot path.
+- `voice_task_fixed_point()` — Fixed-point hot path. `__not_in_flash_func`.
   - **Called from:** `voice_task_main()` when `!USE_FLOAT_VOICE_TASK`.
   - **When:** Fixed-engine builds only.
-- `voice_task_float()` — Float hot path (current default).
+- `voice_task_float()` — Float hot path (RP2350 default). `__not_in_flash_func` (SRAM-pinned like fixed).
   - **Called from:** `voice_task_main()` when `USE_FLOAT_VOICE_TASK`.
-  - **When:** Every play-path `loop1` iter (current checkout).
+  - **When:** Every play-path `loop1` iter (float-engine builds).
 - `voice_task_autotune()` — Drive one osc for calibration measurement.
   - **Called from:** `loop1()` (manual cal); `measure_gap_for_amp` / PW & freq search helpers in `PID.ino` / `autotune.ino`; unreachable call in `setup1`.
   - **When:** Manual-cal every `loop1`; nested during auto-cal measurements.
@@ -197,28 +222,28 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `setSyncMode()` — Rebuild sync topology via `assign_sm_mapping()` + `start_voice_sms()`; retrigger.
   - **Called from:** `apply_param_sync_mode()`, `apply_param_soft_sync()`.
   - **When:** Serial2 param.
-- `get_chan_level_lookup_fast()` — Q8 Hz → range PWM (always compiled; live FIXED / fixed `voice_task_fixed_point`).
+- `get_chan_level_lookup_fast()` — Q8 Hz → range PWM (always compiled; live FIXED / fixed `voice_task_fixed_point`). `__not_in_flash_func`.
   - **Called from:** `voice_task_fixed_point()` directly; `get_chan_level_for_engine()` / method FIXED.
   - **When:** Fixed hot path; float-engine FIXED method / benches.
-- `get_chan_level_float_quad()` — Float quadratic cached walk (Hz); live FLOAT_QUAD / LUT fill / accuracy gold.
+- `get_chan_level_float_quad()` — Float quadratic cached walk (Hz); live FLOAT_QUAD / LUT fill / accuracy gold. `__not_in_flash_func` (SRAM-pinned like fixed lookup).
   - **Called from:** method FLOAT_QUAD; LUT fill; speed/accuracy benches.
   - **When:** `USE_FLOAT_AMP_COMP`.
-- `get_chan_level_lut()` — Dense 1 Hz LUT (nearest Hz index).
+- `get_chan_level_lut()` — Dense 1 Hz LUT (nearest Hz index). `__not_in_flash_func` (SRAM-pinned like fixed lookup).
   - **Called from:** `get_chan_level_for_engine` when method LUT.
   - **When:** `USE_FLOAT_AMP_COMP` (speed A/B; live default = FIXED).
 - `get_PW_level_interpolated()` — Map PW counter into calibrated limits/center.
   - **Called from:** `voice_task_fixed_point()` / `voice_task_float()` (99 µs PW update).
   - **When:** Hot path.
-- `interpolatePitchMultiplierIntQ16_cached()` — IntQ16 table interp (`PITCH_INTERP_Q12`).
+- `interpolatePitchMultiplierIntQ16_cached()` — IntQ16 table interp (`PITCH_INTERP_Q12`). `__not_in_flash_func`.
   - **Called from:** `voice_task_fixed_point()` or `voice_task_float()` (A/B glue) when mode is Q12.
   - **When:** Alternate pitch modes (fixed voice or float-voice A/B).
-- `interpolateRatioQ16_cached()` — Table → ratio Q16 (`slopeQ20`).
+- `interpolateRatioQ16_cached()` — Table → ratio Q16 (`slopeQ20`). `__not_in_flash_func`.
   - **Called from:** `voice_task_fixed_point()` or `voice_task_float()` (A/B glue) when `PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16`.
   - **When:** Default fixed pitch mode; optional float-voice A/B.
-- `interpolateRatioFloat_cached()` — Natural modifier `[-1,3]` → float ratio; walk+bsearch find.
+- `interpolateRatioFloat_cached()` — Natural modifier `[-1,3]` → float ratio; walk+bsearch find. `__not_in_flash_func`.
   - **Called from:** `voice_task_float()` when `PITCH_INTERP_MODE == PITCH_INTERP_FLOAT`.
   - **When:** Float walk A/B (`USE_FLOAT_VOICE_TASK`).
-- `interpolateRatioFloat_cached_fast()` — Same lerp; trunc+clamp±1 find (`noinline`).
+- `interpolateRatioFloat_cached_fast()` — Same lerp; trunc+clamp±1 find (`noinline` + `__not_in_flash_func`).
   - **Called from:** `voice_task_float()` when `PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST`.
   - **When:** RP2350 board-default float hot path.
 - `initMultiplierTables()` — Build tables/slopes for the active `PITCH_INTERP_MODE` only (uses `expInterpolationSolveY`).
@@ -442,6 +467,15 @@ Pitch-interpolator speed/accuracy one-shots (`RUNNING_AVERAGE`). Self-contained 
   - **Called from:** `bench_poll_core0()` when debug 28/29 pending.
   - **When:** Diagnostics; paced `bench_out_*` TX.
 
+### `clkdiv_bench.ino`
+
+Fixed-voice HP0 vs HP1 clkdiv speed/accuracy one-shots (`RUNNING_AVERAGE`). Private clones of Q8 64/32 and Q4 32-bit paths + live `pio_clk_div_for_y`. Does not touch PIO / live `HIGH_PRECISION_CLKDIV`. Separate from `CLKDIV_BENCHMARK` (float vs double).
+
+**Functions**
+- `clkdiv_hp_bench_run_speed()` / `clkdiv_hp_bench_run_accuracy()` / `print_clkdiv_hp_bench()`
+  - **Called from:** `bench_poll_core0()` when debug 32/33 pending.
+  - **When:** Diagnostics; paced `bench_out_*` TX.
+
 ---
 
 ## 3. Modulation (ADSR / LFO)
@@ -475,7 +509,7 @@ Globals / instances. **No function definitions.**
 
 ### `LFO.h`
 
-Live LFO instances + Q15 levels + pitch mod arrays. Pitch/drift depth scales (`LFO1_PITCH_DEPTH_SCALE`, `LFO2_PITCH_DEPTH_SCALE`, `DRIFT_PITCH_*`), `lfo_pitch_depth_q24`, and synth-side `applyDepthQ24` (not in mo-lfo). ctor dacSize unused. Docs: [`LFO.md`](LFO.md). **Inline helpers only (no `.ino` bodies).**
+Live LFO instances + Q15 levels + pitch mod arrays. Pitch/drift depth scales (`LFO1_PITCH_DEPTH_SCALE`, `LFO2_PITCH_DEPTH_SCALE`, `DRIFT_PITCH_*`), `lfo_pitch_depth_q24`, and synth-side `applyDepthQ24` (not in mo-lfo). ctor dacSize unused. Prototypes: `LFO1` / `LFO2` / `DRIFT_LFOs`. Docs: [`LFO.md`](LFO.md).
 
 ### `LFO.ino`
 
@@ -495,14 +529,14 @@ Live LFO instances + Q15 levels + pitch mod arrays. Pitch/drift depth scales (`L
 - `init_DRIFT_LFO(lfo&, byte)` — Init one drift LFO (uses `expConverterFloat`).
   - **Called from:** `init_DRIFT_LFOs()`.
   - **When:** Boot Core0.
-- `LFO1()` — `getWaveQ15` → `lfo1_pitch_mod_q24[]` via DCO `applyDepthQ24` in `LFO.h` (broadcast when per-osc extras are 0).
+- `LFO1()` — `getWaveQ15` → `lfo1_pitch_mod_q24[]` via DCO `applyDepthQ24` in `LFO.h` (broadcast when per-osc extras are 0). `__not_in_flash_func`.
   - **Called from:** `loop()` when ~50 µs elapsed (with LFO2 + drift).
   - **When:** Realtime Core0.
-- `LFO2()` — `getWaveQ15` → `lfo2_pitch_mod_q24[]`.
+- `LFO2()` — `getWaveQ15` → `lfo2_pitch_mod_q24[]`. `__not_in_flash_func`.
   - **Called from:** `loop()` when ~50 µs elapsed.
   - **When:** Realtime Core0.
-- `DRIFT_LFOs()` — Update `LFO_DRIFT_LEVEL[]` (negated Q15).
-  - **Called from:** `loop()` when ~50 µs elapsed (with LFO1 + LFO2).
+- `DRIFT_LFOs()` — Update `LFO_DRIFT_LEVEL[]` (negated Q15). `__not_in_flash_func`.
+  - **Called from:** `loop()` when ~51 µs elapsed.
   - **When:** Realtime Core0.
 
 ---
@@ -680,7 +714,7 @@ Prototypes / instances (`init_midi`, `mono_note_stack_clear`). **No function def
 
 ### `midi_cc.h`
 
-MIDI CC control surface: the `MIDI_CC_LINEAR` / `MIDI_CC_EXP_TIME` curves, the `CC_LOCAL_*` codes (224 up) for the values that arrive as `'a'`-`'f'` block frames and so have no `ParamId`, the `MidiCcEntry` layout, and the prototypes for the two functions in `midi.ino`. Includes `midi_cc_map.h`. **No function definitions.**
+MIDI CC control surface: the `MIDI_CC_LINEAR` / `MIDI_CC_EXP_TIME` curves, the `CC_LOCAL_*` codes (224 up) for the values that arrive as `'a'`–`'d'` block frames and so have no `ParamId`, the `MidiCcEntry` layout, and the prototypes for the two functions in `midi.ino`. Includes `midi_cc_map.h`. **No function definitions.**
 
 ### `midi_cc_map.h`
 
@@ -689,7 +723,7 @@ MIDI CC control surface: the `MIDI_CC_LINEAR` / `MIDI_CC_EXP_TIME` curves, the `
 ### `midi.ino`
 
 **Functions**
-- `init_midi()` — Register handlers on USB + Serial1 MIDI.
+- `init_midi()` — Register handlers on USB + Serial1 MIDI; `turnThruOff()` on both (synth, not a thru box).
   - **Called from:** `setup()`.
   - **When:** Boot Core0.
 - `handleNoteOn()` — → `note_on()`.
@@ -704,7 +738,7 @@ MIDI CC control surface: the `MIDI_CC_LINEAR` / `MIDI_CC_EXP_TIME` curves, the `
 - `midi_cc_handle()` — Find the controller in `midiCcMap[]`, scale it into `lo..hi`, apply the exp curve for envelope times, then `midi_cc_apply()`. Unmapped CCs ignored.
   - **Called from:** `handleControlChange()`.
   - **When:** MIDI callback.
-- `midi_cc_apply()` — Dispatch: a `CC_LOCAL_*` target writes its block global here (`cv_bake_adsr2_to_vcf_scale` / `cv_bake_lfo2_to_vcf_scale` for the matching depth CC; CUTOFF/RESONANCE assign without scale bake; `PW[0] = v / 4`), anything else goes to `update_parameters()`.
+- `midi_cc_apply()` — Dispatch: a `CC_LOCAL_*` target writes ADSR/filter block globals here (`cv_bake_adsr2_to_vcf_scale` / `cv_bake_lfo2_to_vcf_scale` for the matching depth CC; CUTOFF/RESONANCE assign without scale bake). PW (`PARAM_PW_VALUE`) and EnvVCA→VCA (`PARAM_ADSR1_TO_VCA`) and every other mapped ParamId go to `update_parameters()`.
   - **Called from:** `midi_cc_handle()`.
   - **When:** MIDI callback.
 - `handleProgramChange()` — Stub / empty as implemented.
@@ -733,80 +767,83 @@ Prototype. **No function definitions.**
 ### `Serial.ino`
 
 **Functions**
-- `init_serial()` — Serial1 MIDI baud (RX 1 / TX 0 @ 31250), Serial2 2.5M Input link against the Input's `Serial1` (RX 21 from Input TX GP0, TX 20 into Input RX GP1), USB CDC.
+- `init_serial()` — Serial1 MIDI baud (RX 1 / TX 0 @ 31250, IRQ/`setPollingMode(false)`), Serial2 2.5M Input link against the Input's `Serial1` (RX 21 from Input TX GP0, TX 20 into Input RX GP1); builds the O(1) command LUT.
   - **Called from:** `setup()`.
   - **When:** Boot Core0.
-- `input_handle_adsr1()` / `input_handle_adsr2()` / `input_handle_adsr3()` — `'a'`/`'b'`/`'c'` → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times.
-  - **Called from:** Serial2 parser command table (`inputSerialCommands[]`).
-  - **When:** Serial2 RX.
-- `input_handle_filter_block()` — `'d'` → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_bake_adsr2_to_vcf_scale()` + `cv_bake_lfo2_to_vcf_scale()` (depths in payload).
-  - **Called from:** Serial2 parser.
-  - **When:** Serial2 RX.
-- `input_handle_adsr1_to_vca()` — `'e'` → `ADSR1toVCA`.
-  - **Called from:** Serial2 parser.
-  - **When:** Serial2 RX.
-- `input_handle_pw()` — `'f'` → `PW[0]` (BE, /4 scale).
-  - **Called from:** Serial2 parser.
-  - **When:** Serial2 RX.
-- `input_handle_param16()` — `'p'` → `update_parameters`.
-  - **Called from:** Serial2 parser.
-  - **When:** Serial2 RX.
-- `input_handle_param8()` — `'w'` → `update_parameters`.
-  - **Called from:** Serial2 parser.
-  - **When:** Serial2 RX.
+- `input_handle_adsr1()` / `input_handle_adsr2()` / `input_handle_adsr3()` — `'a'`/`'b'`/`'c'` LE → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times.
+  - **Called from:** Serial2 / USB parser LUT (`inputSerialLut`).
+  - **When:** Serial RX.
+- `input_handle_filter_block()` — `'d'` LE → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_bake_adsr2_to_vcf_scale()` + `cv_bake_lfo2_to_vcf_scale()`.
+  - **Called from:** parser LUT.
+  - **When:** Serial RX.
+- `input_handle_param16()` — `'p'` → `update_parameters` (id + i16 LE).
+  - **Called from:** parser LUT.
+  - **When:** Serial RX.
 - `input_handle_preset_name()` — `'q'` → `presetName[]` (8 chars).
-  - **Called from:** Serial2 parser.
-  - **When:** Serial2 RX.
-- `serial_panel_task()` — Non-blocking parser pump (`serial_parser_*`).
-  - **Called from:** `loop()` every iteration.
-  - **When:** Realtime Core0.
-- `serial_usb_task()` — Same pump for the USB CDC port: a second `SerialParserContext` over the *same* `inputSerialCommands` table, so a host tool can send panel frames with no Input board. Guarded by `ENABLE_USB_CONTROL` in `DCO.ino`. See [`tools/dco_control`](../tools/dco_control/README.md).
-  - **Called from:** `loop()` every iteration.
-  - **When:** Realtime Core0, only when `ENABLE_USB_CONTROL` is defined.
-- `serialSendParam32()` — TX `'x'` param32 out Serial2 TX 20 into the Input's `Serial1` RX GP1 (gap 154, cal offset 155; Input relays 154 to Screen). Waits on `availableForWrite() < 1` — a HW UART reports 0/1, not free bytes.
+  - **Called from:** parser LUT.
+  - **When:** Serial RX.
+- `serial_panel_task()` — Non-blocking parser pump (`serial_parser_drain`). `__not_in_flash_func`.
+  - **Called from:** `loop()` when `timer1msFlag`.
+  - **When:** Realtime Core0, ~1 ms.
+- `init_usb()` — TinyUSB CDC+MIDI descriptors, `Serial.begin`, re-enumerate.
+  - **Called from:** `setup()`.
+  - **When:** Boot Core0.
+- `serial_usb_task()` — Same pump for USB CDC: second `SerialParserContext`, same LUT. Guarded by `ENABLE_USB_CONTROL`; returns if `!Serial`. `__not_in_flash_func`. See [`tools/dco_control`](../tools/dco_control/README.md).
+  - **Called from:** `loop()` when `timer1msFlag`.
+  - **When:** Realtime Core0, ~1 ms, only when `ENABLE_USB_CONTROL` is defined and CDC is open.
+- `serialSendParam32()` — Legacy `'x'` TX (id + u32 LE + finish) out Serial2 TX 20 into Input `Serial1` RX GP1 (gap 154, cal 155; Input relays 154 to Screen). Bypasses `serial_frame_write()` until Input is updated. Drops if `availableForWrite() < 1`.
   - **Called from:** `apply_param_manual_calibration_flag()`; `DCO_calibration_debug()`.
   - **When:** Manual-cal param / live gap report.
 
 ### `serial_protocol.h`
 
+Compatibility stub that includes `serial_input_protocol.h`. Mainboard `'n'`/`'o'`/`'s'` retired. **No function definitions.**
+
+### `serial_input_protocol.h`
+
+Command bytes + payload sizes + `serial_input_payload_len()`. **No other function definitions.**
+
+### `serial_frame.h`
+
+Inner pack/unpack + buffer COBS encode/decode + `serial_frame_stuff` / `unstuff` / `write()`. Default `SERIAL_FRAMING_RAW` (on-wire = inner). `#define SERIAL_FRAMING_COBS` in `DCO.ino` wraps `COBS(inner)+0x00`. `#error` if both flags are forced. `SERIAL_FRAME_DELIMITER` `0x00` never a command. Codec has no Stream type — UART today, SPI later.
+
 **Functions**
-- `serial_protocol_payload_len()` — Command → payload length.
-  - **Called from:** **none (dead)** — lengths hardcoded in `inputSerialCommands[]`.
+- `serial_cobs_encode()` / `serial_cobs_decode()` — Buffer COBS; decode src has no trailing `0x00`.
+  - **Called from:** `serial_frame_stuff()` / `serial_frame_unstuff()`.
+- `serial_inner_pack()` / `serial_inner_unpack()` — `[cmd][payload]` ↔ buffer.
+  - **Called from:** `serial_frame_stuff()` / `serial_frame_unstuff()`.
+- `serial_frame_stuff()` / `serial_frame_unstuff()` — Inner ↔ on-wire (RAW copy or COBS+`0x00`).
+  - **Called from:** `serial_frame_write()`; parser COBS path.
+- `serial_frame_write()` — Stuff into a stack buffer, `stream.write(...)`.
+  - **Called from:** **none yet on DCO TX** — RX is parsed; slim TX will use this when Input updates. Legacy `'x'` still uses `serialSendParam32()`.
 
 ### `serial_param_protocol.h`
 
 **Functions**
-- `decode_i16_be()` — BE int16 decode.
-  - **Called from:** `decode_param_p()`.
-  - **When:** Serial2 param decode.
-- `decode_i32_le()` — LE int32 decode.
-  - **Called from:** `decode_param_x()`.
-  - **When:** Serial2 param decode.
-- `decode_param_p()` — Decode `'p'` frame.
+- `decode_u16_le()` / `decode_i16_le()` / `decode_u32_le()` / `encode_u16_le()` / `encode_u32_le()` — LE helpers.
+  - **Called from:** ADSR/filter handlers; `decode_param_p`; `encode_param32_legacy`.
+- `decode_param_p()` — Decode `'p'` `[id][i16 LE]`.
   - **Called from:** `input_handle_param16()`.
-  - **When:** Serial2.
-- `decode_param_w()` — Decode `'w'` frame.
-  - **Called from:** `input_handle_param8()`.
-  - **When:** Serial2.
-- `decode_param_x()` — Decode `'x'` frame.
-  - **Called from:** **none on DCO** — the DCO only sends `'x'`; Input and Screen decode it.
-  - **When:** —
+- `encode_param_p()` — Encode `'p'` payload.
+  - **Called from:** **none on DCO** (host tool / future Input TX).
+- `encode_param32_legacy()` — Encode legacy `'x'` payload (id + u32 LE + finish).
+  - **Called from:** `serialSendParam32()`.
 
 ### `serial_parser.h`
+
+Non-blocking inner-frame parser. RAW: cmd LUT + fixed payload. COBS (`SERIAL_FRAMING_COBS`): accumulate into `rx[]` until `0x00`, then `serial_frame_unstuff` + LUT check. Timeout aborts a partial stuffed frame if the stream is idle `SERIAL_FRAME_TIMEOUT_US` (500 µs).
 
 **Functions**
 - `serial_parser_reset()` — Reset parser to idle.
   - **Called from:** `serial_parser_process_byte` / timeout path.
-  - **When:** Serial2 parsing.
-- `serial_parser_find_cmd()` — Lookup command in table.
-  - **Called from:** `serial_parser_process_byte()`.
-  - **When:** Serial2 parsing.
+- `serial_command_table_init()` — Fill 256-entry LUT from `SerialCommandDef[]`.
+  - **Called from:** `init_serial()`.
 - `serial_parser_check_timeout()` — Abort partial frame.
-  - **Called from:** `serial_panel_task()` while in payload state.
-  - **When:** Every `loop` during RX.
-- `serial_parser_process_byte()` — Feed one byte; invoke handler when complete.
-  - **Called from:** `serial_panel_task()`.
-  - **When:** Every available Serial2 byte.
+  - **Called from:** `serial_parser_drain()` when mid-frame and stream idle.
+- `serial_parser_process_byte()` — Feed one on-wire byte (RAW fixed-length or COBS until `0x00`); invoke handler when complete.
+  - **Called from:** `serial_parser_drain()`.
+- `serial_parser_drain()` — One `available()` snapshot, then `read()` up to `SERIAL_DRAIN_BYTE_BUDGET` (64); timeout only when idle (incl. partial COBS stuffed frame).
+  - **Called from:** `serial_panel_task()` / `serial_usb_task()`.
 
 ### `params_def.h`
 
@@ -815,16 +852,24 @@ Prototype. **No function definitions.**
 ### `param_router.h`
 
 **Functions**
-- `param_router_apply()` — Table lookup ParamId → apply callback.
+- `param_router_build_jump()` — Fill 256-entry apply jump table from `paramTable[]`.
+  - **Called from:** `init_param_router()`.
+  - **When:** Boot Core0.
+- `param_router_apply_jump()` — O(1) ParamId → apply callback.
   - **Called from:** `update_parameters()`.
-  - **When:** Serial2 param frames.
+  - **When:** `'p'` frames / MIDI CC.
+- `param_router_apply()` — Linear scan fallback.
+  - **Called from:** **none on DCO**.
 
 ### `params.ino`
 
 **Functions**
-- `update_parameters()` — Route param id/value through `paramTable`.
-  - **Called from:** `dco_handle_param16/8/32()`.
-  - **When:** Serial2 `'p'/'w'/'x'`.
+- `init_param_router()` — Build O(1) jump table from `paramTable[]`.
+  - **Called from:** `setup()`.
+  - **When:** Boot Core0.
+- `update_parameters()` — Route param id/value through the jump table.
+  - **Called from:** `input_handle_param16()`; `midi_cc_apply()` default.
+  - **When:** `'p'` frames / MIDI CC.
 - All `apply_param_*()` below — **Called from:** **param table only** (never direct). **When:** matching Serial2 ParamId.
 
 - `apply_param_osc*_saw/pulse/tri_enable()` — Per-osc wave enables → `update_waveSelector()`.
@@ -860,6 +905,8 @@ Prototype. **No function definitions.**
 - `apply_param_adsr1_to_detune1()` — ADSR→detune + Q24 scale.
 - `apply_param_adsr1_curve()` — Attack curve hook (light/reserved).
 - `apply_param_adsr2_curve()` — Decay curve hook (light/reserved).
+- `apply_param_pw_value()` — Pulse width → `PW[0] = v / 4` (`PARAM_PW_VALUE`).
+- `apply_param_adsr1_to_vca()` — EnvVCA → VCA amount (`PARAM_ADSR1_TO_VCA`).
 - `apply_param_pwm_pots_manual()` — Manual PWM pots flag.
 - `apply_param_function_key()` — Function key (reserved/no-op).
 - `apply_param_calibration_flag()` — Sets `calibrationFlag` → next `loop1` auto-cal.
@@ -868,22 +915,27 @@ Prototype. **No function definitions.**
 - `apply_param_manual_calibration_offset()` — Per-osc manual offset.
 - `apply_param_manual_calibration_store()` — → `update_FS_ManualCalibrationOffset`.
 - `apply_param_character()` — `PARAM_CHARACTER` (221): master 0..128 → `character_recompute_scales()`. See [`CHARACTER.md`](CHARACTER.md).
-- `apply_param_debug_command()` — Bench diagnostics (id 160): 1 → `pio_topology_report()`, 2/3 → `pio_period_probe()` at a low/high divider, 10/11/12 → profiler dump / reset / periodic toggle (`RUNNING_AVERAGE`), 20–22 → amp-comp method (FLOAT_QUAD / LUT / FIXED), 24/25 → amp-comp speed/accuracy (`AMP_COMP_BENCHMARK` + `RUNNING_AVERAGE`), 28/29 → pitch-interp speed/accuracy (`RUNNING_AVERAGE`), 30 → force-seed fake calibration tables, **200–50000** (uint16) → set `pioPulseLength` and reload running SMs via `pio_defer_request_reset_pulse_all()`, **0xC8xx / 0xCAxx / 0xCBxx** → Character-tab axis jitters (amp / pitch / PW) then recompute scales. Period probes only hold with no note playing.
+- `apply_param_debug_command()` — Bench diagnostics (id 160): 1 → `pio_topology_report()`, 2/3 → `pio_period_probe()` at a low/high divider, 10/11/12 → profiler dump / reset / periodic toggle (`RUNNING_AVERAGE`), **13 → `mem_diag_request()`** (heap/stack; `ENABLE_MEM_DIAG` + runtime polls on; [`MEMORY.md`](MEMORY.md)), **14/15 → mem_diag polls off/on** (ack `mem_diag polls=…`; `compiled out` if flag off), 20–22 → amp-comp method (FLOAT_QUAD / LUT / FIXED), 24/25 → amp-comp speed/accuracy (`AMP_COMP_BENCHMARK` + `RUNNING_AVERAGE`), 28/29 → pitch-interp speed/accuracy (`RUNNING_AVERAGE`), 30 → force-seed fake calibration tables, **200–50000** (uint16) → set `pioPulseLength` and reload running SMs via `pio_defer_request_reset_pulse_all()`, **0xC8xx / 0xCAxx / 0xCBxx** → Character-tab axis jitters (amp / pitch / PW) then recompute scales. Period probes only hold with no note playing.
 
 ---
 
 ## 6. Timing / utilities
 
-### `Timer_millis.h`
+### `Timer_micros.h`
 
-Flags only. **No function definitions.**
+Flag + period constexprs (`kTimer50us`, `kTimer1ms`, …). **No function definitions.**
 
-### `Timer_millis.ino`
+### `Timer_micros.ino`
 
 **Functions**
-- `millisTimer()` — Update soft timer flags (99 µs, ~1 ms, 200 ms, 1000 ms, …).
+- `init_micros_timers()` — Seed last-fire stamps on both cores.
+  - **Called from:** `setup()` / `setup1()`.
+- `microsTimer()` — Core 0 soft flags: 50 / 51 / 99 µs and **1 ms** (`timer1msFlag`, panel + USB CDC drain). `__not_in_flash_func`.
+  - **Called from:** `loop()` every iteration.
+  - **When:** Realtime Core0.
+- `microsTimer2()` — Core 1 soft flags (99 µs, ~1 ms, …). `__not_in_flash_func`.
   - **Called from:** `loop1()` every iteration.
-  - **When:** Realtime Core1. (`timer99microsFlag` used in voice PW update; `timer1000msFlag` for `RUNNING_AVERAGE`.)
+  - **When:** Realtime Core1.
 
 ### `noise.h`
 
@@ -897,7 +949,7 @@ Compile `NOISE_ENGINE` in `DCO.ino` selects `DcoNoiseGen` for `noise0`…`noise1
 Ctor args set color/seed; `next()` is always Q15. `setup1` calls `dcoNoisePioBegin`; `loop1`
 calls `dcoNoisePioRefill` + `.next()` into `noiseLevel[0..1]`. Mod-matrix sources 14/15
 (Noise 2/3) stay reserved and read as 0. Flag gating for PIO white lives in the library
-(`dcoNoiseUsesPioWhite`). See [`BENCHMARKING.md`](BENCHMARKING.md) §10.
+(`dcoNoiseUsesPioWhite`). See [`BENCHMARKING.md`](BENCHMARKING.md) §11.
 
 ### `utils.h`
 
@@ -950,14 +1002,15 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | `../VOICE-AUX/` | RP2040 voice-aux sketch (Dist 52/53, mode 54); see `VOICE-AUX/docs/README.md`. |
 | `docs/ENGINE_OPTIONS.md` | Float/fixed engine flags. |
 | `docs/BENCHMARKING.md` | Hot-path profiler: probes, reading the budget, adding a probe. |
+| `docs/MEMORY.md` | SRAM / heap / stack: `__not_in_flash_func`, dump cmd 13, pin policy. |
 | `docs/DISTORTION.md` | Post-LP Drive/Mix distortion hardware idea and CV prototype. |
 | `docs/FILTER_ROUTING.md` | SSI2144 → dist → AS3320 multimode concept; digital stage switching (DG411/4066). |
 | `docs/schematics/distortion/` | KiCad 10 project (`distortion.kicad_pro`) for the distortion stage. |
 | `docs/REFERENCE_AI.md` | Deep semantic map. |
 | `docs/FILE_INDEX.md` | This file — files, functions, call sites. |
-| `docs/README_serial_and_params.md` | Shared serial / ParamId how-to, including the MIDI CC path. |
+| `docs/README_serial_and_params.md` | Slim inner serial / ParamId how-to, including MIDI CC and RAW vs COBS A/B. |
 | `docs/MIDI_CC_MAP.md` | **Generated** — MIDI CC implementation chart. |
-| `docs/Serial_comms_and_params_reference.txt` | Earlier design notes (partially historical). |
+| `docs/Serial_comms_and_params_reference.txt` | **Archive** — Mainboard-era protocol notes. |
 | `docs/AUTOTUNE.md` | Autotune algorithms. |
 | `docs/AUTOTUNE_REFACTORED.md` | Autotune refactor structure. |
 | `docs/FIXED_POINT_ANALYSIS.md` | **Archive** |
@@ -999,7 +1052,7 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 |------|------------|
 | Engine float/fixed | `DCO.ino` flags → `voice_task_main` |
 | New ParamId | `params_def.h` → `params.ino` table (only call path) |
-| Serial command | `serial_input_protocol.h` + `Serial.ino` handlers ← `serial_panel_task` (Serial2) and `serial_usb_task` (USB CDC) in `loop` |
+| Serial command | `serial_input_protocol.h` + `serial_frame.h` + `Serial.ino` handlers ← `serial_panel_task` (Serial2) and `serial_usb_task` (USB CDC) in `loop` |
 | Control the board with no panel | [`tools/dco_control`](../tools/dco_control/README.md) over USB; needs `ENABLE_USB_CONTROL` |
 | Start auto-cal | Param → `apply_param_calibration_flag` → `loop1` → `DCO_calibration` |
 | Manual cal UI | `apply_param_manual_calibration_*` → `loop1` manual branch |
@@ -1009,4 +1062,5 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | Play audio path | `loop1` → `ADSR_update` + `voice_task_main` |
 | OSC2 note-on phase align | `PARAM_OSC_SYNC_MODE` → `oscSync` / `phaseAlignOSC2`; EXACT_Y in `voices.ino` → `osc_phase_align_hold_stopped` ([`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §8) |
 | Measure where the time goes | `RUNNING_AVERAGE` in `DCO.ino` → probe table in `bench.h` → debug command 10 |
+| Measure SRAM / heap / stack | dump cmd **13** → [`MEMORY.md`](MEMORY.md) / `mem_diag.ino`; `ENABLE_MEM_DIAG` + runtime 14/15; pin policy there |
 | RANGE carrier / slice vs PIO dither | `RANGE0_PIO_DITHER_TEST` in `DCO.ino` → `PWM.h` / `PWM.ino` / [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §4.4 |

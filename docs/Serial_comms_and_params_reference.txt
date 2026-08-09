@@ -1,3 +1,7 @@
+> ARCHIVE — historical only (Mainboard-era 'p'/'w'/'x' + finish byte, BE params).
+> Current inner protocol, framing hook for COBS, and how-to:
+>   docs/README_serial_and_params.md
+>
 Technical Reference: Serial Comms & Parameter Routing (DCO4 System)
 This document describes how serial communication and parameter updates are structured across the DCO4 system (DCO board + mainboard), and the plan to evolve them into a shared “library‑style” core with per‑MCU plug‑ins.
 1. System Architecture Overview

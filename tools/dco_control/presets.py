@@ -92,6 +92,19 @@ def _normalize_slot(slot: dict) -> dict[str, Any]:
             except (TypeError, ValueError):
                 pass
 
+    # Pre-slim bank.json stored PW / EnvVCA→VCA as 'e'/'f' blocks.
+    _legacy_block_to_param = {
+        ("adsr1_to_vca", "amount"): "222",
+        ("pw", "pw"): "210",
+    }
+    for (bkey, fkey), pid in _legacy_block_to_param.items():
+        src = raw_blocks.get(bkey)
+        if pid in out["params"] and pid not in raw_params and isinstance(src, dict) and fkey in src:
+            try:
+                out["params"][pid] = int(src[fkey])
+            except (TypeError, ValueError):
+                pass
+
     for b in patch_blocks():
         src = raw_blocks.get(b.key)
         if not isinstance(src, dict):

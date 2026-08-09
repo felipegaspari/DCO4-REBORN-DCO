@@ -6,6 +6,7 @@
 // Sparse mod matrix (8 slots). See docs/MOD_MATRIX.md.
 
 static constexpr uint8_t MOD_SLOT_COUNT = 8;
+static_assert(MOD_SLOT_COUNT <= 8, "live/pitch masks are uint8_t");
 static constexpr uint8_t MOD_SRC_EMPTY = 0xFF;
 static constexpr uint8_t MOD_DEST_EMPTY = 0xFF;
 
@@ -63,7 +64,11 @@ void mod_matrix_set_aftertouch(uint8_t pressure);
 void mod_matrix_set_mod_wheel(uint8_t value);
 
 // Sum active slots into dest_sums[0..MOD_DEST_COUNT-1].
-void mod_matrix_accumulate(int32_t dest_sums[MOD_DEST_COUNT]);
+// lfo1/lfo2_q15: Core0 mailbox snapshot from update_CV_outs (not volatile-in-mul).
+void mod_matrix_accumulate(int32_t dest_sums[MOD_DEST_COUNT], int16_t lfo1_q15, int16_t lfo2_q15);
+
+// Pitch dest only → Q24 (no dest_sums). 0 if no live pitch slot.
+int32_t mod_matrix_eval_pitch_q24(int16_t lfo1_q15, int16_t lfo2_q15);
 
 // ±1023 pitch dest sum → Q24 octave (mul/shift, no hot /1023).
 int32_t mod_matrix_pitch_to_q24(int32_t pitch_s);

@@ -6,7 +6,7 @@ void init_micros_timers() {
   timer51micros = now;  timer51microsFlag = 0;
   timer99micros = now;  timer99microsFlag = 0;
   // timer100micros = now;  timer100microsFlag = 0;
-  // timer1ms = now;        timer1msFlag = 0;
+  timer1ms = now;        timer1msFlag = 0;
   // timer223micros = now;  timer223microsFlag = 0;
   // timer5ms = now;        timer5msFlag = 0;
   // timer11ms = now;       timer11msFlag = 0;
@@ -34,14 +34,14 @@ void init_micros_timers() {
 }
 
 // Core 0 — unrolled µs timers. Called every loop().
-inline void microsTimer() {
+void __not_in_flash_func(microsTimer)() {
   const unsigned long now = micros();
 
   timer50microsFlag = 0;  if (now - timer50micros > kTimer50us) { timer50micros = now; timer50microsFlag = 1; }
   timer51microsFlag = 0;  if (now - timer51micros > kTimer51us) { timer51micros = now; timer51microsFlag = 1; }
   timer99microsFlag = 0;  if (now - timer99micros > kTimer99us) { timer99micros = now; timer99microsFlag = 1; }
   // timer100microsFlag = 0;  if (now - timer100micros > kTimer100us) { timer100micros = now; timer100microsFlag = 1; }
-  // timer1msFlag = 0;        if (now - timer1ms > kTimer1ms)         { timer1ms = now;       timer1msFlag = 1; }
+  timer1msFlag = 0;        if (now - timer1ms > kTimer1ms)         { timer1ms = now;       timer1msFlag = 1; }
   // timer223microsFlag = 0;  if (now - timer223micros > kTimer223us) { timer223micros = now; timer223microsFlag = 1; }
   // timer5msFlag = 0;        if (now - timer5ms > kTimer5ms)         { timer5ms = now;       timer5msFlag = 1; }
   // timer11msFlag = 0;       if (now - timer11ms > kTimer11ms)       { timer11ms = now;      timer11msFlag = 1; }
@@ -54,7 +54,7 @@ inline void microsTimer() {
 }
 
 // Core 1 — same periods, separate state (*2). Called every loop1().
-inline void microsTimer2() {
+void __not_in_flash_func(microsTimer2)() {
   const unsigned long now = micros();
 
   //timer50microsFlag2 = 0;  if (now - timer50micros2 > kTimer50us) { timer50micros2 = now; timer50microsFlag2 = 1; }

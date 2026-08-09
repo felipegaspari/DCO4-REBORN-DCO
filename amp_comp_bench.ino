@@ -58,32 +58,21 @@ static void amp_comp_bench_with_synthetic(void (*fn)()) {
   amp_comp_bench_restore_live();
 }
 
-static uint16_t amp_comp_call_method(uint8_t method, float freqHz, uint8_t voiceN) {
-  switch (method) {
-    case AMP_COMP_LUT:
-      return get_chan_level_lut(freqHz, voiceN);
-    case AMP_COMP_FIXED: {
-      if (freqHz <= 0.0f) return 0;
-      if (freqHz >= (float)AMP_COMP_MAX_HZ) {
-        return get_chan_level_lookup_fast(AMP_COMP_MAX_HZ_Q, voiceN);
-      }
-      int32_t x_q = (int32_t)lrintf(freqHz * (float)(1 << FREQ_FRAC_BITS));
-      return get_chan_level_lookup_fast(x_q, voiceN);
-    }
-    case AMP_COMP_FLOAT_QUAD:
-    default:
-      return get_chan_level_float_quad(freqHz, voiceN);
-  }
+static void amp_comp_bench_reset_win_cache() {
+  for (int i = 0; i < NUM_OSCILLATORS; ++i) ampWinCache[i] = -1;
 }
 
 static void amp_comp_bench_run_speed_body() {
   // Same 0.01 Hz grid as accuracy (one pass, AMP_COMP_BENCH_OSCS). Heavy one-shot.
   const int32_t cHzMax = AMP_COMP_MAX_HZ * 100;
+  const uint8_t saved_method = amp_comp_method;
 
   uint32_t totalCalls[AMP_COMP_BENCH_METHODS] = {0};
   uint64_t totalUs[AMP_COMP_BENCH_METHODS] = {0};
 
   for (uint8_t method = 0; method < AMP_COMP_BENCH_METHODS; ++method) {
+    amp_comp_method = method;
+    amp_comp_bench_reset_win_cache();
     uint32_t t0 = micros();
     uint32_t calls = 0;
     volatile uint16_t sink = 0;
@@ -91,7 +80,7 @@ static void amp_comp_bench_run_speed_body() {
     for (uint8_t o = 0; o < AMP_COMP_BENCH_OSCS; ++o) {
       for (int32_t cHz = AMP_COMP_BENCH_CHZ_MIN; cHz <= cHzMax; ++cHz) {
         float f = (float)cHz * 0.01f;
-        sink = (uint16_t)(sink + amp_comp_call_method(method, f, o));
+        sink = (uint16_t)(sink + get_chan_level_by_method(f, o));
         ++calls;
       }
     }
@@ -101,6 +90,7 @@ static void amp_comp_bench_run_speed_body() {
     totalUs[method] = (uint64_t)(t1 - t0);
     (void)sink;
   }
+  amp_comp_method = saved_method;
 
   double refUs = (double)totalUs[AMP_COMP_FLOAT_QUAD];
   if (refUs < 1.0) refUs = 1.0;
@@ -109,7 +99,9 @@ static void amp_comp_bench_run_speed_body() {
   bench_out_println("cal=SYNTHETIC linear Hz/level 1..MAX / 1..DIV_COUNTER");
   bench_out_printf("grid=0.01Hz 1..%.0f oscs=%d (same as accuracy)\n",
                    (double)AMP_COMP_MAX_HZ, AMP_COMP_BENCH_OSCS);
-  bench_out_printf("live_method=%s\n", amp_comp_method_name(amp_comp_method));
+  bench_out_printf("live_method=%s (restored after sweep)\n",
+                   amp_comp_method_name(amp_comp_method));
+  bench_out_println("dispatch=get_chan_level_by_method; ampWinCache reset per method");
   bench_out_println("method       calls    totalUs   meanNs  pctVsFloat");
   bench_out_println("------------ -------- --------- -------- ----------");
   for (uint8_t method = 0; method < AMP_COMP_BENCH_METHODS; ++method) {
@@ -139,6 +131,9 @@ static void amp_comp_bench_run_accuracy_body() {
 
   memset(acc, 0, sizeof(acc));
 
+  const uint8_t saved_method = amp_comp_method;
+  amp_comp_bench_reset_win_cache();
+
   // Inclusive 1.00 … AMP_COMP_MAX_HZ (matches synthetic / typical first cal knot at 1 Hz).
   const int32_t cHzMax = AMP_COMP_MAX_HZ * 100;
   const float tipHz = (float)AMP_COMP_MAX_HZ;
@@ -150,7 +145,9 @@ static void amp_comp_bench_run_accuracy_body() {
 
       for (uint8_t method = 0; method < AMP_COMP_BENCH_METHODS; ++method) {
         if (method == AMP_COMP_FLOAT_QUAD) continue;
-        uint16_t y = amp_comp_call_method(method, f, o);
+        amp_comp_method = method;
+        ampWinCache[o] = -1; // gold just filled the shared cache
+        uint16_t y = get_chan_level_by_method(f, o);
         double e = fabs((double)y - (double)ref);
         Acc &a = acc[method];
         a.sumAbs += e;
@@ -168,6 +165,7 @@ static void amp_comp_bench_run_accuracy_body() {
       }
     }
   }
+  amp_comp_method = saved_method;
 
   uint32_t lutIntMaxErr = 0;
   for (uint8_t o = 0; o < AMP_COMP_BENCH_OSCS; ++o) {
@@ -195,6 +193,8 @@ static void amp_comp_bench_run_accuracy_body() {
                    (double)AMP_COMP_MAX_HZ, AMP_COMP_BENCH_OSCS, (unsigned long)nSamples);
   bench_out_printf("LUT integer-Hz sanity: max err %lu PWM (want 0)\n",
                    (unsigned long)lutIntMaxErr);
+  bench_out_println("dual-build plateau: FLOAT_QUAD/LUT early-out from original plateau Hz; "
+                    "FIXED often interpolates until 7000 Hz domain clamp (expected gap)");
 
   for (uint8_t method = 0; method < AMP_COMP_BENCH_METHODS; ++method) {
     if (method == AMP_COMP_FLOAT_QUAD) continue;

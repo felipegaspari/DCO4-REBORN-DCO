@@ -67,7 +67,7 @@ float    ampCompFrequencyHz[NUM_OSCILLATORS][ampCompTableSize + 1];
 // Dense LUT: index = integer Hz, value = RANGE PWM.
 // Filled once after float precompute from get_chan_level_float_quad() so integer-Hz
 // LUT at integer Hz matches float quadratic exactly; lookup uses nearest Hz.
-// Selectable for speed A/B; live default is FIXED.
+// Selectable for speed A/B; RP2350 live default is FLOAT_QUAD.
 uint16_t ampCompLut[NUM_OSCILLATORS][AMP_COMP_MAX_HZ + 1];
 #endif
 
@@ -487,7 +487,7 @@ static inline uint16_t get_chan_level_float(float freqHz, uint8_t voiceN) {
 
 static inline uint16_t get_chan_level_for_engine(float freqHz, uint8_t voiceN) {
 #ifdef USE_FLOAT_AMP_COMP
-  // Float amp-comp: delegate to the active method (FIXED by default).
+  // Float amp-comp: delegate to the active method (RP2350 default FLOAT_QUAD).
   return get_chan_level_by_method(freqHz, voiceN);
 #else
   // Fixed-point amp-comp: convert Hz to Q(FREQ_FRAC_BITS) and call fast lookup.

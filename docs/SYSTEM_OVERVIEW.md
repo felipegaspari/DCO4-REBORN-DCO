@@ -45,7 +45,7 @@ flowchart LR
 | Link | Baud | Peers | Role |
 |------|------|-------|------|
 | DCO `Serial1` | 31250 | DIN MIDI | MIDI in (RX1 / TX0) — interim HW; PIO MIDI later |
-| DCO `Serial2` **RX GP21** | 2.5M | Input `Serial1` **TX GP0** | Panel in (`'a'..'f'`, `'p'`/`'w'`); same TX may fan out to RP2040 aux RX ([`DUAL_MCU.md`](DUAL_MCU.md)) |
+| DCO `Serial2` **RX GP21** | 2.5M | Input `Serial1` **TX GP0** | Panel in (slim `'a'`–`'d'`, `'p'`, `'q'`; LE, no finish). Input firmware still sends the old BE format until updated. Same TX may fan out to RP2040 aux RX ([`DUAL_MCU.md`](DUAL_MCU.md)) |
 | DCO `Serial2` **TX GP20** | 2.5M | Input `Serial1` **RX GP1** | Gap/offset `'x'` 154 / 155 out (DCO only — aux never TX) |
 | Input `Serial2` **TX GP4** | 2.5M | Screen `Serial1` **RX GP13** | UI frames / preset names + forwarded gap `'x'` 154 |
 

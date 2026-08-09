@@ -4,9 +4,10 @@
 #include "serial_param_protocol.h"
 #include "serial_protocol.h"
 #include "serial_input_protocol.h"
+#include "serial_frame.h"
 #include "serial_parser.h"
 
-// Serial1 = DIN MIDI @ 31250; Serial2 = Input panel protocol + 'x' TX @ 2.5M.
+// Serial1 = DIN MIDI @ 31250; Serial2 = Input panel protocol + legacy 'x' TX @ 2.5M.
 // Screen has no DCO port: Input relays gap 154 to it on its own Screen port.
 
 void init_serial();
@@ -14,7 +15,7 @@ void init_usb();
 void serial_panel_task();
 
 #ifdef ENABLE_USB_CONTROL
-// USB CDC bench link: same panel frames, for control without the Input board.
+// USB CDC bench link: same inner frames, for control without the Input board.
 void serial_usb_task();
 #endif
 

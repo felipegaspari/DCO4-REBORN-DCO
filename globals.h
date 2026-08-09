@@ -34,9 +34,10 @@
 
 #define ENABLE_FS_CALIBRATION
 
-// Cached clk_sys Hz. `clock_get_hz` is not free — do not put it behind a hot-path macro.
-// Call sys_clock_hz_refresh() after boot / any set_sys_clock_* before voice/clkdiv runs.
-uint32_t sysClock_Hz_cached = 250000000u;
+// Arduino Tools → CPU Speed sets clk_sys (and F_CPU) before setup()/setup1().
+// Cache actual Hz: clock_get_hz is not free — do not put it on the voice hot path.
+// Call sys_clock_hz_refresh() once per core at boot before PIO/clkdiv runs.
+uint32_t sysClock_Hz_cached = F_CPU;
 static inline void sys_clock_hz_refresh(void) {
   sysClock_Hz_cached = clock_get_hz(clk_sys);
 }

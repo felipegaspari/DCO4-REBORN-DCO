@@ -3,205 +3,197 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
+#include "serial_frame.h"
 
 // -----------------------------------------------------------------------------
-// Generic serial frame parser core.
+// Inner-frame parser. Framing is separate (RAW vs COBS in serial_frame.h).
+// Handlers always see cmd + payload; do not put framing logic in them.
 //
-// Responsibilities:
-//   - Tracks "wait for command" vs "read payload" state.
-//   - Uses a per-link SerialCommandDef[] table to know valid commands and
-//     payload sizes (often taken from serial_protocol.h).
-//   - Accumulates payload bytes for each frame.
-//   - On full frame, calls the corresponding on_frame() callback.
-//   - Enforces a timeout to drop broken/partial frames.
-//
-// The parser itself does NOT know anything about the meaning of commands
-// ('n', 'o', 'p', 'w', 'x', etc.). It only knows:
-//   - "This command expects N payload bytes"
-//   - "When we have N bytes, call this callback".
-//
-// This keeps the parser fully shared between MCUs; each board only needs
-// to define its own command table and on_frame handlers.
+// O(1) command lookup: SerialCommandTable is a 256-entry LUT.
+// payload_len[cmd]==0 means unknown / ignore.
+// 0x00 (SERIAL_FRAME_DELIMITER) is never a valid command.
 // -----------------------------------------------------------------------------
 
-// Maximum payload size among all commands on this link.
-// For the current protocols:
-//   - mainboard<->DCO: 's' uses 8 bytes,
-//   - other links may use up to 9 bytes (e.g. preset-name frames).
-// So 9 bytes is enough for all current commands.
-static const uint8_t SERIAL_MAX_PAYLOAD = 9;
+// Partial-frame abort when RX is idle mid-frame (microseconds, not ms).
+static const uint32_t SERIAL_FRAME_TIMEOUT_US = 500;
 
-// Timeout (in microseconds) to abandon a partially received frame.
-// If we get stuck mid-frame (e.g. bytes lost), we reset after this delay
-// so new commands can be received cleanly.
-static const uint32_t SERIAL_FRAME_TIMEOUT_US = 5000;  // 5 ms
-
-// Max bytes drained per loop() call on each serial link. Prevents a host burst from
-// monopolizing core 0 while core 1 keeps running voice_task on the same PIO hardware.
-static const uint8_t SERIAL_DRAIN_BYTE_BUDGET = 32;
+// Max bytes drained per loop() call on each serial link. 64 covers one 1 ms
+// Input burst (a+b+c+d, COBS ~11 B each, plus a couple of 'p' frames).
+static const uint8_t SERIAL_DRAIN_BYTE_BUDGET = 64;
 
 // Max MIDI bytes parsed per loop() call on each MIDI port (one read() ≈ one byte).
 static const uint8_t MIDI_DRAIN_BYTE_BUDGET = 32;
 
-// Parser states:
-//   SERIAL_WAIT_FOR_CMD : expecting the command byte.
-//   SERIAL_READ_PAYLOAD : accumulating payload bytes for the current command.
 enum SerialParserState : uint8_t {
   SERIAL_WAIT_FOR_CMD = 0,
   SERIAL_READ_PAYLOAD = 1
 };
 
-// Forward declaration of SerialCommandDef (see below).
-struct SerialCommandDef;
-
-// Per-link parser context: one instance per UART/link.
-// This struct holds all the state needed for the parser between calls.
-struct SerialParserContext {
-  SerialParserState        state;                        // current parser state
-  char                     command;                      // current command byte
-  const SerialCommandDef*  cmd_def;                      // cached command definition
-  uint8_t                  payload[SERIAL_MAX_PAYLOAD];  // payload buffer
-  uint8_t                  expected_len;                 // total payload bytes expected
-  uint8_t                  received_len;                 // payload bytes received so far
-  uint32_t                 last_byte_time_us;            // timestamp of last byte (for timeout)
-};
-
-// Per-command definition:
-//   - cmd        : command character (e.g. 'n', 'p', 'w', ...)
-//   - payload_len: number of payload bytes expected after cmd
-//   - on_frame   : callback to invoke when a complete frame is received.
-//
-// The callback is responsible for interpreting the payload and updating
-// local state (note arrays, parameters, etc.).
 struct SerialCommandDef {
-  char     cmd;
+  uint8_t  cmd;
   uint8_t  payload_len;
   void   (*on_frame)(char cmd, const uint8_t* payload, uint8_t len);
 };
 
-// Reset parser to initial state (wait for a new command).
+struct SerialCommandTable {
+  uint8_t payload_len[256];
+  void  (*on_frame[256])(char cmd, const uint8_t* payload, uint8_t len);
+};
+
+struct SerialParserContext {
+  SerialParserState state;
+  uint8_t           command;
+  uint8_t           payload[SERIAL_INNER_MAX_PAYLOAD];
+  uint8_t           expected_len;
+  uint8_t           received_len;
+  uint8_t           rx[SERIAL_STUFFED_MAX];  // COBS stuffed bytes (no delimiter)
+  uint8_t           rx_len;
+  uint32_t          last_byte_time_us;
+};
+
 static inline void serial_parser_reset(SerialParserContext& ctx) {
   ctx.state             = SERIAL_WAIT_FOR_CMD;
   ctx.command           = 0;
-  ctx.cmd_def           = nullptr;
   ctx.expected_len      = 0;
   ctx.received_len      = 0;
+  ctx.rx_len            = 0;
   ctx.last_byte_time_us = 0;
 }
 
-// Find a command definition in the table for the given cmd.
-// Returns nullptr if not found (unknown command).
-static inline const SerialCommandDef* serial_parser_find_cmd(
-    const SerialCommandDef* commands,
-    size_t numCommands,
-    char cmd)
-{
-  for (size_t i = 0; i < numCommands; ++i) {
-    if (commands[i].cmd == cmd) {
-      return &commands[i];
-    }
-  }
-  return nullptr;
+static inline bool serial_parser_in_frame(const SerialParserContext& ctx) {
+#ifdef SERIAL_FRAMING_COBS
+  return ctx.rx_len > 0;
+#else
+  return ctx.state == SERIAL_READ_PAYLOAD;
+#endif
 }
 
-// Optionally called from your main loop to drop stale partial frames.
-// (You can also rely solely on the timeout logic in serial_parser_process_byte.)
+static inline void serial_command_table_init(
+    SerialCommandTable& lut,
+    const SerialCommandDef* commands,
+    size_t numCommands)
+{
+  memset(lut.payload_len, 0, sizeof(lut.payload_len));
+  memset(lut.on_frame, 0, sizeof(lut.on_frame));
+  for (size_t i = 0; i < numCommands; ++i) {
+    uint8_t c = commands[i].cmd;
+    if (c == SERIAL_FRAME_DELIMITER) continue;
+    lut.payload_len[c] = commands[i].payload_len;
+    lut.on_frame[c]    = commands[i].on_frame;
+  }
+}
+
 static inline void serial_parser_check_timeout(SerialParserContext& ctx,
                                                uint32_t now_us)
 {
-  if (ctx.state == SERIAL_READ_PAYLOAD && ctx.last_byte_time_us != 0) {
+  if (serial_parser_in_frame(ctx) && ctx.last_byte_time_us != 0) {
     if ((uint32_t)(now_us - ctx.last_byte_time_us) > SERIAL_FRAME_TIMEOUT_US) {
       serial_parser_reset(ctx);
     }
   }
 }
 
-// Main entry point: feed one byte into the parser.
-//
-//   - ctx         : per-link parser context (keeps state between calls).
-//   - commands    : array of SerialCommandDef entries for this link.
-//   - numCommands : number of entries in the commands[] array.
-//   - b           : newly received byte from the UART.
-//   - now_us      : current time in microseconds (for timeout).
-//
-// Behavior:
-//   - In SERIAL_WAIT_FOR_CMD:
-//       * interpret 'b' as command byte
-//       * look up payload length from commands[]
-//       * if unknown command, ignore byte
-//       * if known, switch to SERIAL_READ_PAYLOAD and start filling payload[]
-//   - In SERIAL_READ_PAYLOAD:
-//       * store 'b' into payload[]
-//       * when we reach expected_len, call on_frame()
-//       * then reset back to SERIAL_WAIT_FOR_CMD
+static inline void serial_parser_dispatch(
+    const SerialCommandTable& lut,
+    uint8_t cmd,
+    const uint8_t* payload,
+    uint8_t payload_len)
+{
+  if (cmd == SERIAL_FRAME_DELIMITER) return;
+  if (lut.payload_len[cmd] == 0 || lut.payload_len[cmd] != payload_len) return;
+  void (*fn)(char, const uint8_t*, uint8_t) = lut.on_frame[cmd];
+  if (fn) fn((char)cmd, payload, payload_len);
+}
+
+#ifdef SERIAL_FRAMING_COBS
+static inline void serial_parser_process_byte_cobs(
+    SerialParserContext& ctx,
+    const SerialCommandTable& lut,
+    uint8_t b)
+{
+  if (b == SERIAL_FRAME_DELIMITER) {
+    if (ctx.rx_len == 0) return;
+    uint8_t cmd = 0;
+    uint8_t payload_len = 0;
+    if (serial_frame_unstuff(ctx.rx, ctx.rx_len, cmd, ctx.payload, payload_len)) {
+      serial_parser_dispatch(lut, cmd, ctx.payload, payload_len);
+    }
+    serial_parser_reset(ctx);
+    return;
+  }
+  if (ctx.rx_len >= (uint8_t)(SERIAL_STUFFED_MAX - 1u)) {
+    serial_parser_reset(ctx);
+    return;
+  }
+  ctx.rx[ctx.rx_len++] = b;
+  ctx.state = SERIAL_READ_PAYLOAD;
+}
+#endif
+
+// Feed one on-wire byte.
 static inline void serial_parser_process_byte(
     SerialParserContext& ctx,
-    const SerialCommandDef* commands,
-    size_t numCommands,
-    uint8_t b,
-    uint32_t now_us)
+    const SerialCommandTable& lut,
+    uint8_t b)
 {
-  // Timeout handling: if we're partway through a frame and it took too long
-  // since the last byte, reset to avoid getting stuck.
-  if (ctx.state == SERIAL_READ_PAYLOAD &&
-      ctx.last_byte_time_us != 0 &&
-      (uint32_t)(now_us - ctx.last_byte_time_us) > SERIAL_FRAME_TIMEOUT_US) {
-    serial_parser_reset(ctx);
-  }
-
-  ctx.last_byte_time_us = now_us;
-
+#ifdef SERIAL_FRAMING_COBS
+  serial_parser_process_byte_cobs(ctx, lut, b);
+#else
   if (ctx.state == SERIAL_WAIT_FOR_CMD) {
-    char cmd = (char)b;
-    const SerialCommandDef* def =
-        serial_parser_find_cmd(commands, numCommands, cmd);
-    if (!def) {
-      // Unknown command: ignore and stay in SERIAL_WAIT_FOR_CMD.
-      return;
-    }
-
-    ctx.command      = cmd;
-    ctx.cmd_def      = def;
-    ctx.expected_len = def->payload_len;
+    if (b == SERIAL_FRAME_DELIMITER) return;
+    uint8_t len = lut.payload_len[b];
+    if (len == 0) return;
+    ctx.command      = b;
+    ctx.expected_len = len;
     ctx.received_len = 0;
     ctx.state        = SERIAL_READ_PAYLOAD;
     return;
   }
 
-  // SERIAL_READ_PAYLOAD
-  if (ctx.received_len < SERIAL_MAX_PAYLOAD) {
+  if (ctx.received_len < SERIAL_INNER_MAX_PAYLOAD) {
     ctx.payload[ctx.received_len++] = b;
   }
 
   if (ctx.received_len >= ctx.expected_len) {
-    // We have a full frame: use cached command definition, if any, and call it.
-    if (ctx.cmd_def && ctx.cmd_def->on_frame) {
-      ctx.cmd_def->on_frame(ctx.command, ctx.payload, ctx.received_len);
-    }
+    serial_parser_dispatch(lut, ctx.command, ctx.payload, ctx.received_len);
     serial_parser_reset(ctx);
   }
+#endif
 }
 
-// Drain up to byte_budget bytes from stream into the parser. Shared by Serial2 and USB CDC.
+// Drain up to byte_budget bytes. One available() snapshot, then read n.
+// Timeout only when mid-frame and the stream is idle (no micros() per byte).
 template<typename StreamT>
 static inline void serial_parser_drain(
     SerialParserContext& ctx,
-    const SerialCommandDef* commands,
-    size_t numCommands,
+    const SerialCommandTable& lut,
     StreamT& stream,
     uint8_t byte_budget)
 {
-  if (ctx.state == SERIAL_READ_PAYLOAD) {
-    serial_parser_check_timeout(ctx, micros());
+  int avail = stream.available();
+  if (avail <= 0) {
+    if (serial_parser_in_frame(ctx)) {
+      serial_parser_check_timeout(ctx, micros());
+    }
+    return;
   }
-  while (byte_budget > 0 && stream.available() > 0) {
+
+  uint8_t n = (avail > byte_budget) ? byte_budget : (uint8_t)avail;
+  uint32_t now = 0;
+  bool stamped = false;
+  while (n > 0) {
     uint8_t b = stream.read();
-    serial_parser_process_byte(ctx, commands, numCommands, b, micros());
-    byte_budget--;
+    serial_parser_process_byte(ctx, lut, b);
+    if (serial_parser_in_frame(ctx)) {
+      if (!stamped) {
+        now = micros();
+        stamped = true;
+      }
+      ctx.last_byte_time_us = now;
+    }
+    n--;
   }
 }
 
 #endif // SERIAL_PARSER_H
-
-
-

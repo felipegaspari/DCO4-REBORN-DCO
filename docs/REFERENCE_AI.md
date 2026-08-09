@@ -9,6 +9,7 @@ Related docs:
 - Complete compile-time flag catalog: [`BUILD_FLAGS.md`](BUILD_FLAGS.md)
 - Float vs fixed engine math (depth): [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
 - Hot-path profiling: [`BENCHMARKING.md`](BENCHMARKING.md)
+- SRAM / heap / stack: [`MEMORY.md`](MEMORY.md)
 - Autotune algorithms / refactor layout: [`AUTOTUNE.md`](AUTOTUNE.md), [`AUTOTUNE_REFACTORED.md`](AUTOTUNE_REFACTORED.md)
 - Repo entry point: [`../README.md`](../README.md)
 
@@ -27,17 +28,18 @@ Related docs:
     - Full catalog: [`BUILD_FLAGS.md`](BUILD_FLAGS.md). Math depth: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
   - Configures USB product strings in `setup()` (via Adafruit TinyUSB; product **DCO3-MONO**), toggles board pins (23/24) for hardware fixes, and selects DCO calibration mode.
   - Core 0 writes LFO pitch mods into `lfo1_pitch_mod_q24[]` / `lfo2_pitch_mod_q24[]` every ~50 µs; core 1 reads them in the voice task (float path converts Q24 → float each frame).
-  - `loop1()` calls `voice_task_main()` (dispatch to float or fixed), then `bench_service(1)` to hand its profiler counters to core 0.
+  - `loop1()` calls `voice_task_main()` (dispatch to float or fixed), then `bench_service(1)` to hand its profiler counters to core 0, then `mem_diag_poll_core1()` (empty without `ENABLE_MEM_DIAG`; runtime 14/15 can disable).
   - **Profiling** (`RUNNING_AVERAGE`, optionally `RUNNING_AVERAGE_FINE`): both loops are bracketed by `BENCH_*` probes from [`bench.h`](../bench.h); core 0 does all the printing from `bench_poll_core0()`. See [`BENCHMARKING.md`](BENCHMARKING.md).
+  - **RAM dump** (`PARAM_DEBUG_COMMAND` 13, needs `ENABLE_MEM_DIAG`): `mem_diag_request` → Core1 stack snapshot → Core0 prints heap/stacks. Runtime 14/15 disable/enable polls. See [`MEMORY.md`](MEMORY.md). `__not_in_flash_func` is static `.time_critical` SRAM (not heap); pin policy is hot leaves only (`loop` / serial tasks stay in flash).
 
 - **`include_all.h`**  
   - Convenience umbrella header used by most `.ino` implementation files.  
-  - Pulls in RP2040/Arduino headers and project modules: `params_def`, `param_router`, `globals`, `FS`, `noteList`, `amp_comp`, `Serial`, `midi`, `voices`, `state_machines`, `PWM`, `utils`, `Timer_millis`, `LFO`, `adsr`, `PID`, `autotune`.
+  - Pulls in RP2040/Arduino headers and project modules: `params_def`, `param_router`, `globals`, `FS`, `noteList`, `amp_comp`, `Serial`, `midi`, `voices`, `state_machines`, `PWM`, `utils`, `Timer_micros`, `mem_diag`, `LFO`, `adsr`, `PID`, `autotune`.
 
 - **`globals.h`**  
   - System‑wide constants and state:
     - Voice/osc counts: `NUM_VOICES_TOTAL = 3`, `NUM_OSCILLATORS = 3`, `NUM_VOICES_VOICE_TASK = 1` (mono engine bound; PW per-osc; para planned via `setVoiceMode`).
-    - Clock and PIO timing constants (`sysClock` = 225000 kHz → `sysClock_Hz`, runtime `pioPulseLength` default 1600 / debug 160 ∈ [200, 50000], OSR chunk sizes, timing overheads).
+    - Clock and PIO timing constants (`sysClock_Hz` = Arduino `F_CPU` until boot, then `clock_get_hz(clk_sys)` via `sys_clock_hz_refresh()`; runtime `pioPulseLength` default 1600 / debug 160 ∈ [200, 50000], OSR chunk sizes, timing overheads).
     - **Period model** `period = Y + weight*clk_div + overhead`, with weights/overheads `{4,5,6,7}` / `{12,13,14,15}` indexed by `softSyncChunks` (`PIO_*_BY_CHUNKS[]`; N=1 aliases `PIO_RAMP_WEIGHT_SYNC` / `PIO_PERIOD_OVERHEAD_SYNC`). Each trailing polled chunk adds one weight and one overhead cycle.
     - Per-osc PIO state: `osc_uses_sync_program[]`, `osc_last_y[]`, `osc_last_clk_div[]`, `softSyncChunks`, `pio_loaded_sync_chunks`, `subOscDivide`.
     - Fixed‑point pitch‑bend multipliers (`pitchBendMultiplier_q24`); LFO pitch mods live in `LFO.h` (`lfo1_pitch_mod_q24[]`, `lfo2_pitch_mod_q24[]`).
@@ -128,7 +130,7 @@ Related docs:
     - Starts every SM on the same cycle with `pio_enable_sm_mask_in_sync()`, removing the inter-oscillator skew that capped phase-align accuracy.
   - **Sync flavours:** hard sync costs nothing (weight 4) but is analog-cap-only — it discharges the slave without restarting its counter. Soft sync (weights 5/6/7 for 1/2/3 trailing polled chunks) restarts the slave's own count; receptive windows are ~40% / ~67% / ~86% of the ramp because polled chunks run at half speed.
   - **Phase offset** (`phaseAlignOSC2`) is a one-shot X countdown to `loop_final` (`osc_phase_align_hold_stopped` / `osc_phase_hold_target`, addr 9 on `frequency_sync_4_jumps`). That is the old 8-chunk `jmp 10; out x` recipe retargeted after the program cut moved address 10 to restart. Y stays the real pulse; later cycles are undistorted. SYNC_JMP is 0° only (X preload needs a stopped SM). Detail: [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §8.
-  - **Diagnostics:** `pio_topology_report()` (roles + reset-pin ownership), `pio_period_probe()` / `pio_solve_period_model()` (confirm weight/overhead against a frequency counter).
+  - **Diagnostics:** `pio_topology_report()` (roles + reset-pin ownership), `pio_period_probe()` / `pio_solve_period_model()` (confirm weight/overhead against a frequency counter), `mem_diag` dump cmd **13** / polls 14–15 (heap/stack — [`MEMORY.md`](MEMORY.md)).
 
 - **`PWM.h` / `PWM.ino`**  
   - Voice and cal write amplitude through **`write_range_pwm(osc, level)`** (domain still `0..DIV_COUNTER` = 14000).
@@ -272,7 +274,7 @@ Related docs:
     - `handlePitchBend()` updates `midi_pitch_bend` in globals.
   - **MIDI CC control surface** (`midi_cc.h` + the generated `midi_cc_map.h`, chart in `docs/MIDI_CC_MAP.md`):
     - `midi_cc_handle()` finds the controller in `midiCcMap[]`, scales it as `lo + ((hi - lo) * cc + 63) / 127`, and runs envelope attack/decay/release through `linearToExponential(v, 50, 25000)` so a CC lands in the same exp domain the `'a'`-`'c'` block frames carry.
-    - `midi_cc_apply()` dispatches: targets at or above `CC_LOCAL_FIRST` (224) are the values that only arrive as `'a'`-`'f'` block frames and therefore have no `ParamId`, so they are written to their globals here exactly as `input_handle_*()` writes them; everything else goes to `update_parameters()`.
+    - `midi_cc_apply()` dispatches: targets at or above `CC_LOCAL_FIRST` (224) are the 1 ms ADSR/filter block values (`'a'`–`'d'`) that have no `ParamId`, so they are written to their globals here exactly as `input_handle_*()` writes them; PW (`PARAM_PW_VALUE`) and EnvVCA→VCA (`PARAM_ADSR1_TO_VCA`) and everything else go to `update_parameters()`.
     - The map, the chart and the Open Stage Control session in `tools/panels/` are all generated from `tools/dco_control/params.py` by `gen_midi_map.py`, which also verifies that each mapped `ParamId` is routed by `paramTable[]` and each `CC_LOCAL_*` has a case in `midi_cc_apply()`.
   - `note_on()` / `note_off()`:
     - Voice allocation by `voiceMode` / `polyMode`. Note edges stay on the board (`noteStart[]` / `noteEnd[]` → EnvDCO/EnvVCA/EnvVCF on Core1); nothing is sent over serial for notes.
@@ -288,24 +290,22 @@ Related docs:
     - `Serial1`: MIDI DIN input — RX **1** / TX **0** @ 31.25 kbps.
     - `Serial2`: high‑speed link to the Input board — RX **21** / TX **20** @ ~2.5 Mbps. This is the DCO's only peer link; the Screen is reached by Input relaying gap 154. It pairs with the Input's `Serial1`: RX 21 is driven by the Input's TX (GP0), and TX 20 drives the Input's RX (GP1). The Input talks to the Screen on its `Serial2` TX (GP4); that port's RX (GP5) is unwired.
     - `Serial`: USB CDC debug console.
-  - Implements a **robust non‑blocking frame parser** for Serial2 (`serial_parser.h`), speaking the Input panel protocol (`serial_input_protocol.h`):
-    - Commands:  
-      - `'a'` / `'b'` / `'c'` – 4×16‑bit ADSR blocks (BE) → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times.  
-      - `'d'` – filter block → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_bake_adsr2_to_vcf_scale()` + `cv_bake_lfo2_to_vcf_scale()`. Depth bake / peak math: [`CV_MOD_SCALES.md`](CV_MOD_SCALES.md).  
-      - `'e'` – `ADSR1toVCA`.  
-      - `'f'` – 16‑bit PW value (BE) → `PW[0]` at /4 scale.  
-      - `'p'` – paramNumber + 16‑bit value (BE) → `update_parameters()`.  
-      - `'w'` – paramNumber + signed 8‑bit value → `update_parameters()` (sign‑extended).  
-      - `'q'` – 8‑char preset name → `presetName[]`.  
-    - Uses timeouts to discard partial frames and recover gracefully.
+  - Implements a **non‑blocking inner-frame parser** for Serial2 / USB (`serial_parser.h` + `serial_frame.h`), speaking the slim panel protocol (`serial_input_protocol.h`):
+    - Commands (LE, no finish byte; `0x00` reserved as COBS delimiter):
+      - `'a'` / `'b'` / `'c'` – 4×16‑bit ADSR blocks → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times.
+      - `'d'` – filter block → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_bake_adsr2_to_vcf_scale()` + `cv_bake_lfo2_to_vcf_scale()`. Depth bake / peak math: [`CV_MOD_SCALES.md`](CV_MOD_SCALES.md).
+      - `'p'` – ParamId + int16 LE → `update_parameters()` (includes PW 210 and EnvVCA→VCA 222).
+      - `'q'` – 8‑char preset name → `presetName[]`.
+    - O(1) command LUT; 500 µs timeout only when mid-frame and the stream is idle; drain budget 64.
+    - On-wire default is RAW (= inner). `#define SERIAL_FRAMING_COBS` wraps the same inner payloads as `COBS(inner)+0x00`; host: `dco_control --cobs` / `DCO_SERIAL_COBS=1`. Buffer codec in `serial_frame.h` is reusable for SPI later. Legacy `'x'` TX stays raw.
   - Outgoing helper:
-    - `serialSendParam32()` – the single `'x'` sender (gap 154, cal offsets 155) out on Serial2 TX 20, received by the Input on its `Serial1`. It waits on `availableForWrite() < 1`, because a hardware UART reports only 0 or 1 free rather than a byte count.
-  - `serial_panel_task()` is the parser pump, called from `loop()`.
-  - Shared headers: `serial_protocol.h`, `serial_param_protocol.h`, `serial_parser.h`, `serial_input_protocol.h`. How-to: [`README_serial_and_params.md`](README_serial_and_params.md).
+    - `serialSendParam32()` – legacy `'x'` sender (gap 154, cal offsets 155) out on Serial2 TX 20, received by the Input on its `Serial1`. Still old 7-byte layout until Input is updated. Drops if `availableForWrite() < 1`.
+  - `serial_panel_task()` / `serial_usb_task()` are the parser pumps, called from `loop()` on `timer1msFlag`. USB/DIN MIDI `.read()` still runs every iteration (`turnThruOff`).
+  - Shared headers: `serial_input_protocol.h`, `serial_frame.h`, `serial_param_protocol.h`, `serial_parser.h`. How-to: [`README_serial_and_params.md`](README_serial_and_params.md).
 
 - **`params_def.h` / `param_router.h` / `params.ino`**  
   - Canonical `ParamId` enum and table‑driven router.
-  - Central **parameter apply** (`update_parameters(paramNumber, paramValue)`) for UI/MIDI‑driven changes:
+  - Central **parameter apply** (`init_param_router()` + O(1) `update_parameters(uint16_t, int16_t)`) for UI/MIDI‑driven changes:
     - Oscillator configuration (wave on/off, intervals, OSC2 detune, sync modes).
     - LFO settings (waveforms, speeds, routing depths, drift spread/speed).
     - Voice/stack mode, unison detune, analog drift amount.

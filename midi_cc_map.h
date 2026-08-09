@@ -6,7 +6,7 @@
 // Re-run that script after changing params.py; see docs/MIDI_CC_MAP.md for the chart.
 //
 // cc, target, lo, hi, curve. CC 0 lands on lo and CC 127 on hi; targets at or above
-// CC_LOCAL_FIRST are block values that midi_cc_apply() writes directly.
+// CC_LOCAL_FIRST are ADSR/filter block values that midi_cc_apply() writes directly.
 
 #include <stddef.h>
 #include "params_def.h"
@@ -67,7 +67,7 @@ static const MidiCcEntry midiCcMap[] = {
   {  45, CC_LOCAL_ADSR_DCO_DECAY,             0,  4095, MIDI_CC_EXP_TIME },
   {  46, CC_LOCAL_ADSR_DCO_SUSTAIN,           0,  4095, MIDI_CC_LINEAR },
   {  47, CC_LOCAL_ADSR_DCO_RELEASE,           0,  4095, MIDI_CC_EXP_TIME },
-  {  48, CC_LOCAL_ADSR1_TO_VCA_AMOUNT,        0,   512, MIDI_CC_LINEAR },
+  {  48, PARAM_ADSR1_TO_VCA,                  0,   512, MIDI_CC_LINEAR },
   // --- Filter ---
   {  49, PARAM_VCF_KEYTRACK,               -256,   255, MIDI_CC_LINEAR },
   {  50, PARAM_VELOCITY_TO_VCF,               0,    20, MIDI_CC_LINEAR },
@@ -83,7 +83,7 @@ static const MidiCcEntry midiCcMap[] = {
   {  56, PARAM_LFO2_TO_PW,                    0,   511, MIDI_CC_LINEAR },
   {  57, PARAM_ADSR3_TO_PWM,                  0,  1023, MIDI_CC_LINEAR },
   {  58, PARAM_PWM_POTS_CONTROL_MANUAL,       0,     1, MIDI_CC_LINEAR },
-  {  59, CC_LOCAL_PW_PW,                      0,  4095, MIDI_CC_LINEAR },
+  {  59, PARAM_PW_VALUE,                      0,  4095, MIDI_CC_LINEAR },
   // --- LFOs ---
   {  60, PARAM_LFO1_WAVEFORM,                 0,   127, MIDI_CC_LINEAR },
   {  61, PARAM_LFO2_WAVEFORM,                 0,   127, MIDI_CC_LINEAR },

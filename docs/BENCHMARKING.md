@@ -16,7 +16,16 @@ Uncomment in [`../DCO.ino`](../DCO.ino):
 #define RUNNING_AVERAGE         // profiler on (main stage probes)
 #define RUNNING_AVERAGE_FINE    // plus the tiny per-stage probes
 #define RUNNING_AVERAGE_PERIOD  // only loop / loop1 periods (no stage probes)
-#define BENCH_PATH_STATS        // porta path-tag trees + walk-step sums
+#define BENCH_PATH_STATS        // all path bumps + -- Path counters -- dump
+#ifndef BENCH_STAGE_STRIDE
+#define BENCH_STAGE_STRIDE 9    // MAIN/FINE every Nth loop; 1 = every iter
+#endif
+#ifndef BENCH_USE_SYSTICK
+#define BENCH_USE_SYSTICK 1     // PERIOD + stages on SysTick; 0 = 1 us timer
+#endif
+#ifndef BENCH_PERIOD_MAX_US
+#define BENCH_PERIOD_MAX_US 2000  // discard PERIOD samples longer than this
+#endif
 ```
 
 With `RUNNING_AVERAGE` off, every `BENCH_*` macro expands to nothing. There is no runtime
@@ -28,17 +37,39 @@ out; only `BENCH_PERIOD` for `loop period` / `loop1 period` collects. Path count
 a true loop-time baseline without intermediate probe tax. The dump banner says `period only`.
 Do not combine with FINE expecting stage rows — PERIOD wins and FINE is ignored.
 
-**`BENCH_PATH_STATS`** (needs `RUNNING_AVERAGE`): compiles in the porta path-tag `if/else`
-and amp/ratio walk-step sums in [`../voices.ino`](../voices.ino). Leave off for shipping.
-Path bumps still no-op under `RUNNING_AVERAGE_PERIOD` (`BENCH_PATH_INC` / dump block).
+**`BENCH_PATH_STATS`** (needs `RUNNING_AVERAGE`): all `BENCH_PATH_INC` bumps (amp / ratio /
+porta) plus walk-step sums and the dump `-- Path counters --` block (`ratio:` / `amp:` /
+`porta:`). Leave off for shipping — dump 10 then has no path section. Still no-op under
+`RUNNING_AVERAGE_PERIOD`. Banner `bench:` includes `path_stats=0/1`.
+
+**`BENCH_STAGE_STRIDE`** (default **9**, needs `RUNNING_AVERAGE`, ignored under PERIOD):
+`BENCH_PERIOD` still fires every `loop` / `loop1`. MAIN/FINE `BENCH_BEGIN`/`END` run only every
+Nth iteration; dump **scales `sum`/`n` ×N** so child **mean** and **`%win`** match a full-rate
+dump. **min/max** are from sampled iters only. Note-on family (`phase align`, `retrig period
+split`, `note-on retrigger`, `retrig SM apply`, `retrig RANGE PWM`) is **`BENCH_T_RARE`** —
+always recorded, not scaled. Banner: `stages every 9`. Set stride to **1** for old every-iter
+MAIN (high tax).
+
+**`BENCH_USE_SYSTICK`** (default **1**, sketch + `bench.h` fallback): PERIOD and stages share
+SysTick. `0` = 1 µs timer for **all** probes. Dump window (1 s gate) always uses
+`bench_us_now()`.
+
+**`BENCH_PERIOD_MAX_US`** (default **2000**): discard a PERIOD sample longer than this
+(autotune / wrap-looking stalls). Still every-iter PERIOD vs stride-9 stages.
 
 **Period-only vs full MAIN.** Same preset, same play: compare `loop` / `loop1` mean **and
-max**. The gap is mostly instrumentation tax (each child's `BENCH_END` updates stats after
-its end timestamp, so that cost sits in the parent `(unattributed)`). Example shape: period
-loop1 ~tens of µs mean vs full MAIN ~3× slower when many MAIN children are under
-`voice_task`. Use period-only for “is the synth faster?”; use full MAIN to rank **where**
-time goes — ignore inflated absolute loop means and large parent `(unattributed)` when many
-MAIN kids are present (not only when FINE is on).
+max**. Full MAIN without sampling used to be ~2× period-only (worked example on RP2040 @
+240 MHz: loop1 **109 µs** vs **59 µs**). That gap is instrumentation, not synth speed:
+
+1. Each child's `BENCH_END` bookkeeping sits in the **parent** `(unattributed)` (~18 MAIN
+   kids under `voice_task` → ~24 µs/iter + ~10 µs `loop1` unattributed). Overhead subtract is
+   only ~2 SysTick cyc.
+2. `volatile` BEGIN barriers change codegen (~10–15 µs extra real work).
+3. Slower loop1 makes ~99 µs ADSR/CV fire on more iterations (~4 µs extra per loop1).
+
+Use **period-only** for “is the synth faster?”. Use MAIN **`%win` / child means** to rank
+where time goes — never compare full vs period absolute loop means. With stride 9, full dump
+`loop1` mean should sit near period-only (~59 + ~1/9 of tax ≈ **~65 µs**).
 
 Reports go out the USB CDC port. They are **off by default even with profiling compiled in**
 — ask for them with a debug command.
@@ -76,25 +107,27 @@ switches are obvious:
 
 ```
 =================== DCO BENCH ===================
-clk_sys 250 MHz   probe overhead 2 cyc   fine probes off
+clk_sys 250 MHz   probe overhead 2 cyc   stages every 9
 engine: mcu=RP2040 voice=FIXED pitch=RATIO_Q16 amp=FIXED cv=FIXED amp_method=FIXED clkdiv=HP1 note_retrig=EXACT_Y
-adsr:   phase=22 float=0 micros=1 native_q15=1 dyadic=1 q15_cache=1
+adsr:   phase=22 float=0 micros=1 native_q15=1 dyadic=1 q15_cache=1 sram_hot=1
+lfo:    sram_hot=1
 noise:  engine=1 out=0
 board:  cv_outs=0 wave_mux=0 voice_aux=0 pio_rst_inv=1 fs_cal=1
-bench:  clkdiv=0 amp_comp=0
+bench:  clkdiv=0 amp_comp=0 path_stats=0
 ```
 
 | Line | Fields |
 |------|--------|
 | `engine:` | `mcu` (board package); `voice` / `amp` / `cv` (`USE_FLOAT_VOICE_TASK` / `USE_FLOAT_AMP_COMP` / `USE_FLOAT_CV_OUTS`); `pitch` (`PITCH_INTERP_MODE`); `amp_method` (live); `clkdiv` (`HIGH_PRECISION_CLKDIV` → `HP0`/`HP1`; ignored when `voice=FLOAT`); `note_retrig` (live) |
-| `adsr:` | `ADSR_BEZIER_*` from [`../adsr.h`](../adsr.h): `phase`, `float`, `micros`, `native_q15`, `dyadic`, `q15_cache` |
+| `adsr:` | `ADSR_BEZIER_*` from [`../adsr.h`](../adsr.h): `phase`, `float`, `micros`, `native_q15`, `dyadic`, `q15_cache`, `sram_hot` |
+| `lfo:` | `MO_LFO_SRAM_HOT` from [`../LFO.h`](../LFO.h) |
 | `noise:` | `NOISE_ENGINE`, `ENABLE_NOISE_OUT` → `out` |
 | `board:` | `ENABLE_CV_OUTS`, `ENABLE_WAVE_MUX`, `ENABLE_VOICE_AUX`, `ENABLE_PIO_RESET_INVERT`, `ENABLE_FS_CALIBRATION` (0/1) |
-| `bench:` | `CLKDIV_BENCHMARK`, `AMP_COMP_BENCHMARK` (0/1; opt-in one-shots) |
+| `bench:` | `CLKDIV_BENCHMARK`, `AMP_COMP_BENCHMARK`, `BENCH_PATH_STATS` (0/1; opt-in one-shots / path dump) |
 
 **`clkdiv math` / `sysClock_Hz`:** hot path uses cached `sysClock_Hz_cached` (`sys_clock_hz_refresh()` in `setup`/`setup1`). Do not redefine `sysClock_Hz` as `clock_get_hz` — that expanded three times inside `vt_clk_div`. Idle re-bench: expect mean below the ~19 µs triple-call dump (HP1 soft-div remains until `HIGH_PRECISION_CLKDIV 0`).
 
-Probe mode stays on the `clk_sys` line (`fine probes off` / `period only` / `fine probes on`).
+Probe mode stays on the `clk_sys` line (`stages every 9` / `period only` / `fine probes on` / `fine probes off` when stride is 1).
 
 **`update_CV_outs`:** after CV absorption + mod matrix, this probe can dominate Core1 on RP2040 (soft-float) and still matter on RP2350. Compare `update_CV_outs` `%win` and period-only `loop1` mean/max before/after CV/matrix changes; older doc samples (~3 µs / ~3%win) are **stale**. A/B with `#undef USE_FLOAT_CV_OUTS` on RP2350 (`cv=FIXED`).
 
@@ -190,10 +223,14 @@ Dense note-ons (count ≫ 4) before trusting means. Attack-frame cost also inclu
 `noteStart` and **portamento** note-on reset outside this parent.
 
 **Core 0** siblings under `loop period` include `MIDI read`, `serial panel/USB`, and gated
-`LFO1` / `LFO2` / `drift LFOs` (~50 µs). Large Core0 **max** almost always lands in
-`MIDI read` or `serial panel/USB` — compare those maxes to see which owns the spike (USB CDC
-RX bursts vs MIDI library). For Q15 A/B: Core0 LFO rows = generate/bake; Core1
-`update_CV_outs` / `voice_task` = consume — see Q15 baseline table above.
+`LFO1` / `LFO2` / `drift LFOs` (~50 µs). MIDI USB+DIN still runs **every** `loop()` (keep
+note latency low; TinyUSB MIDI `available()` remains on the idle path). Panel Serial2 and
+USB CDC (`dco_control` / dumps) run only on `timer1msFlag` (~1 ms), and CDC is skipped when
+`Serial` is not open — expect `serial panel/USB` **mean / %win to collapse** vs a pre-gate
+dump (~16 µs / ~27% idle). Large Core0 **max** still often lands in `MIDI read` or a 1 ms
+serial burst — compare those maxes (USB CDC RX vs MIDI library). For Q15 A/B: Core0 LFO
+rows = generate/bake; Core1 `update_CV_outs` / `voice_task` = consume — see Q15 baseline
+table above.
 
 **`(unattributed)`** is the parent's total minus everything its children claimed. It is not
 vanished time:
@@ -219,8 +256,9 @@ half — that is correct, not double-counting.
 more actionable than the mean; a stage with a 0.6 µs mean and a 40 µs max is a worse problem
 than a steady 5 µs one. Do not add sibling maxes and compare to the parent max.
 
-**Path counters** (printed after Core 1, same window). Integer bumps only — not SysTick
-probes — so they do not add measurement barriers. Families with no bumps for the live path
+**Path counters** (printed after Core 1, same window, **only if `BENCH_PATH_STATS`**). Integer
+bumps only — not SysTick probes — so they do not add measurement barriers. With the flag off,
+dump 10 omits the whole `-- Path counters --` block. Families with no bumps for the live path
 print `(not instrumented for this build/path)` instead of a wall of zeros. Use them to
 attribute stage `max` spikes:
 
@@ -231,12 +269,13 @@ attribute stage `max` spikes:
 | `ratio miss_bsearch` | Miss fell through to binary search (RATIO_Q16 / FLOAT walk; should stay 0 on FLOAT_FAST) |
 | `ratio clamp` | Modifier at/outside table ends (early out) |
 | `walk_steps max/sum` | Walk length on direct misses |
-| `amp hit / miss_walk / miss_scan / clamp` | FLOAT_QUAD cache paths; FIXED uses `miss_scan` + `clamp` (linear window scan, no cache hit) |
+| `amp hit / miss_walk / miss_scan / clamp` | FLOAT_QUAD and FIXED cache walk (`hit` / `miss_walk` / `miss_scan` / `clamp`); LUT leaves amp counters idle |
 | `porta off / note_on / retime / steady_time / steady_slew` | Exclusive portamento path per voice frame |
 
-Shipping defaults (`pitch=RATIO_Q16`, `amp_method=FIXED`) now bump ratio and amp counters.
-LUT amp leaves amp counters idle (prints not-instrumented unless FLOAT_QUAD/FIXED ran).
-Path bumps also pause while paced dump TX is active (`bench_out_active`).
+With `BENCH_PATH_STATS` on, live pitch/amp bump ratio and amp counters (RP2350:
+`FLOAT_FAST` / `FLOAT_QUAD`; RP2040: `RATIO_Q16` / `FIXED`). LUT amp leaves amp
+counters idle (prints not-instrumented unless FLOAT_QUAD/FIXED ran). Path bumps also
+pause while paced dump TX is active (`bench_out_active`).
 
 If `ratio interpolate` max is high **and** miss rate / `walk_steps max` climb under pitch mod,
 the spike is algorithmic. If miss rate is ~0 but max stays large, suspect IRQ inside the
@@ -266,10 +305,12 @@ available on both RP2040 and RP2350. SysTick is a per-core peripheral, which is 
 `bench_init_core()` is called from both `setup()` and `setup1()`.
 
 **Range limit.** 24 bits wraps after 2^24 cycles: about **74.5 ms** at 225 MHz, **126 ms** at
-133 MHz. Any probe that can outlast that must use `BENCH_PERIOD()`, which reads the 1 µs
-timer (`timer_hw->timerawl`) instead — that is what the two loop-period probes do. If a
-cycle probe's `max` climbs past ~70% of the counter range (~52 ms at 225 MHz), the report
-prints a wrap warning under the row rather than showing a plausible-looking wrong number.
+133 MHz. `BENCH_PERIOD()` uses the **same SysTick clock** as stages when `BENCH_USE_SYSTICK`
+(kind `BENCH_CYC`); samples longer than `BENCH_PERIOD_MAX_US` are discarded instead of
+recorded. The 1 µs timer (`timer_hw->timerawl`) is only for the dump window / 1 s gate, or
+for every probe when `BENCH_USE_SYSTICK` is `0`. If a cycle probe's `max` climbs past ~70% of
+the counter range (~52 ms at 225 MHz), the report prints a wrap warning under the row rather
+than showing a plausible-looking wrong number.
 
 **Overhead.** At boot each core times 32 back-to-back counter reads and keeps the minimum,
 which is the cleanest estimate of the probe's own cost (anything larger caught an interrupt).
@@ -282,6 +323,8 @@ a float accumulator would cost more than most of the stages being measured.
 
 ## 5. What it cannot tell you
 
+**RAM / heap / stack.** This profiler measures **time**, not SRAM. `__not_in_flash_func` copies code into `.time_critical` (static RAM, smaller total heap) — it is not `malloc`. Use Diagnostics **Dump RAM** (`PARAM_DEBUG_COMMAND` **13**, `ENABLE_MEM_DIAG`) and [`MEMORY.md`](MEMORY.md). Comment out `ENABLE_MEM_DIAG` or cmd **14** before period-only dump 10 if you need to match pre-mem_diag benches.
+
 **Probes are optimisation barriers.** The compiler cannot keep values in registers, reorder,
 or merge work across a counter read. An instrumented build does not generate the same code as
 the shipping build, and the more probes, the wider the gap. This is what
@@ -293,9 +336,10 @@ FINE on). Trust the coarse `%win` numbers more than the fine stage means.
 values that have nothing to do with the measured code. Judge stages by `mean` and `%win`,
 and treat an isolated large `max` as a question rather than a verdict.
 
-**The loop-period probes are still 1 µs.** They read the microsecond timer, so a `loop1
-period` of 20 µs carries about 5% quantisation on any single sample. The mean over thousands
-of samples is fine; the min and max are coarse.
+**Loop period is SysTick too** (when `BENCH_USE_SYSTICK`). Parent and children share one unit
+before the dump converts to µs, so `(unattributed)` is no longer skewed by 1 µs quantisation
+on the parent. Long stalls (autotune / cal) are dropped via `BENCH_PERIOD_MAX_US`, not shown
+as a huge `max`. Set `BENCH_USE_SYSTICK` to `0` to restore the old 1 µs PERIOD path.
 
 ## 6. Adding a probe
 
@@ -360,19 +404,21 @@ Compare live amp-comp algorithms and check LUT accuracy against the float quadra
 |----------------------:|--------|
 | 20 | Live method → `FLOAT_QUAD` (cached walk) |
 | 21 | Live method → `LUT` (speed A/B) |
-| 22 | Live method → `FIXED` (RP2040 compile default) |
+| 22 | Live method → `FIXED` (RP2040 compile default; A/B on RP2350 float amp) |
 | 24 | Speed bench all three methods → `bench_out_*` paced TX |
 | 25 | Accuracy vs `FLOAT_QUAD` → same output path |
 
 Method select (20–22) works without `AMP_COMP_BENCHMARK`. With `RUNNING_AVERAGE`, each press **resets the profiler**, then acks in the Board pane as `amp_comp method=… (profiler reset)`. Play ~1 s with pitch motion, then dump (**10**). On **RP2350 (FPU)** expect **amp comp** mean / `%win` roughly **LUT ≪ FLOAT_QUAD ≲ FIXED** (FIXED can lose to FLOAT in the float-Hz speed bench because each call does `lrintf` → Q8 then integer window math). On **RP2040 soft-float** the old intuition **FLOAT_QUAD ≫ FIXED ≫ LUT** still holds. Confirm with speed bench; absolute `meanNs` moves with Core 1's `live_method=` (contention). Reports 24–25 no-op unless both `AMP_COMP_BENCHMARK` and `RUNNING_AVERAGE` are on (same rule as profiler 10–12 for paced output).
 
-Live **FLOAT_QUAD** window find uses a per-osc cache then walk (full scan only as rare fallback).
-Profiler dump **10** prints an `amp:` path line (`hit` / `miss_walk` / `miss_scan` / `clamp`,
-`find_steps`). **FLOAT_QUAD** bumps hit/walk/scan/clamp; **FIXED** bumps `miss_scan` + `clamp`
-(linear window scan, no segment cache — no `amp_hit`). **LUT** leaves amp counters idle (dump
-prints `amp: (not instrumented…)` unless another method ran in the same window). LUT fill /
-accuracy gold call the same `get_chan_level_float_quad` (precompute resets `ampWinCache`
-afterward).
+Live **FLOAT_QUAD** and **FIXED** window find both use a per-osc `ampWinCache` then walk
+(full scan only as rare fallback). With **`BENCH_PATH_STATS`**, dump **10** prints an `amp:`
+path line (`hit` / `miss_walk` / `miss_scan` / `clamp`, `find_steps`). **FLOAT_QUAD** and
+**FIXED** bump hit/walk/scan/clamp. **LUT** leaves amp counters idle (dump prints
+`amp: (not instrumented…)` unless another method ran in the same window). Without the flag,
+dump 10 has no path block. LUT fill / accuracy gold call the same
+`get_chan_level_float_quad` (precompute resets `ampWinCache` afterward). On dual-build
+(RP2350), FIXED often has **no plateau early-out** (smoothed Q table); FLOAT_QUAD/LUT still
+early-out from original plateau Hz — expected accuracy gap above that Hz, not a bench bug.
 
 **Bench vs live (why cmd 24 ≫ “feel”)**
 
@@ -406,7 +452,7 @@ Expected signatures after a fresh dump (same play gesture each time):
 |--------|----------------------|--------------------------|
 | **20 FLOAT_QUAD** | mostly `hit`, some `miss_walk`, rare `miss_scan`; `find_steps` = walk length | baseline `%win` |
 | **21 LUT** | idle / `(not instrumented…)` | clearly lower mean / `%win` |
-| **22 FIXED** | `miss_scan` + `clamp`; `find_steps` = scan length | often higher mean / `%win` on float voice |
+| **22 FIXED** | same cache walk as FLOAT_QUAD (`hit` / `miss_walk` / `miss_scan` / `clamp`) | often higher mean / `%win` on float voice (`lrintf`→Q8) |
 
 If after **21** a fresh window still shows FLOAT_QUAD-style hit/walk counters, the method did
 **not** apply (chase param/debug path).
@@ -420,7 +466,7 @@ If after **21** a fresh window still shows FLOAT_QUAD-style hit/walk counters, t
 3. Switch mode **26** / **27**, reset, same dense play, dump again. EXACT_Y: SM apply =
    disable+load+jmp+enable; SYNC_JMP: SM apply = jmp only + `RANGE PWM`.
 
-**Speed report** (`=== AMP COMP BENCH ===`): fixed-width comparison table — method, calls, totalUs, meanNs, pctVsFloat (vs `FLOAT_QUAD`). Methods: `FLOAT_QUAD` (cached), `LUT`, `FIXED`. Workload is the **same 0.01 Hz grid as accuracy** (`1.00…AMP_COMP_MAX_HZ`, **one osc** / `AMP_COMP_BENCH_OSCS` — synthetic cal is identical per osc; header `grid=… oscs=`). No vibrato / coarse step. ~700k calls per method; wait for paced Board pane output. Absolute `meanNs` depends on `live_method=` (Core 1 keeps running live amp-comp during the Core 0 one-shot; path bumps inside FIXED/FLOAT_QUAD add contention when `RUNNING_AVERAGE` is on); prefer `pctVsFloat` for ranking (LUT cheapest). Opt-in: `#define AMP_COMP_BENCHMARK`.
+**Speed report** (`=== AMP COMP BENCH ===`): fixed-width comparison table — method, calls, totalUs, meanNs, pctVsFloat (vs `FLOAT_QUAD`). Methods: `FLOAT_QUAD` (cached), `LUT`, `FIXED`. Each method runs through live **`get_chan_level_by_method`** with `ampWinCache` reset first (avoids FLOAT_QUAD poisoning FIXED). Workload is the **same 0.01 Hz grid as accuracy** (`1.00…AMP_COMP_MAX_HZ`, **one osc** / `AMP_COMP_BENCH_OSCS` — synthetic cal is identical per osc; header `grid=… oscs=`). No vibrato / coarse step. ~700k calls per method; wait for paced Board pane output. Absolute `meanNs` depends on Core 1 still running live amp-comp during the Core 0 one-shot; prefer `pctVsFloat` for ranking (LUT cheapest). Opt-in: `#define AMP_COMP_BENCHMARK`. Live method is restored after the sweep (`live_method=` in the header).
 
 **Accuracy report** (`=== AMP COMP ACCURACY ===`): per-method plain-English summary of error vs `FLOAT_QUAD` (gold) for `LUT` / `FIXED`. Errors are in **RANGE PWM counts** (full scale = `DIV_COUNTER`), also shown as **% of full**. Grid is every **0.01 Hz** from **1.00 to `AMP_COMP_MAX_HZ`** on **one osc** (same as speed). Each method prints: typical (mean) PWM, worst in-band (freq below max Hz), tip outlier if exact max Hz disagrees by more than 1 PWM, rate of samples **worse than 1 PWM** (`|e| > 1`), and rate of samples **exactly 1 PWM** (`|e| == 1`). Plus `LUT integer-Hz sanity` over `0…AMP_COMP_MAX_HZ` (want 0). LUT indexes by **nearest** integer Hz (not trunc). One-shot is heavy — wait for paced Board pane output.
 
@@ -436,7 +482,8 @@ Compare FLOAT / FLOAT_FAST / RATIO_Q16 / Q12 for speed and a dual-reference accu
 | 29 | Dual-ref accuracy (vs FLOAT walk + vs private Q20 slope ref) → same output path |
 
 Live hot path uses compile-time `PITCH_INTERP_MODE`: `FLOAT` (walk), `FLOAT_FAST`
-(trunc+clamp±1, `noinline`), `RATIO_Q16` (**board default** on RP2040 and RP2350), or `Q12`.
+(trunc+clamp±1, `noinline`, **RP2350 default**), `RATIO_Q16` (**RP2040 default**: native Q16
+x/y, `slopeQ16`, trunc±1 find, fused ratio return), or `Q12` (×10000 + reciprocal).
 Cmd 28/29 private tables always compare FLOAT / FLOAT_FAST / RATIO / Q12; `live_pitch=`
 reports the compiled mode. Use 28/29 to rank candidates; **live miss rate / mean gate**
 above before accepting find edits.
@@ -452,19 +499,76 @@ Live cross-check: profiler path counters (`miss_direct`, `walk_steps max` ≤ 1,
 
 **Flag-path** under the compiled voice engine (header `speed=flag-path voice=FIXED|FLOAT`):
 
-- **Fixed voice** (`!USE_FLOAT_VOICE_TASK`): cost to **`ratioQ16`**. `RATIO_Q16` = fused `slopeQ20` path; `Q12` = `interp_y` + live `y→ratio` reciprocal. `FLOAT` / `FLOAT_FAST` = soft-float references only. Int rows use `xInt` step 1 (seq) / 500 (jump). Shared Q24→xQ16 and final `freq×ratio` omitted.
-- **Float voice** (`USE_FLOAT_VOICE_TASK`): cost to **float ratio**. `FLOAT` = walk find; `FLOAT_FAST` = live trunc+clamp±1 find; int modes = `mod×10000` → `lroundf` → int interp → float rescale.
+- **Fixed voice** (`!USE_FLOAT_VOICE_TASK`): cost to **`ratioQ16`**. `RATIO_Q16` = live clone (native xQ16, `slopeQ16`, trunc±1, fused return); seq xQ16 step 7 / jump 3277. `Q12` = ×10000 `interp_y` + live `y→ratio` reciprocal (`xInt` step 1 / 500). `FLOAT` / `FLOAT_FAST` = soft-float references only. Shared Q24→xQ16 and final `freq×ratio` omitted. `pctVsFloat` is **meanNs** vs FLOAT (call counts can differ across grids).
+- **Float voice** (`USE_FLOAT_VOICE_TASK`): cost to **float ratio**. `FLOAT` = walk find; `FLOAT_FAST` = live trunc+clamp±1 `noinline`; `RATIO` = `lroundf(mod*65536)` → native Q16 interp → `*1/65536`; `Q12` = `mod×10000` → `lroundf` → int interp → `/10000`.
 
-**Accuracy report** (`=== PITCH INTERP ACCURACY ===`): fine **seq** modifier grid only (**one osc**) — correctness, not speed ranking. Private **Q20 `y` lerp** is the int reference only (not a live mode). Errors in **cents**. Sections:
+**Accuracy report** (`=== PITCH INTERP ACCURACY ===`): fine **seq** modifier grid only (**one osc**) — correctness, not speed ranking. Private **Q20 lerp on native Q16 knots** is the int reference only (not a live mode). Errors in **cents**. Sections:
 
 1. **Table quantization floor** — knot `|Q20_ref − FLOAT|` mean/max cents.
 2. **vs FLOAT walk** — FLOAT_FAST (expect ~0¢), RATIO / Q12: mean/max, p50/p95/p99, `>0.5¢` / `>1.0¢`.
-3. **vs Q20 ref** — FLOAT / FLOAT_FAST / RATIO / Q12 vs private Q20→ratio. Mean/max, percentiles, `>0.01¢` / `>0.1¢`, knot vs mid. (Float rows ≈ table gap; RATIO/Q12 rank slope A/B.)
+3. **vs Q20 ref** — FLOAT / FLOAT_FAST / RATIO / Q12 vs private Q20 on Q16 knots. Mean/max, percentiles, `>0.01¢` / `>0.1¢`, knot vs mid. (Float rows ≈ table gap; RATIO ranks slopeQ16 vs Q20.)
 4. **vs Q20 ref by mod-band** — low / mid / high (same four methods).
 
 Diagnostics buttons: `PITCH_INTERP_COMMANDS` in [`../tools/dco_control/params.py`](../tools/dco_control/params.py).
 
-## 10. Noise engines (`NOISE_ENGINE`)
+## 10. Fixed clkdiv HP0 vs HP1 (cmds 32 / 33)
+
+Compare the two **fixed-voice** `HIGH_PRECISION_CLKDIV` methods. Private clones in
+[`../clkdiv_bench.ino`](../clkdiv_bench.ino) — live `voice_task` / PIO / `interpSegCache`
+untouched. No extra compile flag; needs `RUNNING_AVERAGE` for paced `bench_out_*` (same as
+cmds 28/29). Existing [`CLKDIV_BENCHMARK`](../voices.ino) (§7) is float vs double on the
+**float** voice path — leave it alone.
+
+| `PARAM_DEBUG_COMMAND` | Effect |
+|----------------------:|--------|
+| 32 | Speed bench HP1 vs HP0 → `bench_out_*` paced TX |
+| 33 | Accuracy in **cents** vs double-round gold → same output path |
+
+Live hot path uses compile-time `HIGH_PRECISION_CLKDIV` (**1** both MCUs by default). Cmd
+32/33 always run both clones; `live_clkdiv=HP0|HP1` and `voice=FIXED|FLOAT` in the header.
+Float voice **ignores** the flag (`sysClock_Hz / freqHz`); the one-shot is still a valid
+A/B for switching back to fixed voice. No runtime HP switch (would branch the hot path).
+
+**HP1:** Q8 Hz denom → 64/32 div (`hp1_total_cycles_q8` clone), then `pio_clk_div_for_y`.
+**HP0:** Q4 Hz → 32-bit `(sys*16 + Q4/2) / Q4`, then the same `pio_clk_div_for_y`.
+Y/w/k = `pioPulseLength` + free-run weight/overhead (`PIO_RAMP_WEIGHT_FREE` /
+`PIO_PERIOD_OVERHEAD_FREE`). Sync chunk weights are out of v1 scope (`y= w= k=` in header).
+
+**Speed report** (`=== CLKDIV HP BENCH ===`): two tables (`seq` / `jump`). Each timed
+**frame** = 3 oscs (same as dump-10 `clkdiv math`). Columns: frames, totalUs, **`meanUs`
+(per frame ≈ dump-10 mean)**, `meanNs/osc`, **`pctVsHP1`**. Header `speed=flag-path oscs=3`.
+
+| pattern | grid | Role |
+|---------|------|------|
+| `seq` | **Same as cmd 33:** 1.00…7000.00 Hz @ **0.01 Hz** (`n≈700k`). Chunk-fill `freq_q24` outside `t0`/`t1`. | Vibrato-like / microscope; divisor barely changes. |
+| `jump` | **10 geometric steps/semitone** (~10× `sNotePitches_q24`, ~1350 unique). Repeats until frame count ≈ seq. | Magnitude jumps; **use this for ranking**. |
+
+`llround` / double stay **out** of the timed loop (chunk precompute / jump table fill). Clones
+are **`static inline`** like live `vt_clk_div`. HP0 includes the live Q4 convert inside the
+timed body; HP1 does not. Core 0 one-shot while Core 1 still runs — absolute `meanUs` can
+differ from dump 10; **rank from `pctVsHP1`**, especially **jump**. Expect jump HP0 ≪ 100.
+
+**Accuracy report** (`=== CLKDIV HP ACCURACY ===`): same Hz grid. Gold (not live) =
+`llround(sys / hz)` then `pio_clk_div_for_y`. Reconstruct
+`outHz = sys / (y + div*w + k)`; cents = `|1200 * log2(outHz / hz)|`. Per method: mean/max
+cents, p50/p95/p99, rates `>0.1¢` / `>0.5¢` / `>1.0¢`, max `|clk_div − gold_div|`. Bands:
+low &lt;100 Hz (Q4 worst), mid 100–1000, high &gt;1000 (PIO quant worst). HP0 vs HP1:
+disagree-div count + max `|Δdiv|`. Q4 ≈ ±1/32 Hz, Q8 ≈ ±1/512 Hz **before** PIO quant.
+Machine tables stay first; Board then prints **`-- human --`** (typical/worst/bands/verdict
+from the same Acc stats). p50/p95/p99 sit in 0.5¢ hist bins — the prose says to trust mean /
+max / `>x¢%`. `max|Δdiv|` is integer `clk_div` at low Hz, not pitch.
+
+**Verify after flash** (`RUNNING_AVERAGE`, fixed voice preferred):
+
+- Rebuild HP1 vs HP0, dump **10** while playing with pitch mod: note `clkdiv math` mean ratio.
+- Cmd **32 jump**: HP0 `pctVsHP1` clearly ≪ 100 (not ~100). Seq may be closer; jump is the
+  live-like rank.
+- Cmd **33**: HP1 cents ≪ HP0 at low Hz; high-Hz errors similar (shared PIO quant); HP1 vs
+  gold mostly 0 Δdiv.
+
+Diagnostics buttons: `CLKDIV_HP_COMMANDS` in [`../tools/dco_control/params.py`](../tools/dco_control/params.py).
+
+## 11. Noise engines (`NOISE_ENGINE`)
 
 Engines live in the [`DCO_Noise`](../../DCO_Noise/) Arduino library. The sketch declares `noise0`…`noise1` with ctor args in [`../noise.h`](../noise.h) (`NOISE_ENGINE` in [`../DCO.ino`](../DCO.ino)); `next()` in `loop1`. PIO white via `dcoNoisePioBegin` / `dcoNoisePioRefill`.
 
