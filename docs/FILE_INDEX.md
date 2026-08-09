@@ -78,7 +78,7 @@ Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine flags (
   - **Called from:** Arduino framework (Core 1).
   - **When:** Forever.
 
-**Key macros:** full catalog in [`BUILD_FLAGS.md`](BUILD_FLAGS.md). Engine: `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `USE_FLOAT_CV_OUTS`, `PITCH_INTERP_MODE` (`FLOAT` / `FLOAT_FAST` / `RATIO_Q16` / `Q12`), `HIGH_PRECISION_CLKDIV`, `AMP_COMP_METHOD_DEFAULT`. Noise: `NOISE_ENGINE`, `ENABLE_NOISE_OUT`. Profiler: `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`, `RUNNING_AVERAGE_PERIOD`, `BENCH_STAGE_STRIDE`, `BENCH_USE_SYSTICK`, `BENCH_PERIOD_MAX_US`, `BENCH_PATH_STATS`, `ENABLE_MEM_DIAG`. Board/IO: `ENABLE_USB_CONTROL`, `ENABLE_CV_OUTS`, `ENABLE_WAVE_MUX`, `ENABLE_VOICE_AUX`, `ENABLE_PIO_RESET_INVERT`, `RANGE0_PIO_DITHER_TEST`, `NOTE_RETRIG_MODE_DEFAULT`.
+**Key macros:** full catalog in [`BUILD_FLAGS.md`](BUILD_FLAGS.md). Engine: `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `USE_FLOAT_CV_OUTS`, `PITCH_INTERP_MODE` (`FLOAT` / `FLOAT_FAST` / `RATIO_Q16` / `Q12`), `CLKDIV_MODE` (`GOLD` / `FLOAT` / `Q16` / `Q8` / `FAST_Q4`), `AMP_COMP_METHOD_DEFAULT`. Noise: `NOISE_ENGINE`, `ENABLE_NOISE_OUT`. Profiler: `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`, `RUNNING_AVERAGE_PERIOD`, `BENCH_STAGE_STRIDE`, `BENCH_USE_SYSTICK`, `BENCH_PERIOD_MAX_US`, `BENCH_PATH_STATS`, `ENABLE_MEM_DIAG`. Board/IO: `ENABLE_USB_CONTROL`, `ENABLE_CV_OUTS`, `ENABLE_WAVE_MUX`, `ENABLE_VOICE_AUX`, `ENABLE_PIO_RESET_INVERT`, `RANGE0_PIO_DITHER_TEST`, `NOTE_RETRIG_MODE_DEFAULT`.
 
 ### `bench.h`
 
@@ -99,10 +99,10 @@ SM apply — cold XIP mis-ranks kids).
   - **Called from:** `setup()` and `setup1()`.
   - **When:** Boot, once per core (SysTick is core-local).
 - `bench_now()` / `bench_span()` / `bench_us_now()` — Raw counter reads and wrap-safe deltas.
-  - **Called from:** `BENCH_*` macros; `clkdiv_bench_sample()`.
+  - **Called from:** `BENCH_*` macros; one-shot benches.
 - `bench_service()` — Snapshot and clear this core's probes on request.
   - **Called from:** `bench_poll_core0()` for core 0; `loop1()` for core 1.
-- `bench_poll_core0()` — Drive the handshake and print the report; calls `print_clkdiv_bench()`, `print_amp_comp_bench()`, `print_pitch_interp_bench()`, `print_clkdiv_hp_bench()`.
+- `bench_poll_core0()` — Drive the handshake and print the report; calls `print_amp_comp_bench()`, `print_pitch_interp_bench()`, `print_clkdiv_hp_bench()`.
   - **Called from:** `loop()`.
   - **When:** Every iteration; prints only once both cores have answered a dump request.
 - `bench_reset_all()` — Clear every accumulator.
@@ -204,7 +204,7 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `voice_task_fixed_point()` — Fixed-point hot path. `__not_in_flash_func`.
   - **Called from:** `voice_task_main()` when `!USE_FLOAT_VOICE_TASK`.
   - **When:** Fixed-engine builds only.
-- `voice_task_float()` — Float hot path (RP2350 default). `__not_in_flash_func` (SRAM-pinned like fixed).
+- `voice_task_float()` — Float hot path (RP2350 default). `__not_in_flash_func` (SRAM-pinned like fixed). Clkdiv via `clkdiv_live_hz_total_cycles` (`CLKDIV_MODE`).
   - **Called from:** `voice_task_main()` when `USE_FLOAT_VOICE_TASK`.
   - **When:** Every play-path `loop1` iter (float-engine builds).
 - `voice_task_autotune()` — Drive one osc for calibration measurement.
@@ -223,7 +223,7 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
   - **Called from:** `apply_param_sync_mode()`, `apply_param_soft_sync()`.
   - **When:** Serial2 param.
 - `get_chan_level_lookup_fast()` — Q8 Hz → range PWM (always compiled; live FIXED / fixed `voice_task_fixed_point`). `__not_in_flash_func`.
-  - **Called from:** `voice_task_fixed_point()` directly; `get_chan_level_for_engine()` / method FIXED.
+  - **Called from:** `amp_level_q24()` (FIXED); `get_chan_level_for_engine()` / method FIXED.
   - **When:** Fixed hot path; float-engine FIXED method / benches.
 - `get_chan_level_float_quad()` — Float quadratic cached walk (Hz); live FLOAT_QUAD / LUT fill / accuracy gold. `__not_in_flash_func` (SRAM-pinned like fixed lookup).
   - **Called from:** method FLOAT_QUAD; LUT fill; speed/accuracy benches.
@@ -234,27 +234,26 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `get_PW_level_interpolated()` — Map PW counter into calibrated limits/center.
   - **Called from:** `voice_task_fixed_point()` / `voice_task_float()` (99 µs PW update).
   - **When:** Hot path.
+- `modifiers_q24_to_xQ16()` / `interpolate_live_ratio_q16()` — compile-time wrappers for fixed `vt_freq_scale_x` / `vt_ratio_interp` (`PITCH_INTERP_MODE` inside; not function pointers).
+  - **Called from:** `voice_task_fixed_point()`.
+- `interpolate_live_ratio_f()` — same for float `vt_ratio_interp` (FLOAT / FAST / RATIO / Q12 glue).
+  - **Called from:** `voice_task_float()`.
 - `interpolatePitchMultiplierIntQ16_cached()` — IntQ16 table interp (`PITCH_INTERP_Q12`). `__not_in_flash_func`.
-  - **Called from:** `voice_task_fixed_point()` or `voice_task_float()` (A/B glue) when mode is Q12.
+  - **Called from:** `interpolate_live_ratio_q16` / `_f` when mode is Q12; pitch benches 28/29.
   - **When:** Alternate pitch modes (fixed voice or float-voice A/B).
 - `interpolateRatioQ16_cached()` — Table → ratio Q16 (`slopeQ20`). `__not_in_flash_func`.
-  - **Called from:** `voice_task_fixed_point()` or `voice_task_float()` (A/B glue) when `PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16`.
+  - **Called from:** `interpolate_live_ratio_q16` / `_f` when `PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16`; pitch benches.
   - **When:** Default fixed pitch mode; optional float-voice A/B.
 - `interpolateRatioFloat_cached()` — Natural modifier `[-1,3]` → float ratio; walk+bsearch find. `__not_in_flash_func`.
-  - **Called from:** `voice_task_float()` when `PITCH_INTERP_MODE == PITCH_INTERP_FLOAT`.
+  - **Called from:** `interpolate_live_ratio_f` when `PITCH_INTERP_MODE == PITCH_INTERP_FLOAT`; pitch benches.
   - **When:** Float walk A/B (`USE_FLOAT_VOICE_TASK`).
 - `interpolateRatioFloat_cached_fast()` — Same lerp; trunc+clamp±1 find (`noinline` + `__not_in_flash_func`).
-  - **Called from:** `voice_task_float()` when `PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST`.
+  - **Called from:** `interpolate_live_ratio_f` when `PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST`; pitch benches.
   - **When:** RP2350 board-default float hot path.
 - `initMultiplierTables()` — Build tables/slopes for the active `PITCH_INTERP_MODE` only (uses `expInterpolationSolveY`).
   - **Called from:** `init_voices()`.
   - **When:** Boot Core1.
-- `clkdiv_bench_sample()` — Run the float and double divider candidates side by side and accumulate the time and Hz difference.
-  - **Called from:** `voice_task_float()`, just before the live divider math.
-  - **When:** Float hot path, `CLKDIV_BENCHMARK` only; compiles away otherwise.
-- `print_clkdiv_bench()` — Report and clear that comparison.
-  - **Called from:** `bench_poll_core0()` (`bench.h`), on core 0.
-  - **When:** Each profiler dump.
+- Clkdiv total-cycle helpers — see [`clkdiv.h`](../clkdiv.h) (also listed below).
 
 ### `noteList.h`
 
@@ -467,9 +466,24 @@ Pitch-interpolator speed/accuracy one-shots (`RUNNING_AVERAGE`). Self-contained 
   - **Called from:** `bench_poll_core0()` when debug 28/29 pending.
   - **When:** Diagnostics; paced `bench_out_*` TX.
 
+### `clkdiv.h`
+
+Live total-cycle helpers (`static inline`), shared by `voice_task_fixed_point` / `voice_task_float` and cmds 32/33.
+
+- `clkdiv_gold_hz_total_cycles()` — native Hz → `llround(sys / hz)` (GOLD_REF; float-voice GOLD_LIVE).
+- `clkdiv_gold_total_cycles()` — Q24 → double Hz → `clkdiv_gold_hz_total_cycles` (`CLKDIV_GOLD` / fixed GOLD_LIVE).
+- `clkdiv_q16_total_cycles()` — Q16 Hz → 64/32 (`CLKDIV_Q16`, shipping).
+- `clkdiv_precise_q8_total_cycles()` — Q8 Hz → 64/32 (internal; Q8 fallback &lt;16 Hz, not a `CLKDIV_MODE`).
+- `clkdiv_q8_total_cycles()` — Same Q8; 32/32 + remainder correction (`CLKDIV_Q8`).
+- `clkdiv_fast_q4_total_cycles()` — Q4 Hz → 32-bit `(sys*16 + Q4/2) / Q4` (`CLKDIV_FAST_Q4`).
+- `clkdiv_float_hz_total_cycles()` — `fminf(sys/hz + 0.5)` (`CLKDIV_FLOAT` native Hz; float-voice FLOAT_LIVE).
+- `clkdiv_float_total_cycles()` — Q24 → float Hz → `clkdiv_float_hz_total_cycles` (`CLKDIV_FLOAT` / fixed FLOAT_LIVE).
+- `clkdiv_live_total_cycles` — compile-time alias of `CLKDIV_MODE` (fixed `vt_clk_div`; not a function pointer).
+- `clkdiv_live_hz_total_cycles()` — float `vt_clk_div`: FLOAT/GOLD native Hz; else Hz→Q24 then `clkdiv_live_total_cycles`.
+
 ### `clkdiv_bench.ino`
 
-Fixed-voice HP0 vs HP1 clkdiv speed/accuracy one-shots (`RUNNING_AVERAGE`). Private clones of Q8 64/32 and Q4 32-bit paths + live `pio_clk_div_for_y`. Does not touch PIO / live `HIGH_PRECISION_CLKDIV`. Separate from `CLKDIV_BENCHMARK` (float vs double).
+GOLD_REF / GOLD_LIVE / FLOAT_LIVE / Q16 / Q8 / FAST_Q4 speed/accuracy on **both** voice engines (`RUNNING_AVERAGE`). Glue matches live (fixed Q24 vs float native Hz; integer on float = Hz→Q24 via `clkdiv_live_hz`). GOLD_REF is true-Hz `llround`. Speed **`pctVsGOLD_REF`**. Accuracy cents + `|Δdiv|` vs GOLD_REF. Q8 vs internal `precise_q8` identity. Does not touch PIO.
 
 **Functions**
 - `clkdiv_hp_bench_run_speed()` / `clkdiv_hp_bench_run_accuracy()` / `print_clkdiv_hp_bench()`
@@ -915,7 +929,7 @@ Non-blocking inner-frame parser. RAW: cmd LUT + fixed payload. COBS (`SERIAL_FRA
 - `apply_param_manual_calibration_offset()` — Per-osc manual offset.
 - `apply_param_manual_calibration_store()` — → `update_FS_ManualCalibrationOffset`.
 - `apply_param_character()` — `PARAM_CHARACTER` (221): master 0..128 → `character_recompute_scales()`. See [`CHARACTER.md`](CHARACTER.md).
-- `apply_param_debug_command()` — Bench diagnostics (id 160): 1 → `pio_topology_report()`, 2/3 → `pio_period_probe()` at a low/high divider, 10/11/12 → profiler dump / reset / periodic toggle (`RUNNING_AVERAGE`), **13 → `mem_diag_request()`** (heap/stack; `ENABLE_MEM_DIAG` + runtime polls on; [`MEMORY.md`](MEMORY.md)), **14/15 → mem_diag polls off/on** (ack `mem_diag polls=…`; `compiled out` if flag off), 20–22 → amp-comp method (FLOAT_QUAD / LUT / FIXED), 24/25 → amp-comp speed/accuracy (`AMP_COMP_BENCHMARK` + `RUNNING_AVERAGE`), 28/29 → pitch-interp speed/accuracy (`RUNNING_AVERAGE`), 30 → force-seed fake calibration tables, **200–50000** (uint16) → set `pioPulseLength` and reload running SMs via `pio_defer_request_reset_pulse_all()`, **0xC8xx / 0xCAxx / 0xCBxx** → Character-tab axis jitters (amp / pitch / PW) then recompute scales. Period probes only hold with no note playing.
+- `apply_param_debug_command()` — Bench diagnostics (id 160): 1 → `pio_topology_report()`, 2/3 → `pio_period_probe()` at a low/high divider, 10/11/12 → profiler dump / reset / periodic toggle (`RUNNING_AVERAGE`), **13 → `mem_diag_request()`** (heap/stack; `ENABLE_MEM_DIAG` + runtime polls on; [`MEMORY.md`](MEMORY.md)), **14/15 → mem_diag polls off/on** (ack `mem_diag polls=…`; `compiled out` if flag off), 20–22 → amp-comp method (FLOAT_QUAD / LUT / FIXED), 24/25 → amp-comp speed/accuracy (`AMP_COMP_BENCHMARK` + `RUNNING_AVERAGE`), 28/29 → pitch-interp speed/accuracy (`RUNNING_AVERAGE`), 30 → force-seed fake calibration tables, **32/33 → clkdiv all six vs GOLD_REF** (both voice engines; `RUNNING_AVERAGE`), **200–50000** (uint16) → set `pioPulseLength` and reload running SMs via `pio_defer_request_reset_pulse_all()`, **0xC8xx / 0xCAxx / 0xCBxx** → Character-tab axis jitters (amp / pitch / PW) then recompute scales. Period probes only hold with no note playing.
 
 ---
 

@@ -108,24 +108,24 @@ switches are obvious:
 ```
 =================== DCO BENCH ===================
 clk_sys 250 MHz   probe overhead 2 cyc   stages every 9
-engine: mcu=RP2040 voice=FIXED pitch=RATIO_Q16 amp=FIXED cv=FIXED amp_method=FIXED clkdiv=HP1 note_retrig=EXACT_Y
+engine: mcu=RP2040 voice=FIXED pitch=RATIO_Q16 amp=FIXED cv=FIXED amp_method=FIXED clkdiv=Q16 note_retrig=EXACT_Y
 adsr:   phase=22 float=0 micros=1 native_q15=1 dyadic=1 q15_cache=1 sram_hot=1
 lfo:    sram_hot=1
 noise:  engine=1 out=0
 board:  cv_outs=0 wave_mux=0 voice_aux=0 pio_rst_inv=1 fs_cal=1
-bench:  clkdiv=0 amp_comp=0 path_stats=0
+bench:  amp_comp=0 path_stats=0
 ```
 
 | Line | Fields |
 |------|--------|
-| `engine:` | `mcu` (board package); `voice` / `amp` / `cv` (`USE_FLOAT_VOICE_TASK` / `USE_FLOAT_AMP_COMP` / `USE_FLOAT_CV_OUTS`); `pitch` (`PITCH_INTERP_MODE`); `amp_method` (live); `clkdiv` (`HIGH_PRECISION_CLKDIV` → `HP0`/`HP1`; ignored when `voice=FLOAT`); `note_retrig` (live) |
+| `engine:` | `mcu` (board package); `voice` / `amp` / `cv` (`USE_FLOAT_VOICE_TASK` / `USE_FLOAT_AMP_COMP` / `USE_FLOAT_CV_OUTS`); `pitch` (`PITCH_INTERP_MODE`); `amp_method` (live); `clkdiv` (`CLKDIV_MODE` → `GOLD`/`FLOAT`/`Q16`/`Q8`/`FAST_Q4`; both voice engines); `note_retrig` (live) |
 | `adsr:` | `ADSR_BEZIER_*` from [`../adsr.h`](../adsr.h): `phase`, `float`, `micros`, `native_q15`, `dyadic`, `q15_cache`, `sram_hot` |
 | `lfo:` | `MO_LFO_SRAM_HOT` from [`../LFO.h`](../LFO.h) |
 | `noise:` | `NOISE_ENGINE`, `ENABLE_NOISE_OUT` → `out` |
 | `board:` | `ENABLE_CV_OUTS`, `ENABLE_WAVE_MUX`, `ENABLE_VOICE_AUX`, `ENABLE_PIO_RESET_INVERT`, `ENABLE_FS_CALIBRATION` (0/1) |
-| `bench:` | `CLKDIV_BENCHMARK`, `AMP_COMP_BENCHMARK`, `BENCH_PATH_STATS` (0/1; opt-in one-shots / path dump) |
+| `bench:` | `AMP_COMP_BENCHMARK`, `BENCH_PATH_STATS` (0/1; opt-in one-shots / path dump) |
 
-**`clkdiv math` / `sysClock_Hz`:** hot path uses cached `sysClock_Hz_cached` (`sys_clock_hz_refresh()` in `setup`/`setup1`). Do not redefine `sysClock_Hz` as `clock_get_hz` — that expanded three times inside `vt_clk_div`. Idle re-bench: expect mean below the ~19 µs triple-call dump (HP1 soft-div remains until `HIGH_PRECISION_CLKDIV 0`).
+**`clkdiv math` / `sysClock_Hz`:** hot path uses cached `sysClock_Hz_cached` (`sys_clock_hz_refresh()` in `setup`/`setup1`). Do not redefine `sysClock_Hz` as `clock_get_hz` — that expanded three times inside `vt_clk_div`. Idle re-bench: expect mean below the ~19 µs triple-call dump (Q16 64/32 remains until `CLKDIV_MODE` is `CLKDIV_FAST_Q4`, `CLKDIV_Q8`, `CLKDIV_GOLD`, or `CLKDIV_FLOAT`).
 
 Probe mode stays on the `clk_sys` line (`stages every 9` / `period only` / `fine probes on` / `fine probes off` when stride is 1).
 
@@ -367,30 +367,11 @@ because an `extern` that is never used needs no definition.
 Use `BENCH_FBEGIN` / `BENCH_FEND` instead for a fine-tier stage, and `BENCH_PERIOD(id)` for
 an interval between arrivals rather than the duration of a block.
 
-## 7. `CLKDIV_BENCHMARK`
+## 7. Former `CLKDIV_BENCHMARK` (removed)
 
-Separate flag, separate question: is `float` good enough for the clock-divider math, or is
-`double` worth its cost?
-
-```c
-#define CLKDIV_BENCHMARK   // requires RUNNING_AVERAGE
-```
-
-Every frame `clkdiv_bench_sample()` in [`../voices.ino`](../voices.ino) runs both candidates
-on OSC1 and OSC2, and accumulates:
-
-- Time spent in each, in microseconds.
-- Difference in the divider that actually reaches the state machine — after
-  `pio_clk_div_for_y()`, not the intermediate cycle count, since its rounding can absorb a
-  difference or create one.
-- Difference in the frequency each divider produces through the PIO period model
-  (`y + weight * clk_div + overhead`), in Hz, which is the number you can hear.
-
-This roughly triples the cost of the divider stage. Bench only.
-
-Only the float engine is instrumented — the comparison is float versus double, and the fixed
-engine's 64-bit Q24 path (`HIGH_PRECISION_CLKDIV`) is a separate question that would need its
-own candidate added to the same harness.
+The in-loop float-vs-double sample inside `voice_task_float` is gone. Use compile-time
+`CLKDIV_FLOAT` / `CLKDIV_GOLD` / `CLKDIV_Q16` and cmds **32/33** **FLOAT_LIVE** vs **GOLD_LIVE**
+/ **GOLD_REF** (§10). Float voice honors `CLKDIV_MODE` via `clkdiv_live_hz_total_cycles`.
 
 ## 8. Amp-comp methods (`AMP_COMP_BENCHMARK`)
 
@@ -511,60 +492,42 @@ Live cross-check: profiler path counters (`miss_direct`, `walk_steps max` ≤ 1,
 
 Diagnostics buttons: `PITCH_INTERP_COMMANDS` in [`../tools/dco_control/params.py`](../tools/dco_control/params.py).
 
-## 10. Fixed clkdiv HP0 vs HP1 (cmds 32 / 33)
+## 10. Clkdiv GOLD_REF / GOLD_LIVE / FLOAT_LIVE / Q16 / Q8 / FAST_Q4 (cmds 32 / 33)
 
-Compare the two **fixed-voice** `HIGH_PRECISION_CLKDIV` methods. Private clones in
-[`../clkdiv_bench.ino`](../clkdiv_bench.ino) — live `voice_task` / PIO / `interpSegCache`
-untouched. No extra compile flag; needs `RUNNING_AVERAGE` for paced `bench_out_*` (same as
-cmds 28/29). Existing [`CLKDIV_BENCHMARK`](../voices.ino) (§7) is float vs double on the
-**float** voice path — leave it alone.
+All **six** methods on **both** compiled voice engines. Each row uses the glue a real
+implementation would (Q24 convert only when that algorithm needs it on that engine). Live
+`voice_task` / PIO / `interpSegCache` untouched. Float live honors `CLKDIV_MODE` via
+`clkdiv_live_hz_total_cycles`. No extra compile flag; needs `RUNNING_AVERAGE` for paced `bench_out_*`.
 
 | `PARAM_DEBUG_COMMAND` | Effect |
 |----------------------:|--------|
-| 32 | Speed bench HP1 vs HP0 → `bench_out_*` paced TX |
-| 33 | Accuracy in **cents** vs double-round gold → same output path |
+| 32 | Speed all six → `bench_out_*`; column **`pctVsGOLD_REF`** |
+| 33 | Accuracy cents vs target Hz + `|Δdiv|` vs **GOLD_REF** |
 
-Live hot path uses compile-time `HIGH_PRECISION_CLKDIV` (**1** both MCUs by default). Cmd
-32/33 always run both clones; `live_clkdiv=HP0|HP1` and `voice=FIXED|FLOAT` in the header.
-Float voice **ignores** the flag (`sysClock_Hz / freqHz`); the one-shot is still a valid
-A/B for switching back to fixed voice. No runtime HP switch (would branch the hot path).
+Header: `voice=FIXED|FLOAT`, `live_clkdiv=` = compile-time `CLKDIV_MODE`. Rank from **jump**.
 
-**HP1:** Q8 Hz denom → 64/32 div (`hp1_total_cycles_q8` clone), then `pio_clk_div_for_y`.
-**HP0:** Q4 Hz → 32-bit `(sys*16 + Q4/2) / Q4`, then the same `pio_clk_div_for_y`.
-Y/w/k = `pioPulseLength` + free-run weight/overhead (`PIO_RAMP_WEIGHT_FREE` /
-`PIO_PERIOD_OVERHEAD_FREE`). Sync chunk weights are out of v1 scope (`y= w= k=` in header).
+| Method | Fixed voice (Q24 domain) | Float voice (native Hz) |
+|--------|--------------------------|-------------------------|
+| **GOLD_REF** | `clkdiv_gold_hz_total_cycles` on **true grid Hz** (no Q24) | same |
+| **GOLD_LIVE** | `clkdiv_gold_total_cycles(q24)` (`CLKDIV_GOLD`) | `clkdiv_gold_hz_total_cycles(sys, (double)freq_f)` |
+| **FLOAT_LIVE** | `clkdiv_float_total_cycles(q24)` (`CLKDIV_FLOAT`) | `clkdiv_float_hz_total_cycles(sys, freq_f)` |
+| **Q16 / Q8 / FAST_Q4** | helper(q24) | **Hz→Q24** then helper (matches live `clkdiv_live_hz`) |
 
-**Speed report** (`=== CLKDIV HP BENCH ===`): two tables (`seq` / `jump`). Each timed
-**frame** = 3 oscs (same as dump-10 `clkdiv math`). Columns: frames, totalUs, **`meanUs`
-(per frame ≈ dump-10 mean)**, `meanNs/osc`, **`pctVsHP1`**. Header `speed=flag-path oscs=3`.
+All then + correction + `pio_clk_div_for_y`. Seq + jump precompute true Hz and q24 **outside**
+`t0`/`t1`.
 
-| pattern | grid | Role |
-|---------|------|------|
-| `seq` | **Same as cmd 33:** 1.00…7000.00 Hz @ **0.01 Hz** (`n≈700k`). Chunk-fill `freq_q24` outside `t0`/`t1`. | Vibrato-like / microscope; divisor barely changes. |
-| `jump` | **10 geometric steps/semitone** (~10× `sNotePitches_q24`, ~1350 unique). Repeats until frame count ≈ seq. | Magnitude jumps; **use this for ranking**. |
+**Speed:** `pctVsGOLD_REF` (GOLD_REF = 100). Integer methods ≪ 100 on RP2040; FLOAT_LIVE and
+GOLD_LIVE near or above 100 (soft-float / soft-double). On float voice, Q16/Q8/FAST_Q4 include
+Hz→Q24 in the timed path. Expect Q16 jump ≪ FLOAT (~70%), ~30% vs GOLD_REF (64/32 with `<<16`).
+Q8 ~20%.
 
-`llround` / double stay **out** of the timed loop (chunk precompute / jump table fill). Clones
-are **`static inline`** like live `vt_clk_div`. HP0 includes the live Q4 convert inside the
-timed body; HP1 does not. Core 0 one-shot while Core 1 still runs — absolute `meanUs` can
-differ from dump 10; **rank from `pctVsHP1`**, especially **jump**. Expect jump HP0 ≪ 100.
+**Accuracy:** same Hz grid vs GOLD_REF. GOLD_LIVE Δdiv = Q24 floor (fixed) or float-Hz quant
+(float voice). FLOAT_LIVE vs GOLD_LIVE = mantissa vs double. Q8 vs internal `precise_q8`
+identity (expect ~0 above 16 Hz). Q16 low-Hz tail ≪ Q8’s ~3¢;
+playing range still PIO-limited. Bands: low &lt;100 Hz, mid 100–1000, high &gt;1000 (PIO quant).
 
-**Accuracy report** (`=== CLKDIV HP ACCURACY ===`): same Hz grid. Gold (not live) =
-`llround(sys / hz)` then `pio_clk_div_for_y`. Reconstruct
-`outHz = sys / (y + div*w + k)`; cents = `|1200 * log2(outHz / hz)|`. Per method: mean/max
-cents, p50/p95/p99, rates `>0.1¢` / `>0.5¢` / `>1.0¢`, max `|clk_div − gold_div|`. Bands:
-low &lt;100 Hz (Q4 worst), mid 100–1000, high &gt;1000 (PIO quant worst). HP0 vs HP1:
-disagree-div count + max `|Δdiv|`. Q4 ≈ ±1/32 Hz, Q8 ≈ ±1/512 Hz **before** PIO quant.
-Machine tables stay first; Board then prints **`-- human --`** (typical/worst/bands/verdict
-from the same Acc stats). p50/p95/p99 sit in 0.5¢ hist bins — the prose says to trust mean /
-max / `>x¢%`. `max|Δdiv|` is integer `clk_div` at low Hz, not pitch.
-
-**Verify after flash** (`RUNNING_AVERAGE`, fixed voice preferred):
-
-- Rebuild HP1 vs HP0, dump **10** while playing with pitch mod: note `clkdiv math` mean ratio.
-- Cmd **32 jump**: HP0 `pctVsHP1` clearly ≪ 100 (not ~100). Seq may be closer; jump is the
-  live-like rank.
-- Cmd **33**: HP1 cents ≪ HP0 at low Hz; high-Hz errors similar (shared PIO quant); HP1 vs
-  gold mostly 0 Δdiv.
+**Verify:** dump **10** `clkdiv math` vs cmd **32 jump** `meanUs`. Cmd **33**: GOLD_REF Δdiv 0;
+Q8 ≡ internal precise_q8 above ~16 Hz.
 
 Diagnostics buttons: `CLKDIV_HP_COMMANDS` in [`../tools/dco_control/params.py`](../tools/dco_control/params.py).
 

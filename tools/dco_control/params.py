@@ -387,8 +387,9 @@ PITCH_INTERP_COMMANDS = (
     ("Pitch: accuracy", 29),
 )
 
-# Fixed clkdiv HP0 vs HP1 (PARAM_DEBUG_COMMAND 160). Needs RUNNING_AVERAGE.
-# Private clones — see BENCHMARKING.md §10. No live HP switch.
+# Clkdiv GOLD_REF / GOLD_LIVE / FLOAT_LIVE / Q16 / Q8 / FAST_Q4
+# (PARAM_DEBUG_COMMAND 160). Needs RUNNING_AVERAGE. See BENCHMARKING.md §10.
+# All six on both voice engines; glue matches live domain. Speed pctVsGOLD_REF.
 CLKDIV_HP_COMMANDS = (
     ("Clkdiv: speed bench", 32),
     ("Clkdiv: accuracy", 33),

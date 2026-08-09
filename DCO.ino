@@ -21,6 +21,21 @@
 #define PITCH_INTERP_Q12 2
 #define PITCH_INTERP_FLOAT_FAST 3
 
+// Clkdiv methods (CLKDIV_MODE). Accuracy order. Fixed: Q24 via clkdiv_live_total_cycles.
+// Float: Hz via clkdiv_live_hz_total_cycles (Q16/Q8/FAST_Q4 convert Hz→Q24).
+//   0 GOLD     — double llround(sys / Hz) from Q24 (gold standard / A/B)
+//   1 FLOAT    — Q24 → float Hz → fminf(sys/hz + 0.5) (float-engine math)
+//   2 Q16      — Q16 Hz → 64/32 (shipping)
+//   3 Q8       — Q8 Hz → 32/32 + remainder; <16 Hz → internal precise Q8
+//   4 FAST_Q4  — Q4 Hz → 32/32 (fastest, least accurate)
+// Value 0 is GOLD, not the old HP0 Q4 path (that is FAST_Q4 = 4).
+// Value 1 is FLOAT, not the old PRECISE_Q8 path (Q8 is 3).
+#define CLKDIV_GOLD        0
+#define CLKDIV_FLOAT       1
+#define CLKDIV_Q16         2
+#define CLKDIV_Q8          3
+#define CLKDIV_FAST_Q4     4
+
 // =============================================================================
 // ENGINE — board defaults (Arduino core: PICO_RP2350 / else)
 // =============================================================================
@@ -38,8 +53,8 @@
   #ifndef AMP_COMP_METHOD_DEFAULT
     #define AMP_COMP_METHOD_DEFAULT 0   // FLOAT_QUAD (0); LUT=1, FIXED=2 — cmds 20–22
   #endif
-  #ifndef HIGH_PRECISION_CLKDIV
-    #define HIGH_PRECISION_CLKDIV 1     // fixed-voice clkdiv only; ignored by float voice
+  #ifndef CLKDIV_MODE
+    #define CLKDIV_MODE CLKDIV_FLOAT  // native Hz on float voice
   #endif
 #else
 // RP2040 / fallback: fixed voice + lean Q8 amp (no float amp tables / LUT RAM).
@@ -50,8 +65,8 @@
 #ifndef PITCH_INTERP_MODE
 #define PITCH_INTERP_MODE PITCH_INTERP_RATIO_Q16
 #endif
-#ifndef HIGH_PRECISION_CLKDIV
-#define HIGH_PRECISION_CLKDIV 1  // 1 = ~4µs/voice 64-bit div; 0 = ~1µs fast Q-format
+#ifndef CLKDIV_MODE
+#define CLKDIV_MODE CLKDIV_Q16  // Q16 64/32
 #endif
 #endif
 
@@ -67,7 +82,11 @@
 // #define USE_FLOAT_VOICE_TASK         // float voice (needs FPU; soft-float on RP2040)
 // #define USE_FLOAT_AMP_COMP           // float amp dual-build (large RAM)
 // #define USE_FLOAT_CV_OUTS            // float VCA/VCF path (soft-float tax on RP2040)
-// #define HIGH_PRECISION_CLKDIV 0      // fast fixed clkdiv; ignored if float voice
+// #define CLKDIV_MODE CLKDIV_FAST_Q4   // Q4 32/32
+// #define CLKDIV_MODE CLKDIV_Q8        // Q8 32/32+corr (faster than Q16)
+// #define CLKDIV_MODE CLKDIV_Q16       // Q16 64/32 (shipping)
+// #define CLKDIV_MODE CLKDIV_GOLD      // double llround; gold standard / A/B
+// #define CLKDIV_MODE CLKDIV_FLOAT     // Q24 → float Hz (same math as float voice)
 // #define AMP_COMP_METHOD_DEFAULT 1    // 0 FLOAT_QUAD / 1 LUT / 2 FIXED; needs USE_FLOAT_AMP_COMP for 0/1
 // Pitch A/B (ids above; default already set — #undef then redefine):
 // #undef PITCH_INTERP_MODE
@@ -81,6 +100,9 @@
 // =============================================================================
 #if (PITCH_INTERP_MODE == PITCH_INTERP_FLOAT || PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST) && !defined(USE_FLOAT_VOICE_TASK)
 #error "PITCH_INTERP_FLOAT / FLOAT_FAST require USE_FLOAT_VOICE_TASK (board default or override)"
+#endif
+#if CLKDIV_MODE > 4
+#error "CLKDIV_MODE must be CLKDIV_GOLD, FLOAT, Q16, Q8, or FAST_Q4"
 #endif
 
 // =============================================================================
@@ -124,7 +146,7 @@
 // samples longer than this (autotune / wrap-looking stalls).
 #define RUNNING_AVERAGE
 // #define RUNNING_AVERAGE_FINE
-// #define RUNNING_AVERAGE_PERIOD
+#define RUNNING_AVERAGE_PERIOD
 // #define BENCH_PATH_STATS
 #ifndef BENCH_STAGE_STRIDE
 #define BENCH_STAGE_STRIDE 9
@@ -139,11 +161,6 @@
 // Comment out for a zero-cost match to pre-mem_diag period-only dumps.
 // Runtime 14/15 disable/enable polls without rebuild (dump 13 ignored while off).
 #define ENABLE_MEM_DIAG
-
-// Float vs double clkdiv comparison in voice_task_float; needs RUNNING_AVERAGE.
-// #define CLKDIV_BENCHMARK
-// Fixed HP0 vs HP1 clkdiv one-shots: debug cmds 32/33; needs RUNNING_AVERAGE only
-// (no extra flag; leave CLKDIV_BENCHMARK commented).
 
 // Amp-comp speed/accuracy reports (debug cmds 24–25); needs RUNNING_AVERAGE + USE_FLOAT_AMP_COMP.
 // #define AMP_COMP_BENCHMARK

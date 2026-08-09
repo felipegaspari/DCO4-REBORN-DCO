@@ -22,7 +22,7 @@ Unless overridden, RP2350 and RP2040 ship the same engine shape:
 | Voice / amp / CV | Fixed (`USE_FLOAT_*` undefined) |
 | Pitch | `PITCH_INTERP_RATIO_Q16` |
 | Amp method default | `2` (`FIXED`) |
-| Clkdiv | `HIGH_PRECISION_CLKDIV 1` |
+| Clkdiv | `CLKDIV_MODE CLKDIV_Q16` |
 | Noise | `NOISE_ENGINE 1`, `ENABLE_NOISE_OUT` off |
 | ADSR | fixed Q22 phase, micros, native Q15 |
 | USB panel | `ENABLE_USB_CONTROL` on |
@@ -55,7 +55,7 @@ Both branches currently set the same values via `#ifndef`:
 |--------|----------|--------|----------|
 | `AMP_COMP_METHOD_DEFAULT` | `2` (FIXED) | Initial `amp_comp_method` | [`amp_comp.h`](../amp_comp.h), runtime cmds 20–22 |
 | `PITCH_INTERP_MODE` | `PITCH_INTERP_RATIO_Q16` | Selects one interpolator + its tables | [`voices.ino`](../voices.ino), pitch benches |
-| `HIGH_PRECISION_CLKDIV` | `1` | Fixed-voice Q8 64/32 clkdiv (~4 µs/voice); `0` = fast Q4 32-bit. Cmds 32–33 A/B. | `voice_task_fixed_point`, [`clkdiv_bench.ino`](../clkdiv_bench.ino) |
+| `CLKDIV_MODE` | `CLKDIV_Q16` (`2`) | Clkdiv (accuracy order): `0` GOLD (double `llround`); `1` FLOAT (Q24 → float Hz / native Hz on float voice); `2` Q16 (shipping); `3` Q8 (Q8 32/32+corr); `4` FAST_Q4 (Q4 32/32). Value `0` is GOLD, not old HP0. Value `1` is FLOAT, not old PRECISE_Q8. Both voice engines: fixed via `clkdiv_live_total_cycles`, float via `clkdiv_live_hz_total_cycles`. Cmds 32–33 A/B all five live + GOLD_REF. | `voice_task_fixed_point` / `voice_task_float`, [`clkdiv.h`](../clkdiv.h), [`clkdiv_bench.ino`](../clkdiv_bench.ino) |
 
 Float voice / amp / CV are **not** defined by board defaults (enable only in overrides).
 
@@ -91,11 +91,10 @@ Math detail: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
 | `BENCH_USE_SYSTICK` | `1` | SysTick for PERIOD + stages; `0` → 1 µs timer for all probes. Dump window still 1 µs. | [`bench.h`](../bench.h), [`DCO.ino`](../DCO.ino) |
 | `BENCH_PERIOD_MAX_US` | `2000` | Discard PERIOD samples longer than this (autotune / wrap-looking stalls) | [`bench.h`](../bench.h), [`DCO.ino`](../DCO.ino) |
 | `BENCH_PATH_STATS` | off | All path bumps + `-- Path counters --` dump; needs `RUNNING_AVERAGE`; no-op under PERIOD | [`bench.h`](../bench.h), [`voices.ino`](../voices.ino) |
-| `CLKDIV_BENCHMARK` | off | Float vs double clkdiv sample; needs `RUNNING_AVERAGE` | float voice path |
 | `AMP_COMP_BENCHMARK` | off | Amp speed/accuracy cmds 24–25; needs `RUNNING_AVERAGE` + `USE_FLOAT_AMP_COMP` | [`amp_comp_bench.ino`](../amp_comp_bench.ino) |
 | `ENABLE_MEM_DIAG` | **on** | Cmd 13 RAM dump + `loop`/`loop1` polls; comment out = empty inlines. Runtime 14/15 disable/enable polls | [`mem_diag.h`](../mem_diag.h), [`MEMORY.md`](MEMORY.md) |
 
-Pitch interp cmds **28–29** and fixed clkdiv HP cmds **32–33** need `RUNNING_AVERAGE` only (no extra flag): [`pitch_interp_bench.ino`](../pitch_interp_bench.ino), [`clkdiv_bench.ino`](../clkdiv_bench.ino).
+Pitch interp cmds **28–29** and fixed clkdiv cmds **32–33** (`CLKDIV_MODE` A/B) need `RUNNING_AVERAGE` only (no extra flag): [`pitch_interp_bench.ino`](../pitch_interp_bench.ino), [`clkdiv_bench.ino`](../clkdiv_bench.ino).
 
 ### 1.6 Board / IO
 

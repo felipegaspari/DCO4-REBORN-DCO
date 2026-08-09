@@ -36,15 +36,13 @@
 #include "hardware/structs/systick.h"
 #include "hardware/structs/timer.h"
 
-// Defined in voices.ino; prints the CLKDIV_BENCHMARK comparison when that flag is on.
-void print_clkdiv_bench();
 // Defined in amp_comp_bench.ino; prints AMP_COMP_BENCHMARK speed/accuracy when pending.
 void print_amp_comp_bench();
 // Defined in pitch_interp_bench.ino; pitch interp speed/accuracy when RUNNING_AVERAGE.
 extern volatile bool pitch_interp_bench_speed_pending;
 extern volatile bool pitch_interp_bench_accuracy_pending;
 void print_pitch_interp_bench();
-// Defined in clkdiv_bench.ino; HP0 vs HP1 speed/accuracy when RUNNING_AVERAGE.
+// Defined in clkdiv_bench.ino; six methods × both voices; pctVsGOLD_REF.
 extern volatile bool clkdiv_hp_bench_speed_pending;
 extern volatile bool clkdiv_hp_bench_accuracy_pending;
 void print_clkdiv_hp_bench();
@@ -163,8 +161,8 @@ enum BenchId {
 #endif
 
 // ---------------------------------------------------------------------------
-// Time source. Kept outside the RUNNING_AVERAGE guard so CLKDIV_BENCHMARK can use it
-// on its own; with no probes compiled in, none of this is referenced and none of it
+// Time source. Kept outside the RUNNING_AVERAGE guard so one-shot benches can use it
+// on their own; with no probes compiled in, none of this is referenced and none of it
 // costs anything at runtime.
 // ---------------------------------------------------------------------------
 
@@ -835,11 +833,17 @@ inline void bench_print_report() {
 #else
   const char *voice = "FIXED";
 #endif
-  // Compile-time HIGH_PRECISION_CLKDIV (float voice ignores it at runtime).
-#if HIGH_PRECISION_CLKDIV
-  const char *clkdiv = "HP1";
+  // Compile-time CLKDIV_MODE (both voice engines).
+#if CLKDIV_MODE == CLKDIV_GOLD
+  const char *clkdiv = "GOLD";
+#elif CLKDIV_MODE == CLKDIV_FLOAT
+  const char *clkdiv = "FLOAT";
+#elif CLKDIV_MODE == CLKDIV_Q16
+  const char *clkdiv = "Q16";
+#elif CLKDIV_MODE == CLKDIV_Q8
+  const char *clkdiv = "Q8";
 #else
-  const char *clkdiv = "HP0";
+  const char *clkdiv = "FAST_Q4";
 #endif
 #ifdef USE_FLOAT_AMP_COMP
   const char *amp = "FLOAT";
@@ -914,12 +918,7 @@ inline void bench_print_report() {
   );
   bench_out_println(line);
 
-  snprintf(line, sizeof(line), "bench:  clkdiv=%d amp_comp=%d path_stats=%d",
-#ifdef CLKDIV_BENCHMARK
-           1,
-#else
-           0,
-#endif
+  snprintf(line, sizeof(line), "bench:  amp_comp=%d path_stats=%d",
 #ifdef AMP_COMP_BENCHMARK
            1,
 #else
@@ -986,7 +985,6 @@ inline void bench_poll_core0() {
       !bench_cdc_rx_pending()) {
     bench_out_reset();
     bench_print_report();
-    print_clkdiv_bench();
     // Engine flags already on the build: line in bench_print_report().
     bench_core_ready[0] = false;
     bench_core_ready[1] = false;
@@ -1031,7 +1029,7 @@ inline void bench_poll_core0() {
     bench_out_drain_chunk();
   }
 
-  // One-shot fixed clkdiv HP0 vs HP1 (PARAM_DEBUG_COMMAND 32/33).
+  // One-shot six-method clkdiv speed/accuracy vs GOLD_REF (32/33).
   if (!bench_out_active &&
       (clkdiv_hp_bench_speed_pending || clkdiv_hp_bench_accuracy_pending)) {
     bench_out_reset();

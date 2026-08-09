@@ -23,7 +23,7 @@ Related docs:
     - `setup()` / `loop()` (core 0): USB/serial/MIDI I/O, LFO evaluation (~50 µs tick).
     - `setup1()` / `loop1()` (core 1): PID & FS init, ADSR init, DCO calibration/autotune, real‑time voice engine.  
   - **Engine build options** (top of file: **pitch ids** → **board defaults** → **overrides** → **guards** → profiling / board):
-    - Board defaults (both MCUs): fixed voice/amp/CV (no `USE_FLOAT_*`), `PITCH_INTERP_RATIO_Q16`, amp method `FIXED`, `HIGH_PRECISION_CLKDIV 1`. No `USE_FLOAT_ENGINE` umbrella.
+    - Board defaults (both MCUs): fixed voice/amp/CV (no `USE_FLOAT_*`), `PITCH_INTERP_RATIO_Q16`, amp method `FIXED`, `CLKDIV_MODE CLKDIV_Q16`. No `USE_FLOAT_ENGINE` umbrella.
     - Overrides can `#undef` / `#define` those flags (pitch A/B needs `#undef PITCH_INTERP_MODE` first).
     - Full catalog: [`BUILD_FLAGS.md`](BUILD_FLAGS.md). Math depth: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
   - Configures USB product strings in `setup()` (via Adafruit TinyUSB; product **DCO3-MONO**), toggles board pins (23/24) for hardware fixes, and selects DCO calibration mode.
@@ -77,9 +77,12 @@ Related docs:
           - Per‑osc drift LFO (`LFO_DRIFT_LEVEL`) with analog drift amount.
           - ADSR‑to‑detune in Q24 using `ADSR1toDETUNE1_scale_q24` and `linToLogLookup` (select includes OSC3 / all).
         - Evaluates the pitch multiplier table per `PITCH_INTERP_MODE`: `interpolateRatioQ16_cached` (`RATIO_Q16`, slopeQ20 fused) or `interpolatePitchMultiplierIntQ16_cached` (`Q12`). See [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
-        - Produces final osc frequencies in **Q24 Hz**, then clock‑dividers via `HIGH_PRECISION_CLKDIV`:
-          - **1**: 64‑bit divide on full Q24 Hz (~4 µs/voice, preferred low‑note accuracy).
-          - **0**: compact **Q4 Hz** then 32‑bit divide (~1 µs/voice).
+        - Produces final osc frequencies in **Q24 Hz**, then clock‑dividers via `CLKDIV_MODE`:
+          - **0 GOLD**: Q24 → double Hz → `llround(sys / hz)` (gold standard / A/B).
+          - **1 FLOAT**: Q24 → float Hz → `fminf(sys/hz + 0.5)` (float-engine math).
+          - **2 Q16**: Q16 Hz → 64/32 (shipping).
+          - **3 Q8**: Q8 Hz, two 32/32 + remainder (`f_int < 16` → internal precise Q8).
+          - **4 FAST_Q4**: compact **Q4 Hz** then 32‑bit divide (~1 µs/voice).
           - Corrected OSR clock dividers for OSC1–3 including OSC2 phase‑alignment; OSC3 free-running.
         - Performs **amplitude compensation** via `get_chan_level_lookup_fast()` (Q8 Hz domain) using precomputed quadratic windows (`amp_comp.h`) → **RANGE PWM** via `write_range_pwm()` (slice or PIO dither; not a PIO oscillator).
         - Writes new dividers into the three PIO SMs on pio0 and amp levels into RANGE channels.
@@ -89,7 +92,7 @@ Related docs:
       - Same overall structure (portamento → modifiers → ratio → clkdiv → amp → PIO/PWM/PW), but in **Hz / float**:
         - Float portamento state; pitch bend / LFO / ADSR / drift / OSC3 interval+detune converted from Q24 globals where needed.
         - Pitch table: `interpolateRatioFloat_cached_fast` when `PITCH_INTERP_FLOAT_FAST`; walk `interpolateRatioFloat_cached` when `PITCH_INTERP_FLOAT`; or fixed `RATIO_Q16` / IntQ16 via `PITCH_INTERP_MODE` (`×10000`→Q16 glue) for A/B. Shipping default is fixed voice + `RATIO_Q16` (this float path is override-only).
-        - Clkdiv always `sysClock_Hz / freqHz` in float (`HIGH_PRECISION_CLKDIV` ignored).
+        - Clkdiv via `clkdiv_live_hz_total_cycles` (`CLKDIV_MODE`; Q16/Q8/FAST_Q4 convert Hz→Q24).
         - Amp via `get_chan_level_for_engine()` → float or fixed facade depending on `USE_FLOAT_AMP_COMP`.
       - Details: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) §6.
 
@@ -107,7 +110,7 @@ Related docs:
       - `voice_task_autotune()` – dedicated per‑oscillator routine used during DCO/DCO+PW calibration to drive the PIO and PWM into specific measurement or calibration modes (float-style clkdiv + `get_chan_level_for_engine`).
     - Timing diagnostics:
       - Every stage of both voice tasks is bracketed by `BENCH_*` probes; the report is produced by [`bench.h`](../bench.h) on core 0. See [`BENCHMARKING.md`](BENCHMARKING.md).
-      - `clkdiv_bench_sample()` / `print_clkdiv_bench()` – under `CLKDIV_BENCHMARK`, run the float and double divider candidates side by side and report the timing plus the resulting divider and Hz difference.
+      - Cmds 32/33 (`clkdiv_bench.ino`) – all six methods on both voice engines vs GOLD_REF (`pctVsGOLD_REF`; `RUNNING_AVERAGE`). See [`BENCHMARKING.md`](BENCHMARKING.md) §10.
 
 ---
 

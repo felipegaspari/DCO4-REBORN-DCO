@@ -1,5 +1,7 @@
 #include "include_all.h"
 #include <limits.h>
+#include <math.h>
+#include "clkdiv.h"
 
 // Enable/disable detailed DCO debug report (including OSC1 frequency stages)
 #define DCO_DEBUG_REPORT 0
@@ -20,104 +22,40 @@ float interpolateRatioFloat_cached(float x, int dcoIndex);
 float interpolateRatioFloat_cached_fast(float x, int dcoIndex);
 #endif
 
-#if HIGH_PRECISION_CLKDIV
-// HP1: (sys<<24)/freq_q24 via Q8 Hz → 64/32 div (not 64/64).
-static inline uint32_t hp1_total_cycles_q8(uint32_t sys_hz, int64_t freq_q24) {
-  if (freq_q24 <= 0) return 0;
-  uint32_t freq_q8 = (uint32_t)((freq_q24 + (int64_t)(1 << 15)) >> 16);
-  if (freq_q8 == 0) freq_q8 = 1;
-  uint64_t num = ((uint64_t)sys_hz << 8) + (uint64_t)(freq_q8 / 2u);
-  return (uint32_t)(num / freq_q8);
-}
-#endif
-
-#ifdef CLKDIV_BENCHMARK
-// Float vs double comparison for the clock-divider math. Both candidates run on the same
-// inputs every frame, so this roughly triples the cost of that stage — bench flag only.
-// What is compared is the divider that actually reaches the state machine (post
-// pio_clk_div_for_y), not the intermediate cycle count, plus the frequency each one
-// reconstructs through the PIO period model.
-uint32_t clkdiv_bench_count = 0;
-double clkdiv_time_float_sum_us = 0.0;
-double clkdiv_time_double_sum_us = 0.0;
-int32_t clkdiv_delta1_sum = 0;
-int32_t clkdiv_delta2_sum = 0;
-uint32_t clkdiv_delta1_max = 0;
-uint32_t clkdiv_delta2_max = 0;
-double clkdiv_freq1_diff_sum = 0.0;
-double clkdiv_freq2_diff_sum = 0.0;
-double clkdiv_freq1_diff_max_abs = 0.0;
-double clkdiv_freq2_diff_max_abs = 0.0;
-double clkdiv_last_target1_Hz = 0.0;
-double clkdiv_last_out1_float_Hz = 0.0;
-double clkdiv_last_out1_double_Hz = 0.0;
-double clkdiv_last_target2_Hz = 0.0;
-double clkdiv_last_out2_float_Hz = 0.0;
-double clkdiv_last_out2_double_Hz = 0.0;
-#endif
-
-// Run both candidate divider implementations on this frame's OSC1/OSC2 frequencies and
-// accumulate the timing and accuracy difference. Compiles away entirely without
-// CLKDIV_BENCHMARK. Called from voice_task_float() just before the live divider math.
-static inline void clkdiv_bench_sample(float freqA_Hz, float freqB_Hz) {
-#ifdef CLKDIV_BENCHMARK
-  if (!(freqA_Hz > 0.0f) || !(freqB_Hz > 0.0f)) return;
-
-  const uint32_t wA = osc_ramp_weight(0), kA = osc_period_overhead(0), yA = osc_last_y[0];
-  const uint32_t wB = osc_ramp_weight(1), kB = osc_period_overhead(1), yB = osc_last_y[1];
-
-  const uint32_t t0 = bench_now();
-  const uint32_t cyc_f1 = (uint32_t)fminf((float)sysClock_Hz / freqA_Hz + 0.5f, 4.0e9f);
-  const uint32_t cyc_f2 = (uint32_t)fminf((float)sysClock_Hz / freqB_Hz + 0.5f, 4.0e9f);
-  const uint32_t t1 = bench_now();
-  const uint32_t cyc_d1 = (uint32_t)fmin((double)sysClock_Hz / (double)freqA_Hz + 0.5, 4.0e9);
-  const uint32_t cyc_d2 = (uint32_t)fmin((double)sysClock_Hz / (double)freqB_Hz + 0.5, 4.0e9);
-  const uint32_t t2 = bench_now();
-
-  const double us_per_cycle = 1.0 / (double)bench_cycles_per_us;
-  clkdiv_time_float_sum_us += (double)bench_span(t0, t1) * us_per_cycle;
-  clkdiv_time_double_sum_us += (double)bench_span(t1, t2) * us_per_cycle;
-
-  // Compare the divider that actually reaches the state machine, not the intermediate
-  // cycle count: rounding inside pio_clk_div_for_y can absorb a difference, or create one.
-  const uint32_t div_f1 = pio_clk_div_for_y(cyc_f1, yA, wA, kA);
-  const uint32_t div_d1 = pio_clk_div_for_y(cyc_d1, yA, wA, kA);
-  const uint32_t div_f2 = pio_clk_div_for_y(cyc_f2, yB, wB, kB);
-  const uint32_t div_d2 = pio_clk_div_for_y(cyc_d2, yB, wB, kB);
-
-  const int32_t d1 = (int32_t)div_f1 - (int32_t)div_d1;
-  const int32_t d2 = (int32_t)div_f2 - (int32_t)div_d2;
-  clkdiv_delta1_sum += d1;
-  clkdiv_delta2_sum += d2;
-  const uint32_t abs1 = (uint32_t)((d1 < 0) ? -d1 : d1);
-  const uint32_t abs2 = (uint32_t)((d2 < 0) ? -d2 : d2);
-  if (abs1 > clkdiv_delta1_max) clkdiv_delta1_max = abs1;
-  if (abs2 > clkdiv_delta2_max) clkdiv_delta2_max = abs2;
-
-  // What each divider is actually worth in Hz, through the same period model the PIO uses.
-  const double out_f1 = (double)sysClock_Hz / (double)(yA + (uint64_t)div_f1 * wA + kA);
-  const double out_d1 = (double)sysClock_Hz / (double)(yA + (uint64_t)div_d1 * wA + kA);
-  const double out_f2 = (double)sysClock_Hz / (double)(yB + (uint64_t)div_f2 * wB + kB);
-  const double out_d2 = (double)sysClock_Hz / (double)(yB + (uint64_t)div_d2 * wB + kB);
-
-  const double fd1 = out_f1 - out_d1;
-  const double fd2 = out_f2 - out_d2;
-  clkdiv_freq1_diff_sum += fd1;
-  clkdiv_freq2_diff_sum += fd2;
-  if (fabs(fd1) > clkdiv_freq1_diff_max_abs) clkdiv_freq1_diff_max_abs = fabs(fd1);
-  if (fabs(fd2) > clkdiv_freq2_diff_max_abs) clkdiv_freq2_diff_max_abs = fabs(fd2);
-
-  clkdiv_last_target1_Hz = (double)freqA_Hz;
-  clkdiv_last_out1_float_Hz = out_f1;
-  clkdiv_last_out1_double_Hz = out_d1;
-  clkdiv_last_target2_Hz = (double)freqB_Hz;
-  clkdiv_last_out2_float_Hz = out_f2;
-  clkdiv_last_out2_double_Hz = out_d2;
-
-  clkdiv_bench_count++;
+// Live pitch interp: compile-time wrappers (always_inline; not function pointers).
+static inline __attribute__((always_inline)) int32_t modifiers_q24_to_xQ16(int64_t modifiers_q24) {
+#if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
+  return (modifiers_q24 >= 0) ? (int32_t)(modifiers_q24 >> 8)
+                              : (int32_t)(-((-modifiers_q24) >> 8));
 #else
-  (void)freqA_Hz;
-  (void)freqB_Hz;
+  int64_t x_q24s = modifiers_q24 * (int64_t)multiplierTableScale;
+  return (x_q24s >= 0) ? (int32_t)(x_q24s >> 8) : (int32_t)(-((-x_q24s) >> 8));
+#endif
+}
+
+static inline __attribute__((always_inline)) int32_t interpolate_live_ratio_q16(int32_t xQ16, int dcoIndex) {
+#if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
+  return interpolateRatioQ16_cached(xQ16, dcoIndex);
+#else
+  int32_t yTab = interpolatePitchMultiplierIntQ16_cached(xQ16, dcoIndex);
+  uint64_t num = ((uint64_t)(uint32_t)yTab << 16) + 5000u;
+  return (int32_t)((num * 0xD1B71759ULL) >> 45);
+#endif
+}
+
+static inline __attribute__((always_inline)) float interpolate_live_ratio_f(float modifiers, int dcoIndex) {
+#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
+  return interpolateRatioFloat_cached(modifiers, dcoIndex);
+#elif PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
+  return interpolateRatioFloat_cached_fast(modifiers, dcoIndex);
+#elif PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
+  int32_t xQ16 = (int32_t)lroundf(modifiers * 65536.0f);
+  return (float)interpolateRatioQ16_cached(xQ16, dcoIndex) * (1.0f / 65536.0f);
+#else
+  float x = modifiers * (float)multiplierTableScale;
+  int32_t xQ16 = (int32_t)lroundf(x * 65536.0f);
+  return (float)interpolatePitchMultiplierIntQ16_cached(xQ16, dcoIndex)
+         / (float)multiplierTableScale;
 #endif
 }
 
@@ -754,33 +692,15 @@ void __not_in_flash_func(voice_task_fixed_point)() {
       //   freq  *= interpolatePitchMultiplier(freqModifiers)/multiplierTableScale;
       //   freq2 *= OSC2_detune * interpolatePitchMultiplier(freq2Modifiers)/multiplierTableScale;
       //   freq3 *= OSC3_detune * interpolatePitchMultiplier(freq3Modifiers)/multiplierTableScale;
-#if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
-      // Native Q16 modifier domain: xQ16 = trunc(modifiers_q24 / 2^8) (1.0 → 65536).
-      int32_t xScaled1_Q16 =
-        (freqModifiers_q24 >= 0) ? (int32_t)(freqModifiers_q24 >> 8)
-                                 : (int32_t)(-((-freqModifiers_q24) >> 8));
-      int32_t xScaled2_Q16 =
-        (freq2Modifiers_q24 >= 0) ? (int32_t)(freq2Modifiers_q24 >> 8)
-                                  : (int32_t)(-((-freq2Modifiers_q24) >> 8));
-      int32_t xScaled3_Q16 =
-        (freq3Modifiers_q24 >= 0) ? (int32_t)(freq3Modifiers_q24 >> 8)
-                                  : (int32_t)(-((-freq3Modifiers_q24) >> 8));
-#else
-      // Q12 A/B: legacy ×10000 table-units as Q16.
-      int64_t x1_q24s = (freqModifiers_q24 * (int64_t)multiplierTableScale);
-      int64_t x2_q24s = (freq2Modifiers_q24 * (int64_t)multiplierTableScale);
-      int64_t x3_q24s = (freq3Modifiers_q24 * (int64_t)multiplierTableScale);
-      int32_t xScaled1_Q16 = (x1_q24s >= 0) ? (int32_t)(x1_q24s >> 8) : (int32_t)(-((-x1_q24s) >> 8));
-      int32_t xScaled2_Q16 = (x2_q24s >= 0) ? (int32_t)(x2_q24s >> 8) : (int32_t)(-((-x2_q24s) >> 8));
-      int32_t xScaled3_Q16 = (x3_q24s >= 0) ? (int32_t)(x3_q24s >> 8) : (int32_t)(-((-x3_q24s) >> 8));
-#endif
+      int32_t xScaled1_Q16 = modifiers_q24_to_xQ16(freqModifiers_q24);
+      int32_t xScaled2_Q16 = modifiers_q24_to_xQ16(freq2Modifiers_q24);
+      int32_t xScaled3_Q16 = modifiers_q24_to_xQ16(freq3Modifiers_q24);
       BENCH_END(vt_freq_scale_x);
 
       BENCH_BEGIN(vt_ratio_interp);
-#if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
-      int32_t ratio1_Q16 = interpolateRatioQ16_cached(xScaled1_Q16, DCO_A);
-      int32_t ratio2_Q16 = interpolateRatioQ16_cached(xScaled2_Q16, DCO_B);
-      int32_t ratio3_Q16 = interpolateRatioQ16_cached(xScaled3_Q16, DCO_C);
+      int32_t ratio1_Q16 = interpolate_live_ratio_q16(xScaled1_Q16, DCO_A);
+      int32_t ratio2_Q16 = interpolate_live_ratio_q16(xScaled2_Q16, DCO_B);
+      int32_t ratio3_Q16 = interpolate_live_ratio_q16(xScaled3_Q16, DCO_C);
       BENCH_END(vt_ratio_interp);
 
       BENCH_BEGIN(vt_freq_scale_post);
@@ -795,32 +715,6 @@ void __not_in_flash_func(voice_task_fixed_point)() {
       int32_t detune3_Q16 = (int32_t)((((int64_t)detune3_q24) + 128) >> 8);
       int32_t combined3_Q16 = (int32_t)((((int64_t)ratio3_Q16 * (int64_t)detune3_Q16) + (1LL << 15)) >> 16);
       freq_q24_C = (portamento_cur_freq_q24[DCO_C] * (int64_t)combined3_Q16) >> 16;
-#else
-      // PITCH_INTERP_Q12
-      int32_t yTab1 = interpolatePitchMultiplierIntQ16_cached(xScaled1_Q16, DCO_A);
-      int32_t yTab2 = interpolatePitchMultiplierIntQ16_cached(xScaled2_Q16, DCO_B);
-      int32_t yTab3 = interpolatePitchMultiplierIntQ16_cached(xScaled3_Q16, DCO_C);
-      BENCH_END(vt_ratio_interp);
-
-      BENCH_BEGIN(vt_freq_scale_post);
-      // Convert yTab -> ratioQ16 using reciprocal-multiply (round((yTab<<16)/10000))
-      uint64_t numA = ((uint64_t)(uint32_t)yTab1 << 16) + 5000u;
-      int32_t ratio1_Q16_fallback = (int32_t)((numA * 0xD1B71759ULL) >> 45);
-      uint64_t numB = ((uint64_t)(uint32_t)yTab2 << 16) + 5000u;
-      int32_t ratio2_Q16_fallback = (int32_t)((numB * 0xD1B71759ULL) >> 45);
-      uint64_t numC = ((uint64_t)(uint32_t)yTab3 << 16) + 5000u;
-      int32_t ratio3_Q16_fallback = (int32_t)((numC * 0xD1B71759ULL) >> 45);
-      // Scale A with ratioQ16
-      freq_q24_A = (portamento_cur_freq_q24[DCO_A] * (int64_t)ratio1_Q16_fallback) >> 16;
-      // Combine OSC2 ratio with detune into one Q16 factor
-      int32_t detune_Q16_fb = (int32_t)((((int64_t)detune_q24) + 128) >> 8);
-      int32_t combined_Q16_fb = (int32_t)((((int64_t)ratio2_Q16_fallback * (int64_t)detune_Q16_fb) + (1LL << 15)) >> 16);
-      freq_q24_B = (portamento_cur_freq_q24[DCO_B] * (int64_t)combined_Q16_fb) >> 16;
-      // Combine OSC3 ratio with detune into one Q16 factor
-      int32_t detune3_Q16_fb = (int32_t)((((int64_t)detune3_q24) + 128) >> 8);
-      int32_t combined3_Q16_fb = (int32_t)((((int64_t)ratio3_Q16_fallback * (int64_t)detune3_Q16_fb) + (1LL << 15)) >> 16);
-      freq_q24_C = (portamento_cur_freq_q24[DCO_C] * (int64_t)combined3_Q16_fb) >> 16;
-#endif
 
 #if DCO_DEBUG_REPORT
       // Debug: OSC1 frequency after all modifiers applied (in Hz)
@@ -832,16 +726,6 @@ void __not_in_flash_func(voice_task_fixed_point)() {
 
       // freq→divider inputs + dividers (was unattributed between post and clkdiv).
       BENCH_BEGIN(vt_clk_div);
-
-#if !HIGH_PRECISION_CLKDIV
-      // Q4 only used by the non-HP divider path.
-      uint32_t freqA_Q4 = (uint32_t)((freq_q24_A + (1LL << 19)) >> 20);
-      uint32_t freqB_Q4 = (uint32_t)((freq_q24_B + (1LL << 19)) >> 20);
-      uint32_t freqC_Q4 = (uint32_t)((freq_q24_C + (1LL << 19)) >> 20);
-      if (freqA_Q4 == 0) freqA_Q4 = 1;
-      if (freqB_Q4 == 0) freqB_Q4 = 1;
-      if (freqC_Q4 == 0) freqC_Q4 = 1;
-#endif
 
       PIO pioN_A = pio[VOICE_TO_PIO[DCO_A]];
       PIO pioN_B = pio[VOICE_TO_PIO[DCO_B]];
@@ -866,28 +750,15 @@ void __not_in_flash_func(voice_task_fixed_point)() {
       const uint32_t yB = osc_last_y[DCO_B];
       const uint32_t yC = osc_last_y[DCO_C];
 
-#if HIGH_PRECISION_CLKDIV
-      // Q8 Hz denom → 64/32 soft div (avoids 64/64 on M0+; ±1/256 Hz vs full Q24).
-      total_cycles1 = hp1_total_cycles_q8(sys_hz, freq_q24_A);
-      total_cycles2 = hp1_total_cycles_q8(sys_hz, freq_q24_B);
-      total_cycles3 = hp1_total_cycles_q8(sys_hz, freq_q24_C);
+      total_cycles1 = clkdiv_live_total_cycles(sys_hz, freq_q24_A);
+      total_cycles2 = clkdiv_live_total_cycles(sys_hz, freq_q24_B);
+      total_cycles3 = clkdiv_live_total_cycles(sys_hz, freq_q24_C);
       total_cycles1 += arbitrary_measured_correction_value;
       total_cycles2 += arbitrary_measured_correction_value;
       total_cycles3 += arbitrary_measured_correction_value;
       clk_div1 = pio_clk_div_for_y(total_cycles1, yA, wA, kA);
       clk_div2 = pio_clk_div_for_y(total_cycles2, yB, wB, kB);
       clk_div3 = pio_clk_div_for_y(total_cycles3, yC, wC, kC);
-#else
-      total_cycles1 = (sys_hz * 16u + (freqA_Q4 / 2u)) / freqA_Q4;
-      total_cycles2 = (sys_hz * 16u + (freqB_Q4 / 2u)) / freqB_Q4;
-      total_cycles3 = (sys_hz * 16u + (freqC_Q4 / 2u)) / freqC_Q4;
-      total_cycles1 += arbitrary_measured_correction_value;
-      total_cycles2 += arbitrary_measured_correction_value;
-      total_cycles3 += arbitrary_measured_correction_value;
-      clk_div1 = pio_clk_div_for_y(total_cycles1, yA, wA, kA);
-      clk_div2 = pio_clk_div_for_y(total_cycles2, yB, wB, kB);
-      clk_div3 = pio_clk_div_for_y(total_cycles3, yC, wC, kC);
-#endif
       BENCH_END(vt_clk_div);
 
       // Measured apart from the divider math because it only runs with sync on and a
@@ -1463,45 +1334,13 @@ void __not_in_flash_func(voice_task_float)() {
       }
 
       BENCH_BEGIN(vt_freq_scale_x);
-      // --- 2.7 Multiplier table & ratio interpolation (float version) ---
-#if PITCH_INTERP_MODE == PITCH_INTERP_Q12
-      // Q12 A/B: legacy ×10000 table-units → Q16.
-      float x1 = freqModifiers1 * (float)multiplierTableScale;
-      float x2 = freqModifiers2 * (float)multiplierTableScale;
-      float x3 = freqModifiers3 * (float)multiplierTableScale;
-#endif
+      // Q12 ×10000 glue (if any) lives inside interpolate_live_ratio_f.
       BENCH_END(vt_freq_scale_x);
 
       BENCH_BEGIN(vt_ratio_interp);
-#if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
-      float ratio1 = interpolateRatioFloat_cached(freqModifiers1, DCO_A);
-      float ratio2 = interpolateRatioFloat_cached(freqModifiers2, DCO_B);
-      float ratio3 = interpolateRatioFloat_cached(freqModifiers3, DCO_C);
-#elif PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
-      float ratio1 = interpolateRatioFloat_cached_fast(freqModifiers1, DCO_A);
-      float ratio2 = interpolateRatioFloat_cached_fast(freqModifiers2, DCO_B);
-      float ratio3 = interpolateRatioFloat_cached_fast(freqModifiers3, DCO_C);
-#elif PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
-      // Native Q16 tables: natural modifier → Q16 → float ratio.
-      int32_t x1_Q16 = (int32_t)lroundf(freqModifiers1 * 65536.0f);
-      int32_t x2_Q16 = (int32_t)lroundf(freqModifiers2 * 65536.0f);
-      int32_t x3_Q16 = (int32_t)lroundf(freqModifiers3 * 65536.0f);
-      static constexpr float Q16_TO_F = 1.0f / 65536.0f;
-      float ratio1 = (float)interpolateRatioQ16_cached(x1_Q16, DCO_A) * Q16_TO_F;
-      float ratio2 = (float)interpolateRatioQ16_cached(x2_Q16, DCO_B) * Q16_TO_F;
-      float ratio3 = (float)interpolateRatioQ16_cached(x3_Q16, DCO_C) * Q16_TO_F;
-#else
-      // A/B: IntQ16 (Q12) inside float voice.
-      int32_t x1_Q16 = (int32_t)lroundf(x1 * 65536.0f);
-      int32_t x2_Q16 = (int32_t)lroundf(x2 * 65536.0f);
-      int32_t x3_Q16 = (int32_t)lroundf(x3 * 65536.0f);
-      float ratio1 = (float)interpolatePitchMultiplierIntQ16_cached(x1_Q16, DCO_A)
-                     / (float)multiplierTableScale;
-      float ratio2 = (float)interpolatePitchMultiplierIntQ16_cached(x2_Q16, DCO_B)
-                     / (float)multiplierTableScale;
-      float ratio3 = (float)interpolatePitchMultiplierIntQ16_cached(x3_Q16, DCO_C)
-                     / (float)multiplierTableScale;
-#endif
+      float ratio1 = interpolate_live_ratio_f(freqModifiers1, DCO_A);
+      float ratio2 = interpolate_live_ratio_f(freqModifiers2, DCO_B);
+      float ratio3 = interpolate_live_ratio_f(freqModifiers3, DCO_C);
       BENCH_END(vt_ratio_interp);
 
       BENCH_BEGIN(vt_freq_scale_post);
@@ -1516,23 +1355,17 @@ void __not_in_flash_func(voice_task_float)() {
 
       BENCH_END(vt_freq_scale_post);
 
-      clkdiv_bench_sample(freqA_Hz, freqB_Hz);
-
       // --- 2.8 Clock divider calculation (float equivalent) ---
       BENCH_BEGIN(vt_clk_div);
 
       float correction = 0.0f;   // keep your measured correction if needed
       const uint32_t sys_hz = sysClock_Hz;
-      float totalCycles1_f = (float)sys_hz / freqA_Hz + correction;
-      float totalCycles2_f = (float)sys_hz / freqB_Hz + correction;
-      float totalCycles3_f = (float)sys_hz / freqC_Hz + correction;
-
-      // Round to whole cycles here, then share the integer period model with the
-      // fixed-point engine so both tune identically. fminf guards the cast: a zero
-      // frequency yields +inf, which would otherwise overflow the uint32.
-      uint32_t total_cycles1 = (uint32_t)fminf(totalCycles1_f + 0.5f, 4.0e9f);
-      uint32_t total_cycles2 = (uint32_t)fminf(totalCycles2_f + 0.5f, 4.0e9f);
-      uint32_t total_cycles3 = (uint32_t)fminf(totalCycles3_f + 0.5f, 4.0e9f);
+      uint32_t total_cycles1 = clkdiv_live_hz_total_cycles(sys_hz, freqA_Hz)
+                               + (uint32_t)correction;
+      uint32_t total_cycles2 = clkdiv_live_hz_total_cycles(sys_hz, freqB_Hz)
+                               + (uint32_t)correction;
+      uint32_t total_cycles3 = clkdiv_live_hz_total_cycles(sys_hz, freqC_Hz)
+                               + (uint32_t)correction;
 
       const uint32_t wA = osc_ramp_weight(DCO_A), kA = osc_period_overhead(DCO_A);
       const uint32_t wB = osc_ramp_weight(DCO_B), kB = osc_period_overhead(DCO_B);
@@ -1862,30 +1695,44 @@ void setSyncMode() {
   }
 }
 
-// Q24→Q8 + syncMode switch + 3× lookup. SRAM so vt_chan_level is not a flash caller.
+// One osc: shipping FIXED = Q24→Q8 lookup. With USE_FLOAT_AMP_COMP, non-FIXED
+// methods take Q24→Hz then get_chan_level_by_method (cmds 20–22).
+static inline __attribute__((always_inline)) uint16_t amp_level_q24(int64_t freq_q24, uint8_t osc) {
+#ifdef USE_FLOAT_AMP_COMP
+  if (amp_comp_method != AMP_COMP_FIXED) {
+    float hz = (float)freq_q24 * (1.0f / 16777216.0f);
+    return get_chan_level_by_method(hz, osc);
+  }
+#endif
+  int32_t freqFx = (int32_t)((freq_q24 + (1LL << 15)) >> 16);
+  return get_chan_level_lookup_fast(freqFx, osc);
+}
+
+// Q24 + syncMode switch + 3× lookup. SRAM so vt_chan_level is not a flash caller.
 static void __not_in_flash_func(amp_chan_levels_fixed)(int64_t freq_q24_A, int64_t freq_q24_B,
                                                       int64_t freq_q24_C, uint8_t oscA, uint8_t oscB,
                                                       uint8_t oscC, uint16_t *outA, uint16_t *outB,
                                                       uint16_t *outC) {
-  const int32_t freqFx_A = (int32_t)((freq_q24_A + (1LL << 15)) >> 16);
-  const int32_t freqFx_B = (int32_t)((freq_q24_B + (1LL << 15)) >> 16);
-  const int32_t freqFx_C = (int32_t)((freq_q24_C + (1LL << 15)) >> 16);
   const uint8_t sm = syncMode;
   switch (sm) {
-    case 1:
-      *outA = get_chan_level_lookup_fast((freqFx_A > freqFx_B ? freqFx_A : freqFx_B), oscA);
-      *outB = get_chan_level_lookup_fast(freqFx_B, oscB);
-      *outC = get_chan_level_lookup_fast(freqFx_C, oscC);
+    case 1: {
+      int64_t maxAB = (freq_q24_A > freq_q24_B) ? freq_q24_A : freq_q24_B;
+      *outA = amp_level_q24(maxAB, oscA);
+      *outB = amp_level_q24(freq_q24_B, oscB);
+      *outC = amp_level_q24(freq_q24_C, oscC);
       break;
-    case 2:
-      *outA = get_chan_level_lookup_fast(freqFx_A, oscA);
-      *outB = get_chan_level_lookup_fast((freqFx_A > freqFx_B ? freqFx_A : freqFx_B), oscB);
-      *outC = get_chan_level_lookup_fast(freqFx_C, oscC);
+    }
+    case 2: {
+      int64_t maxAB = (freq_q24_A > freq_q24_B) ? freq_q24_A : freq_q24_B;
+      *outA = amp_level_q24(freq_q24_A, oscA);
+      *outB = amp_level_q24(maxAB, oscB);
+      *outC = amp_level_q24(freq_q24_C, oscC);
       break;
+    }
     default:
-      *outA = get_chan_level_lookup_fast(freqFx_A, oscA);
-      *outB = get_chan_level_lookup_fast(freqFx_B, oscB);
-      *outC = get_chan_level_lookup_fast(freqFx_C, oscC);
+      *outA = amp_level_q24(freq_q24_A, oscA);
+      *outB = amp_level_q24(freq_q24_B, oscB);
+      *outC = amp_level_q24(freq_q24_C, oscC);
       break;
   }
 }
@@ -2531,48 +2378,4 @@ void initMultiplierTables() {
 #endif
 
   for (int d = 0; d < NUM_OSCILLATORS; ++d) interpSegCache[d] = -1;
-}
-
-// Report the float-vs-double clock-divider comparison and clear its accumulators.
-// Called from bench_poll_core0() on core 0, right after the main profiler report.
-// Per-phase voice-task timings now come from the BENCH_* probes in bench.h.
-void print_clkdiv_bench() {
-#if defined(CLKDIV_BENCHMARK) && defined(RUNNING_AVERAGE)
-  // Appends into bench_out_buf; paced TX is handled by bench_poll_core0().
-  if (clkdiv_bench_count > 0) {
-    double avgFloatUs  = clkdiv_time_float_sum_us  / (double)clkdiv_bench_count;
-    double avgDoubleUs = clkdiv_time_double_sum_us / (double)clkdiv_bench_count;
-    double avgDelta1   = (double)clkdiv_delta1_sum / (double)clkdiv_bench_count;
-    double avgDelta2   = (double)clkdiv_delta2_sum / (double)clkdiv_bench_count;
-    double avgFreqDiff1 = clkdiv_freq1_diff_sum / (double)clkdiv_bench_count;
-    double avgFreqDiff2 = clkdiv_freq2_diff_sum / (double)clkdiv_bench_count;
-
-    bench_out_println("=== CLKDIV BENCH ===");
-    bench_out_printf("count=%lu avgFloatUs=%.3f avgDoubleUs=%.3f\n",
-                     (unsigned long)clkdiv_bench_count, avgFloatUs, avgDoubleUs);
-    bench_out_printf("clk_div1 delta avg=%.3f maxAbs=%lu\n",
-                     avgDelta1, (unsigned long)clkdiv_delta1_max);
-    bench_out_printf("clk_div2 delta avg=%.3f maxAbs=%lu\n",
-                     avgDelta2, (unsigned long)clkdiv_delta2_max);
-    bench_out_printf("freq1 diff avg=%.6f Hz maxAbs=%.6f\n",
-                     avgFreqDiff1, clkdiv_freq1_diff_max_abs);
-    bench_out_printf("freq2 diff avg=%.6f Hz maxAbs=%.6f\n",
-                     avgFreqDiff2, clkdiv_freq2_diff_max_abs);
-    bench_out_printf("OSC1 last: target=%.6f Hz float=%.6f Hz double=%.6f Hz\n",
-                     clkdiv_last_target1_Hz, clkdiv_last_out1_float_Hz,
-                     clkdiv_last_out1_double_Hz);
-    bench_out_printf("OSC2 last: target=%.6f Hz float=%.6f Hz double=%.6f Hz\n",
-                     clkdiv_last_target2_Hz, clkdiv_last_out2_float_Hz,
-                     clkdiv_last_out2_double_Hz);
-    bench_out_println("====================");
-
-    clkdiv_bench_count         = 0;
-    clkdiv_time_float_sum_us  = 0.0;
-    clkdiv_time_double_sum_us = 0.0;
-    clkdiv_delta1_sum = clkdiv_delta2_sum = 0;
-    clkdiv_delta1_max = clkdiv_delta2_max = 0;
-    clkdiv_freq1_diff_sum = clkdiv_freq2_diff_sum = 0.0;
-    clkdiv_freq1_diff_max_abs = clkdiv_freq2_diff_max_abs = 0.0;
-  }
-#endif
 }

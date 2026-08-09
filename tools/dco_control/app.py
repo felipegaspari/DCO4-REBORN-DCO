@@ -1100,10 +1100,11 @@ class App:
              "Speed/accuracy (28–29) need RUNNING_AVERAGE (paced Board output). "
              "Compares FLOAT / RATIO_Q16 / Q12 (private tables; Q20 slope is inside RATIO). "
              "Profiler dump (10) prints build: … pitch=… flags.", 1, 1),
-            ("Clkdiv HP0 / HP1", params.CLKDIV_HP_COMMANDS,
+            ("Clkdiv GOLD_REF / LIVE / FLOAT / Q16 / Q8 / Q4", params.CLKDIV_HP_COMMANDS,
              "Speed/accuracy (32–33) need RUNNING_AVERAGE (paced Board output). "
-             "Compares fixed-voice HP1 (Q8 64/32) vs HP0 (Q4) private clones. "
-             "Float voice ignores HIGH_PRECISION_CLKDIV; live_clkdiv= in the report.",
+             "All seven methods on both voice engines. GOLD_REF = true-Hz llround (speed 100%). "
+             "Fixed: Q24 helpers. Float: native Hz for GOLD/FLOAT; Hz→Q24 then helper for integer. "
+             "Accuracy vs GOLD_REF. Live float honors CLKDIV_MODE via clkdiv_live_hz.",
              2, 0),
         )
         self._diag_panels = []

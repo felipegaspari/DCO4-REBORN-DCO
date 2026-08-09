@@ -212,7 +212,8 @@ enum ParamId : uint16_t {
   // 14 / 15 = mem_diag loop polls off / on. See MEMORY.md.
   // 20–22 amp-comp method, 24–25 amp benches, 26–27 note retrig, 28–29 pitch benches.
   // 30 = force-seed fake amp-comp + PW tables.
-  // 32–33 fixed clkdiv HP0 vs HP1 speed/accuracy (RUNNING_AVERAGE).
+  // 32–33 clkdiv GOLD_REF / GOLD_LIVE / FLOAT_LIVE / Q16 / Q8 / FAST_Q4
+  // (both voice engines; RUNNING_AVERAGE). 2=Q16 shipping, 3=Q8 A/B.
   // 200–50000 = set pioPulseLength (reset pulse Y cycles); unsigned 16-bit on wire.
   // Also reloads running SMs via pio_defer_request_reset_pulse_all().
   // Packed Character jitter setters (unsigned 16-bit, hi|lo, lo = 0..128):

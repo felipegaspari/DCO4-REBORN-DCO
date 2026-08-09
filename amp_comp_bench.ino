@@ -1,6 +1,6 @@
 #include "include_all.h"
 
-// Amp-comp speed / accuracy benches. Gated like CLKDIV_BENCHMARK.
+// Amp-comp speed / accuracy benches. Needs AMP_COMP_BENCHMARK + RUNNING_AVERAGE.
 // Results go through bench_out_* and paced Core 0 TX (never Serial from Core 1).
 // Cmds 24/25 install a linear synthetic cal (not LittleFS), measure, then restore.
 
