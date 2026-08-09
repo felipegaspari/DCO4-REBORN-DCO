@@ -25,13 +25,8 @@ enum InputSerialCmd : uint8_t {
   INPUT_CMD_FILTER_BLOCK = 'd',
   INPUT_CMD_PARAM_16     = 'p',  // id + int16 LE
   INPUT_CMD_PRESET_NAME  = 'q',  // 8 ASCII chars
+  INPUT_CMD_PARAM_32     = 'x',  // id + u32 LE (gap 154 / cal 155 DCO→Input)
 };
-
-// Legacy DCO → Input TX only (gap 154 / cal 155). Input still expects the old
-// 7-byte 'x' frame. Do not put this in the RX command table. Slim it when Input
-// is updated; then send via serial_frame_write() like everything else.
-static constexpr uint8_t INPUT_CMD_PARAM_32_LEGACY     = 'x';
-static constexpr uint8_t INPUT_SERIAL_LEN_PARAM_32_LEGACY = 6;  // id + u32 LE + finish
 
 // Payload sizes (NOT counting the command byte).
 //
@@ -48,6 +43,9 @@ static constexpr uint8_t INPUT_SERIAL_LEN_PARAM_16     = 3;
 // Preset name ('q'): 8 ASCII bytes (space-padded).
 static constexpr uint8_t INPUT_SERIAL_LEN_PRESET_NAME  = 8;
 
+// Param32 ('x'): [id:u8][value:u32 LE] — DCO→Input gap/cal; Input relays 154 to Screen.
+static constexpr uint8_t INPUT_SERIAL_LEN_PARAM_32     = 5;
+
 static inline uint8_t serial_input_payload_len(uint8_t cmd) {
   switch (cmd) {
     case INPUT_CMD_ADSR1_BLOCK:
@@ -56,6 +54,7 @@ static inline uint8_t serial_input_payload_len(uint8_t cmd) {
     case INPUT_CMD_FILTER_BLOCK: return INPUT_SERIAL_LEN_FILTER_BLOCK;
     case INPUT_CMD_PARAM_16:     return INPUT_SERIAL_LEN_PARAM_16;
     case INPUT_CMD_PRESET_NAME:  return INPUT_SERIAL_LEN_PRESET_NAME;
+    case INPUT_CMD_PARAM_32:     return INPUT_SERIAL_LEN_PARAM_32;
     default:                     return 0;
   }
 }

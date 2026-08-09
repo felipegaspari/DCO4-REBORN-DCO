@@ -23,6 +23,9 @@ float interpolateRatioFloat_cached_fast(float x, int dcoIndex);
 #endif
 
 // Live pitch interp: compile-time wrappers (always_inline; not function pointers).
+// Fixed-voice wrappers only — float voice uses interpolate_live_ratio_f (FLOAT_FAST would
+// otherwise type-check the Q12 #else and fail: IntQ16 is not compiled).
+#ifndef USE_FLOAT_VOICE_TASK
 static inline __attribute__((always_inline)) int32_t modifiers_q24_to_xQ16(int64_t modifiers_q24) {
 #if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
   return (modifiers_q24 >= 0) ? (int32_t)(modifiers_q24 >> 8)
@@ -36,12 +39,15 @@ static inline __attribute__((always_inline)) int32_t modifiers_q24_to_xQ16(int64
 static inline __attribute__((always_inline)) int32_t interpolate_live_ratio_q16(int32_t xQ16, int dcoIndex) {
 #if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
   return interpolateRatioQ16_cached(xQ16, dcoIndex);
-#else
+#elif PITCH_INTERP_MODE == PITCH_INTERP_Q12
   int32_t yTab = interpolatePitchMultiplierIntQ16_cached(xQ16, dcoIndex);
   uint64_t num = ((uint64_t)(uint32_t)yTab << 16) + 5000u;
   return (int32_t)((num * 0xD1B71759ULL) >> 45);
+#else
+#error "interpolate_live_ratio_q16: PITCH_INTERP_FLOAT / FLOAT_FAST require USE_FLOAT_VOICE_TASK"
 #endif
 }
+#endif  // !USE_FLOAT_VOICE_TASK
 
 static inline __attribute__((always_inline)) float interpolate_live_ratio_f(float modifiers, int dcoIndex) {
 #if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
@@ -614,7 +620,8 @@ void __not_in_flash_func(voice_task_fixed_point)() {
       // Same as LFO/drift: linear Q15 env × baked depth_q24 (exp is on the knob).
       int32_t ADSRModifier_q24 = 0;
       if (ADSR1toDETUNE1_scale_q24 != 0) {
-        ADSRModifier_q24 = applyDepthQ24(ADSR1Level_q15[i], ADSR1toDETUNE1_scale_q24);
+        ADSRModifier_q24 = applyDepthQ24(env_dco_pitch_wave_q15(ADSR1Level_q15[i]),
+                                         ADSR1toDETUNE1_scale_q24);
       }
       // ADSR3→pitch select:
       //   0 = OSC1, 1 = OSC2, 2 = OSC1+OSC2 (legacy), 3 = OSC3, 4 = all three
@@ -1276,7 +1283,8 @@ void __not_in_flash_func(voice_task_float)() {
       BENCH_BEGIN(vt_adsr_mod);
       float ADSRModifier = 0.0f;
       if (ADSR1toDETUNE1_scale_q24 != 0) {
-        ADSRModifier = q24_to_float(applyDepthQ24(ADSR1Level_q15[i], ADSR1toDETUNE1_scale_q24));
+        ADSRModifier = q24_to_float(applyDepthQ24(
+            env_dco_pitch_wave_q15(ADSR1Level_q15[i]), ADSR1toDETUNE1_scale_q24));
       }
       float ADSRModifierOSC1 = (ADSR3ToOscSelect == 0 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier : 0.0f;
       float ADSRModifierOSC2 = (ADSR3ToOscSelect == 1 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier : 0.0f;
@@ -1284,23 +1292,36 @@ void __not_in_flash_func(voice_task_float)() {
       BENCH_END(vt_adsr_mod);
 
       BENCH_BEGIN(vt_unison_mod);
-      // --- 2.5 Unison modifier (float equivalent) ---
-      static constexpr float UNISON_SCALE = 0.0001f; // from original Q24 constant
+      // --- 2.5 Unison modifier (float equivalent of Q24 0.0001 * unisonDetune * step) ---
+      static constexpr float UNISON_SCALE = 0.0001f;
       static constexpr int32_t OSC_UNISON_STEP[3] = { 0, 1, -1 };
-      float unisonMODIFIER_OSC1 = (float)unisonDetune * UNISON_SCALE * (float)OSC_UNISON_STEP[0];
-      float unisonMODIFIER_OSC2 = (float)unisonDetune * UNISON_SCALE * (float)OSC_UNISON_STEP[1];
-      float unisonMODIFIER_OSC3 = (float)unisonDetune * UNISON_SCALE * (float)OSC_UNISON_STEP[2];
+      const float unisonBase = (float)unisonDetune * UNISON_SCALE;
+      float unisonMODIFIER_OSC1 = unisonBase * (float)OSC_UNISON_STEP[0];
+      float unisonMODIFIER_OSC2 = unisonBase * (float)OSC_UNISON_STEP[1];
+      float unisonMODIFIER_OSC3 = unisonBase * (float)OSC_UNISON_STEP[2];
+#if NUM_VOICES_TOTAL > 1
+      // Classic poly voice-index alternating pattern on top of per-osc spread.
+      float voiceMag = (float)((i >> 1) + 1);
+      float voiceSign = ((i & 0x01) == 0) ? 1.0f : -1.0f;
+      float voiceUnison = unisonBase * (voiceSign * voiceMag);
+      unisonMODIFIER_OSC1 += voiceUnison;
+      unisonMODIFIER_OSC2 += voiceUnison;
+      unisonMODIFIER_OSC3 += voiceUnison;
+#endif
       BENCH_END(vt_unison_mod);
 
       BENCH_BEGIN(vt_drift_mod);
-      // Snapshot Core 0 mailbox once (same as fixed engine).
-      float driftScale = q24_to_float(drift_pitch_scale_q24) * (1.0f / 32767.0f);
+      // Snapshot Core 0 mailbox once, then applyDepthQ24 (same as fixed / ADSR detune).
+      const int32_t driftScale_q24 = drift_pitch_scale_q24;
       const int16_t driftA = LFO_DRIFT_LEVEL[DCO_A];
       const int16_t driftB = LFO_DRIFT_LEVEL[DCO_B];
       const int16_t driftC = LFO_DRIFT_LEVEL[DCO_C];
-      float DETUNE_DRIFT_OSC1 = (drift_pitch_scale_q24 != 0) ? (float)driftA * driftScale : 0.0f;
-      float DETUNE_DRIFT_OSC2 = (drift_pitch_scale_q24 != 0) ? (float)driftB * driftScale : 0.0f;
-      float DETUNE_DRIFT_OSC3 = (drift_pitch_scale_q24 != 0) ? (float)driftC * driftScale : 0.0f;
+      float DETUNE_DRIFT_OSC1 =
+        (driftScale_q24 != 0) ? q24_to_float(applyDepthQ24(driftA, driftScale_q24)) : 0.0f;
+      float DETUNE_DRIFT_OSC2 =
+        (driftScale_q24 != 0) ? q24_to_float(applyDepthQ24(driftB, driftScale_q24)) : 0.0f;
+      float DETUNE_DRIFT_OSC3 =
+        (driftScale_q24 != 0) ? q24_to_float(applyDepthQ24(driftC, driftScale_q24)) : 0.0f;
       BENCH_END(vt_drift_mod);
 
       float freqModifiers1;

@@ -496,7 +496,7 @@ GOLD_REF / GOLD_LIVE / FLOAT_LIVE / Q16 / Q8 / FAST_Q4 speed/accuracy on **both*
 
 ### `adsr.h`
 
-Globals / instances. **No function definitions.**
+Globals / instances. `env_dco_pitch_centered` + `env_dco_pitch_wave_q15()` (EnvDCO → pitch tap; [`LFO.md`](LFO.md)).
 
 ### `adsr.ino`
 
@@ -805,7 +805,7 @@ Prototype. **No function definitions.**
 - `serial_usb_task()` — Same pump for USB CDC: second `SerialParserContext`, same LUT. Guarded by `ENABLE_USB_CONTROL`; returns if `!Serial`. `__not_in_flash_func`. See [`tools/dco_control`](../tools/dco_control/README.md).
   - **Called from:** `loop()` when `timer1msFlag`.
   - **When:** Realtime Core0, ~1 ms, only when `ENABLE_USB_CONTROL` is defined and CDC is open.
-- `serialSendParam32()` — Legacy `'x'` TX (id + u32 LE + finish) out Serial2 TX 20 into Input `Serial1` RX GP1 (gap 154, cal 155; Input relays 154 to Screen). Bypasses `serial_frame_write()` until Input is updated. Drops if `availableForWrite() < 1`.
+- `serialSendParam32()` — Slim `'x'` TX via `serial_frame_write` (id + u32 LE, 5 B) out Serial2 TX 20 into Input `Serial1` RX GP1 (gap 154, cal 155; Input relays 154 to Screen). Drops if `availableForWrite() < 1`.
   - **Called from:** `apply_param_manual_calibration_flag()`; `DCO_calibration_debug()`.
   - **When:** Manual-cal param / live gap report.
 
@@ -819,7 +819,7 @@ Command bytes + payload sizes + `serial_input_payload_len()`. **No other functio
 
 ### `serial_frame.h`
 
-Inner pack/unpack + buffer COBS encode/decode + `serial_frame_stuff` / `unstuff` / `write()`. Default `SERIAL_FRAMING_RAW` (on-wire = inner). `#define SERIAL_FRAMING_COBS` in `DCO.ino` wraps `COBS(inner)+0x00`. `#error` if both flags are forced. `SERIAL_FRAME_DELIMITER` `0x00` never a command. Codec has no Stream type — UART today, SPI later.
+Inner pack/unpack + buffer COBS encode/decode + `serial_frame_stuff` / `unstuff` / `write()`. Default `SERIAL_FRAMING_RAW` (on-wire = inner). `#define SERIAL_FRAMING_COBS` in `DCO.ino` wraps `COBS(inner)+0x00`. `#error` if both flags are forced. `SERIAL_INNER_MAX_PAYLOAD` overridable (`#ifndef`, default 8; Input/Screen set 17). `SERIAL_FRAME_DELIMITER` `0x00` never a command. Codec has no Stream type — UART today, SPI later.
 
 **Functions**
 - `serial_cobs_encode()` / `serial_cobs_decode()` — Buffer COBS; decode src has no trailing `0x00`.
@@ -829,18 +829,18 @@ Inner pack/unpack + buffer COBS encode/decode + `serial_frame_stuff` / `unstuff`
 - `serial_frame_stuff()` / `serial_frame_unstuff()` — Inner ↔ on-wire (RAW copy or COBS+`0x00`).
   - **Called from:** `serial_frame_write()`; parser COBS path.
 - `serial_frame_write()` — Stuff into a stack buffer, `stream.write(...)`.
-  - **Called from:** **none yet on DCO TX** — RX is parsed; slim TX will use this when Input updates. Legacy `'x'` still uses `serialSendParam32()`.
+  - **Called from:** `serialSendParam32()` (slim `'x'`). Input/Screen TX uses the same helper.
 
 ### `serial_param_protocol.h`
 
 **Functions**
 - `decode_u16_le()` / `decode_i16_le()` / `decode_u32_le()` / `encode_u16_le()` / `encode_u32_le()` — LE helpers.
-  - **Called from:** ADSR/filter handlers; `decode_param_p`; `encode_param32_legacy`.
+  - **Called from:** ADSR/filter handlers; `decode_param_p` / `encode_param32`.
 - `decode_param_p()` — Decode `'p'` `[id][i16 LE]`.
   - **Called from:** `input_handle_param16()`.
 - `encode_param_p()` — Encode `'p'` payload.
-  - **Called from:** **none on DCO** (host tool / future Input TX).
-- `encode_param32_legacy()` — Encode legacy `'x'` payload (id + u32 LE + finish).
+  - **Called from:** **none on DCO** (Input TX / host tool).
+- `encode_param32()` — Encode slim `'x'` payload (id + u32 LE).
   - **Called from:** `serialSendParam32()`.
 
 ### `serial_parser.h`
@@ -917,6 +917,7 @@ Non-blocking inner-frame parser. RAW: cmd LUT + fixed payload. COBS (`SERIAL_FRA
 - `apply_param_lfo2_to_pw()` — LFO2→PW depth.
 - `apply_param_adsr1_to_pwm()` — ADSR→PWM depth (`PARAM_ADSR3_TO_PWM`).
 - `apply_param_adsr1_to_detune1()` — ADSR→detune + Q24 scale.
+- `apply_param_adsr3_pitch_mode()` — `PARAM_ADSR3_PITCH_MODE` (223): EnvDCO pitch tap unipolar/centered → `env_dco_pitch_centered`. See [`LFO.md`](LFO.md).
 - `apply_param_adsr1_curve()` — Attack curve hook (light/reserved).
 - `apply_param_adsr2_curve()` — Decay curve hook (light/reserved).
 - `apply_param_pw_value()` — Pulse width → `PW[0] = v / 4` (`PARAM_PW_VALUE`).

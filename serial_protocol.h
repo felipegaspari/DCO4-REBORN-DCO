@@ -3,7 +3,6 @@
 
 // Mainboard↔DCO command set ('n'/'o'/'s'/'f' LE PW, finish-byte 'p'/'w'/'x') is retired.
 // Live inner protocol: serial_input_protocol.h (+ serial_frame.h for on-wire wrapping).
-// Legacy DCO→Input TX 'x' (gap/cal) still uses INPUT_CMD_PARAM_32_LEGACY until Input updates.
 
 #include "serial_input_protocol.h"
 

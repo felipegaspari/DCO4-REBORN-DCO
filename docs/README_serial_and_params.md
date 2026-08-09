@@ -12,8 +12,8 @@ speaks the same inner frames for [`tools/dco_control`](../tools/dco_control/READ
 |--------|------|
 | `params_def.h` | Canonical `enum ParamId : uint16_t` (wire id is still `uint8`) |
 | `param_router.h` | `ParamDescriptorT` table + O(1) jump dispatch |
-| `serial_input_protocol.h` | Command bytes + payload sizes (`'a'`–`'d'`, `'p'`, `'q'`) |
-| `serial_param_protocol.h` | LE encode/decode for `'p'`; legacy `'x'` TX helper |
+| `serial_input_protocol.h` | Command bytes + payload sizes (`'a'`–`'d'`, `'p'`, `'q'`, `'x'`) |
+| `serial_param_protocol.h` | LE encode/decode for `'p'` / `'w'` / `'x'` |
 | `serial_frame.h` | Buffer COBS encode/decode + `serial_frame_stuff` / `unstuff` / `write()`. Default RAW; `#define SERIAL_FRAMING_COBS` wraps `COBS(inner)+0x00` |
 | `serial_parser.h` | Non-blocking parser: 256-entry cmd LUT, idle timeout (`SERIAL_FRAME_TIMEOUT_US` = 500 µs), drain budget 64. RAW fixed-length or COBS accumulate-until-`0x00` |
 | `serial_protocol.h` | Compatibility stub → `serial_input_protocol.h` (Mainboard `'n'`/`'o'`/`'s'` retired) |
@@ -34,12 +34,11 @@ Little-endian multi-byte fields. No finish byte. `0x00` is reserved (COBS delimi
 | `'d'` | 8 | `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF` + scale bake |
 | `'p'` | 3 | `[id:u8][value:i16]` → `update_parameters` |
 | `'q'` | 8 | Preset name, 8 ASCII chars |
+| `'x'` | 5 | DCO→Input `[id:u8][value:u32 LE]` (gap 154 / cal 155); `serial_frame_write` |
 
 On-wire **default** = inner (RAW). **`#define SERIAL_FRAMING_COBS`:** `COBS(cmd+payload) + 0x00`. Handlers still see inner only. Host A/B: `dco_control --cobs` or `DCO_SERIAL_COBS=1` (must match firmware or controls look ignored). Codec is buffer-in/buffer-out so a later SPI link can reuse `serial_frame_unstuff` after reading until `0x00`.
 
-**DCO → Input TX** still uses legacy `'x'` + id + u32 LE + finish=1 (`serialSendParam32`, gap 154 / cal 155) until Input is updated. That path bypasses `serial_frame_write()`.
-
-The Input board still *sends* the old BE + `'w'`/`'e'`/`'f'` + finish format. Flash Input before using the panel UART; USB `dco_control` is the live path.
+**Input and Screen speak the same slim inner protocol.** Flash all three boards together. `SERIAL_INNER_MAX_PAYLOAD` defaults to 8 (DCO); Input/Screen override to 17 for Screen `'q'` scroll. Screen-only cmds (`'w'`/`'y'`/`'s'`/`'c'`, 17-byte `'q'`) never reach DCO. Former `'e'`/`'f'` are `'p'` ids 222 / 210. `SERIAL_FRAMING_COBS` must match on all three (commented = RAW).
 
 ---
 

@@ -27,12 +27,14 @@
 
 static constexpr uint8_t SERIAL_FRAME_DELIMITER = 0x00;
 
-// Largest inner payload among current commands (ADSR / filter / preset = 8).
-static constexpr uint8_t SERIAL_INNER_MAX_PAYLOAD = 8;
+// Largest inner payload. DCO default 8; Input/Screen set 17 before include (Screen 'q').
+#ifndef SERIAL_INNER_MAX_PAYLOAD
+#define SERIAL_INNER_MAX_PAYLOAD 8
+#endif
 
 // Stuffed-frame buffer: inner (1+payload) + COBS worst-case (+1 per 254) + delimiter.
 static constexpr uint8_t SERIAL_STUFFED_MAX =
-    (uint8_t)(1u + SERIAL_INNER_MAX_PAYLOAD + 1u + 1u);  // 11
+    (uint8_t)(1u + SERIAL_INNER_MAX_PAYLOAD + 1u + 1u);
 
 // Pack inner [cmd][payload] into dst. Returns inner length (1 + payload_len).
 static inline uint8_t serial_inner_pack(uint8_t* dst, uint8_t cmd,

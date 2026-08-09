@@ -7,7 +7,8 @@
 // Decode / encode helpers for parameter payloads (inner frame, after framing).
 //
 //   'p' : [id:u8][value:i16 LE]
-//   'x' legacy TX : [id:u8][value:u32 LE][finish=1]  — DCO→Input only
+//   'w' : [id:u8][value:u8]          — Screen UI only (Input→Screen)
+//   'x' : [id:u8][value:u32 LE]
 
 struct ParamFrame {
   uint8_t id;
@@ -52,12 +53,28 @@ static inline uint8_t encode_param_p(uint8_t* dst, uint8_t id, int16_t value) {
   return INPUT_SERIAL_LEN_PARAM_16;
 }
 
-// Legacy 6-byte 'x' payload (id + u32 LE + finish=1) for DCO→Input until Input updates.
-static inline uint8_t encode_param32_legacy(uint8_t* dst, uint8_t id, uint32_t value) {
+static constexpr uint8_t SERIAL_LEN_PARAM_8 = 2;  // Screen 'w': [id][u8]
+
+static inline void decode_param_w(const uint8_t* payload, ParamFrame& out) {
+  out.id = payload[0];
+  out.value = (int8_t)payload[1];
+}
+
+static inline uint8_t encode_param_w(uint8_t* dst, uint8_t id, uint8_t value) {
+  dst[0] = id;
+  dst[1] = value;
+  return SERIAL_LEN_PARAM_8;
+}
+
+static inline void decode_param_x(const uint8_t* payload, ParamFrame& out) {
+  out.id = payload[0];
+  out.value = (int32_t)decode_u32_le(payload + 1);
+}
+
+static inline uint8_t encode_param32(uint8_t* dst, uint8_t id, uint32_t value) {
   dst[0] = id;
   encode_u32_le(dst + 1, value);
-  dst[5] = 1;
-  return INPUT_SERIAL_LEN_PARAM_32_LEGACY;
+  return INPUT_SERIAL_LEN_PARAM_32;
 }
 
 #endif  // SERIAL_PARAM_PROTOCOL_H

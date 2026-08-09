@@ -483,6 +483,11 @@ static void apply_param_adsr1_to_detune1(int16_t v) {
   }
 }
 
+// PARAM_ADSR3_PITCH_MODE: EnvDCO → pitch tap. 0 unipolar (default), 1 centered.
+static void apply_param_adsr3_pitch_mode(int16_t v) {
+  env_dco_pitch_centered = (v != 0) ? 1 : 0;
+}
+
 // PARAM_ADSR1_ATTACK_CURVE / DECAY: EnvVCA curve shape.
 static void apply_param_adsr1_attack_curve(int16_t v) {
   ADSR1AttackCurveVal = (uint8_t)v;
@@ -842,6 +847,7 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_LFO2_TO_PW,                apply_param_lfo2_to_pw },
   { PARAM_ADSR3_TO_PWM,              apply_param_adsr1_to_pwm },
   { PARAM_ADSR3_TO_DETUNE1,          apply_param_adsr1_to_detune1 },
+  { PARAM_ADSR3_PITCH_MODE,          apply_param_adsr3_pitch_mode },
   { PARAM_ADSR1_ATTACK_CURVE,        apply_param_adsr1_attack_curve },
   { PARAM_ADSR1_DECAY_CURVE,         apply_param_adsr1_decay_curve },
   { PARAM_ADSR2_ATTACK_CURVE,        apply_param_adsr2_attack_curve },

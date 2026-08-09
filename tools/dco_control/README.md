@@ -267,5 +267,5 @@ finish byte.
   `linearToExponential(v, 50, 25000)` from the Input board so a slider here feels like the
   physical fader. The CC layer in the firmware applies the same curve, for the same reason.
 
-The Input board firmware still speaks the old BE + finish format until it is updated;
-this tool talks to the DCO over USB only.
+Input and Screen use the same slim inner frames (LE, no finish). Flash all three together.
+This tool talks to the DCO over USB CDC; `--cobs` must match `SERIAL_FRAMING_COBS` on the MCU.

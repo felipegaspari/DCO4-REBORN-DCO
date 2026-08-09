@@ -169,17 +169,13 @@ void __not_in_flash_func(serial_usb_task)() {
 
 #endif  // ENABLE_USB_CONTROL
 
-// TX legacy 'x' to Input: gap (154) and cal offsets (155). Input relays 154 on to Screen.
-// Bypasses serial_frame_write() until Input speaks the slim inner protocol.
+// TX slim 'x' to Input: gap (154) and cal offsets (155). Input relays 154 on to Screen.
 // Drop the frame if Serial2 TX is not ready (USB-only bench with no Input board).
 void serialSendParam32(byte paramNumber, uint32_t paramValue) {
   if (Serial2.availableForWrite() < 1) {
     return;
   }
-  uint8_t payload[INPUT_SERIAL_LEN_PARAM_32_LEGACY];
-  encode_param32_legacy(payload, (uint8_t)paramNumber, paramValue);
-  uint8_t frame[1 + INPUT_SERIAL_LEN_PARAM_32_LEGACY];
-  frame[0] = INPUT_CMD_PARAM_32_LEGACY;
-  memcpy(frame + 1, payload, INPUT_SERIAL_LEN_PARAM_32_LEGACY);
-  Serial2.write(frame, sizeof(frame));
+  uint8_t payload[INPUT_SERIAL_LEN_PARAM_32];
+  encode_param32(payload, (uint8_t)paramNumber, paramValue);
+  serial_frame_write(Serial2, INPUT_CMD_PARAM_32, payload, INPUT_SERIAL_LEN_PARAM_32);
 }
