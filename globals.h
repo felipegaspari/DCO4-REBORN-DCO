@@ -6,17 +6,16 @@
 
 
 
-// Voice / oscillator counts (this board: 3 DCOs, up to 3 voice slots).
-//   NUM_OSCILLATORS     — physical DCOs (RANGE/RESET/PIO, amp-comp, drift, PW).
-//   NUM_VOICES_TOTAL    — voice-slot capacity (MIDI/ADSR/flags). Equals OSC for 1:1 para.
-//   NUM_VOICES_VOICE_TASK — legacy mono bind (=1); voice_task now loops NUM_VOICES_TOTAL.
+// Voice / oscillator counts (4 MIDI voices × 2 analog DCOs).
+//   NUM_OSCILLATORS     — physical DCOs (RANGE/RESET/PIO, amp-comp, drift).
+//   NUM_VOICES_TOTAL    — voice-slot capacity (MIDI/ADSR/flags/PW).
 //   NUM_VOICES / STACK_VOICES (runtime below) — from setVoiceMode():
-//     0 mono: one MIDI voice → oscs 0..2
-//     1 paraphonic: voice i → osc i (planned)
-//     2 stub: DCO4 stack leftover (no new behavior yet)
-#define NUM_VOICES_TOTAL 3
-#define NUM_VOICES_VOICE_TASK 1
-#define NUM_OSCILLATORS 3
+//     0 mono:  one MIDI voice → osc pair 0/1
+//     1 poly:  4 independent 2-osc voices
+//     2 stack: all 4 voices, same note
+#define NUM_VOICES_TOTAL 4
+#define NUM_OSCILLATORS 8
+#define NUM_PW_CHANNELS NUM_VOICES_TOTAL
 #ifndef NUM_FILTERS
 #define NUM_FILTERS 2
 #endif
@@ -138,24 +137,16 @@ float BASE_NOTE = 440.0f;
 // static constexpr uint8_t RESET_PINS[8] = { 28, 26, 19, 18, 15, 13, 12, 8 };
 // static constexpr uint8_t RANGE_PINS[8] = { 27, 22, 17, 16, 14, 11,  9,  7 };
 
-// Temporary: OSC1–3 RESET/RANGE = DCO4 global OSC 3/4/5 (WEACT indices 2–4).
+// Live WEACT 8-osc RESET/RANGE/PW/cal (old DCO4). CV/mux in PINOUT.md is DCO3 leftover — not live.
 // GPIO 24 is board fix-rail (see DCO.ino), not a DCO output.
 //
-// Hub + CV absorption (Mainboard retire) — provisional map:
-//   docs/PINOUT.md , docs/MAINBOARD_ABSORPTION.md
-//   Input UART  GP20 TX / GP21 RX  (recycle today's Mainboard Serial2)
-//   Screen UART GP8  TX / GP9  RX
-//   DIN MIDI    GP0/GP1 via PIO UART (interim: keep HW UART on 0/1)
-//   Cutoff      GP15, GP4   Reso GP5, GP7   VCA GP11
-//   Dist Drive  GP9         Dist Mix GP26 (slice 5 A with VCA on 5 B)
-//   74HC595     GP12/13/14
-//   OSC1..3+Sub level PWM → analog level VCAs (I2C level DAC removed):
-//     GP16 / GP18 (ex-I2C); OSC3/Sub on freed Dist pins when ENABLE_VOICE_AUX,
-//     else RP2350B GP32/33. GP2 aliases GP18; GP6 aliases RANGE OSC2 — do not use.
+// Hub UART:
+//   Input UART  GP20 TX / GP21 RX
+//   DIN MIDI    GP0/GP1 (HW UART0 interim; PIO UART later)
+// SUB ×4 GPIOs TBD (`SUBOSC_PINS[]` still 0xFF). GP8 is OSC8 RESET — not sub-osc.
 //
 // CV PWM wrap is 4095 except Reso1 (GP7): shares slice 3 with RANGE OSC2 (GP22),
-// so that channel scales duty into DIV_COUNTER (see write_cv_pwm). OSC1 level
-// shares slice 0 with RANGE OSC3; OSC2 level shares slice 1 with PW — same idea.
+// so that channel scales duty into DIV_COUNTER (see write_cv_pwm).
 #if defined(ENABLE_CV_OUTS) || defined(ENABLE_WAVE_MUX)
 static constexpr uint8_t CUTOFF_PINS[NUM_FILTERS] = { 15, 4 };
 static constexpr uint8_t RESO_PINS[NUM_FILTERS]   = { 5, 7 };
@@ -177,46 +168,43 @@ static constexpr uint8_t SUB_LEVEL_PIN            = 33;  // RP2350B provisional
 static constexpr uint16_t DIV_COUNTER_CV          = 4095;
 #endif
 
-static constexpr uint8_t RESET_PINS[NUM_OSCILLATORS] = { 19, 18, 15 };
-static constexpr uint8_t RANGE_PINS[NUM_OSCILLATORS] = { 17, 16, 14 };
+static constexpr uint8_t RESET_PINS[NUM_OSCILLATORS] = { 29, 27, 19, 18, 15, 13, 12, 8 };
+static constexpr uint8_t RANGE_PINS[NUM_OSCILLATORS] = { 28, 22, 17, 16, 14, 11, 9, 7 };
 
-// Freq SMs all live on pio0 so that the sideset hard-sync path works: a GPIO's
-// function select can name only one PIO block, so oscillators spread across
-// pio0/1/2 could not share a reset pin — `pio_gpio_init` on the second block
-// simply stole the pin from the first. State machines inside one block do share
-// the function select, which is why this worked on DCO4.
-static constexpr uint8_t VOICE_TO_PIO[NUM_OSCILLATORS] = { 0, 0, 0 };
+// Freq SMs: voices 0–1 on pio0 (osc 0–3), voices 2–3 on pio1 (osc 4–7).
+// A voice pair always shares a PIO block so hard-sync sideset can share RESET.
+static constexpr uint8_t VOICE_TO_PIO[NUM_OSCILLATORS] = { 0, 0, 0, 0, 1, 1, 1, 1 };
 
-// Mutable: the slave always takes the lower SM index. When two SMs write the same
-// pin on the same cycle the higher-numbered SM wins, so the master must outrank
-// its slave or it would occasionally lose a sync edge. Rewritten by
+// Mutable local SM index within each PIO block. Slave always takes the lower SM
+// so the master outranks it on a same-cycle sideset tie. Rewritten by
 // assign_sm_mapping() whenever syncMode changes.
-uint8_t VOICE_TO_SM[NUM_OSCILLATORS] = { 0, 1, 2 };
+uint8_t VOICE_TO_SM[NUM_OSCILLATORS] = { 0, 1, 2, 3, 0, 1, 2, 3 };
 
-// pio1: sub-oscillator (SM0) + noise LFSR (SM1). pio2 reserved for ENABLE_PIO_MIDI.
-static constexpr uint8_t SUBOSC_PIO = 1;
-static constexpr uint8_t SUBOSC_SM = 0;
+// Noise PIO LFSR is not used (CPU DCO_Noise only). Constants kept for dcoNoisePioBegin no-op.
 static constexpr uint8_t NOISE_PIO = 1;
 static constexpr uint8_t NOISE_SM = 1;
-// Spare GP2: digital white bitstream when ENABLE_NOISE_OUT (see DCO.ino).
 static constexpr uint8_t NOISE_OUT_PIN = 2;
 
-// Pulse-width PWM: one pin per oscillator (new board; DCO4 had one PW per voice).
-// 0xFF = not wired yet — init_pwm / reset_pw skip those entries. Replace [1]/[2] when HW is known.
+// Pulse-width PWM: one pin per MIDI voice (old DCO4). 0xFF = not wired.
 static constexpr uint8_t PW_PIN_UNASSIGNED = 0xFF;
-static constexpr uint8_t PW_PINS[NUM_OSCILLATORS] = { 3, PW_PIN_UNASSIGNED, PW_PIN_UNASSIGNED };
+static constexpr uint8_t PW_PINS[NUM_PW_CHANNELS] = { 3, 2, 4, 5 };
 
-// Sub-oscillator square output. GP8 was freed when the SerialPIO screen UART was
-// removed; needs a mixer input on the carrier before it does anything audible.
-static constexpr uint8_t SUBOSC_PIN = 8;
+// RP2350: one sub-osc SM per voice on pio2. Pinout later (0xFF = skip gpio init).
+static constexpr uint8_t SUBOSC_PIN_UNASSIGNED = 0xFF;
+#if defined(PICO_RP2350)
+static constexpr uint8_t SUBOSC_PIO = 2;
+static constexpr uint8_t SUBOSC_PINS[NUM_VOICES_TOTAL] = {
+  SUBOSC_PIN_UNASSIGNED, SUBOSC_PIN_UNASSIGNED, SUBOSC_PIN_UNASSIGNED, SUBOSC_PIN_UNASSIGNED
+};
+#endif
 
-// Temporary A/B: was 10. GP25 aborted (Pico LED / not on header). Header spare GP6.
-static constexpr int DCO_calibration_pin = 6;
+// Old DCO4 cal sense. GP6 is free (later SUB candidate). GP25 is Pico LED — not cal.
+static constexpr int DCO_calibration_pin = 10;
 
 uint8_t RANGE_PWM_SLICES[NUM_OSCILLATORS];
 uint8_t RANGE_PWM_CHANNELS[NUM_OSCILLATORS];
 uint8_t VCO_PWM_SLICES[NUM_OSCILLATORS];
-uint8_t PW_PWM_SLICES[NUM_OSCILLATORS];
+uint8_t PW_PWM_SLICES[NUM_PW_CHANNELS];
 #ifdef ENABLE_CV_OUTS
 uint8_t CUTOFF_PWM_SLICES[NUM_FILTERS];
 uint8_t CUTOFF_PWM_CHANS[NUM_FILTERS];
@@ -240,25 +228,27 @@ uint8_t SUB_LEVEL_PWM_SLICE;
 uint8_t SUB_LEVEL_PWM_CHAN;
 #endif
 
-uint16_t PW_CENTER[NUM_OSCILLATORS] = { 570, 570, 570 };
-uint16_t PW_LOW_LIMIT[NUM_OSCILLATORS] = { 0, 0, 0 };
-uint16_t PW_HIGH_LIMIT[NUM_OSCILLATORS] = { DIV_COUNTER_PW, DIV_COUNTER_PW, DIV_COUNTER_PW };
+uint16_t PW_CENTER[NUM_PW_CHANNELS] = { 570, 552, 540, 553 };
+uint16_t PW_LOW_LIMIT[NUM_PW_CHANNELS] = { 0, 0, 0, 0 };
+uint16_t PW_HIGH_LIMIT[NUM_PW_CHANNELS] = {
+  DIV_COUNTER_PW, DIV_COUNTER_PW, DIV_COUNTER_PW, DIV_COUNTER_PW
+};
 uint16_t PW_LOOKUP[3] = { 0, (DIV_COUNTER_PW / 2) - 1, DIV_COUNTER_PW - 1 };
-uint16_t PW_PWM[NUM_OSCILLATORS];
+uint16_t PW_PWM[NUM_PW_CHANNELS];
 
 volatile uint32_t VOICES[NUM_VOICES_TOTAL];
 volatile uint8_t VOICES_LAST[NUM_VOICES_TOTAL];
-volatile uint8_t VOICES_LAST_SEQUENCE[NUM_VOICES_TOTAL] = { 0, 1, 2 };
+volatile uint8_t VOICES_LAST_SEQUENCE[NUM_VOICES_TOTAL] = { 0, 1, 2, 3 };
 volatile uint8_t VOICE_NOTES[NUM_VOICES_TOTAL];
 volatile uint8_t NEXT_VOICE = 0;
 
 uint32_t LED_BLINK_START = 0;
 
-// PIO state machines for RP2350 Pico
-// PIO pio[3] = { pio0, pio1, pio2 };
-
-//PIO state machines for RP2040 (legacy)
-PIO pio[2] = { pio0, pio1};
+#if defined(PICO_RP2350)
+PIO pio[3] = { pio0, pio1, pio2 };
+#else
+PIO pio[2] = { pio0, pio1 };
+#endif
 
 uint8_t midi_serial_status = 0;
 int midi_pitch_bend = 8192, last_midi_pitch_bend = 8192;
@@ -288,27 +278,29 @@ void voice_task_main();
 void adc_task();
 
 
-// Free-running program stays resident in pio0; exactly one soft-sync poll image
-// sits beside it (swapped when softSyncChunks changes among 1/2/3). An SM points
-// at whichever its role needs. PIO1 holds noise_lfsr (origin 0, SM1) and sub-osc (SM0).
-uint32_t pio_offset_free = 0;
-uint32_t pio_offset_sync = 0;
-uint8_t pio_loaded_sync_chunks = 0;  // 0 = none; else 1..3 matching the resident poll image
+// Free-running program + one soft-sync poll image per freq PIO block (pio0 and pio1).
+uint32_t pio_offset_free[2] = { 0, 0 };
+uint32_t pio_offset_sync[2] = { 0, 0 };
+uint8_t pio_loaded_sync_chunks[2] = { 0, 0 };  // 0 = none; else 1..3
 uint32_t subosc_offset_div2 = 0;
 uint32_t subosc_offset_div4 = 0;
-uint32_t noise_lfsr_offset = 0;
 
 // Per-oscillator PIO state: which resident program the SM runs, and the reset
 // pulse width (Y) last pushed to it. Y is only rewritten at note-on — see
 // pio_period_split() for why it cannot safely be updated every control frame.
-bool osc_uses_sync_program[NUM_OSCILLATORS] = { false, false, false };
-uint32_t osc_last_y[NUM_OSCILLATORS] = { pioPulseLength, pioPulseLength, pioPulseLength };
+bool osc_uses_sync_program[NUM_OSCILLATORS] = {
+  false, false, false, false, false, false, false, false
+};
+uint32_t osc_last_y[NUM_OSCILLATORS] = {
+  pioPulseLength, pioPulseLength, pioPulseLength, pioPulseLength,
+  pioPulseLength, pioPulseLength, pioPulseLength, pioPulseLength
+};
 
 // Last clk_div handed to each SM. Writing Y consumes the OSR, so clk_div always has to
 // be re-pushed afterwards; without a remembered value the SM would read a shifted-out
 // OSR as its ramp count and shriek for one control frame. 200 is the slow "park" rate
 // used elsewhere during calibration.
-uint32_t osc_last_clk_div[NUM_OSCILLATORS] = { 200, 200, 200 };
+uint32_t osc_last_clk_div[NUM_OSCILLATORS] = { 200, 200, 200, 200, 200, 200, 200, 200 };
 
 // Soft sync: number of trailing ramp chunks that poll the master's reset pin.
 // 0 = hard sync through the sideset pin (no resolution cost).
@@ -366,21 +358,24 @@ static inline uint8_t soft_sync_chunks_clamped() {
 }
 
 static inline uint32_t osc_program_base(uint8_t osc) {
-  return osc_uses_sync_program[osc] ? pio_offset_sync : pio_offset_free;
+  const uint8_t blk = VOICE_TO_PIO[osc];
+  return osc_uses_sync_program[osc] ? pio_offset_sync[blk] : pio_offset_free[blk];
 }
 
 static inline uint32_t osc_restart_target(uint8_t osc) {
+  const uint8_t blk = VOICE_TO_PIO[osc];
   if (!osc_uses_sync_program[osc]) {
-    return pio_offset_free + PIO_RESTART_ADDR_FREE;
+    return pio_offset_free[blk] + PIO_RESTART_ADDR_FREE;
   }
-  return pio_offset_sync + PIO_RESTART_ADDR_SYNC[soft_sync_chunks_clamped()];
+  return pio_offset_sync[blk] + PIO_RESTART_ADDR_SYNC[soft_sync_chunks_clamped()];
 }
 
 static inline uint32_t osc_phase_hold_target(uint8_t osc) {
+  const uint8_t blk = VOICE_TO_PIO[osc];
   if (!osc_uses_sync_program[osc]) {
-    return pio_offset_free + PIO_PHASE_HOLD_ADDR_FREE;
+    return pio_offset_free[blk] + PIO_PHASE_HOLD_ADDR_FREE;
   }
-  return pio_offset_sync + PIO_PHASE_HOLD_ADDR_SYNC[soft_sync_chunks_clamped()];
+  return pio_offset_sync[blk] + PIO_PHASE_HOLD_ADDR_SYNC[soft_sync_chunks_clamped()];
 }
 
 // X preload for osc_phase_align_hold_stopped so the first flyback lands at
@@ -396,13 +391,14 @@ static inline uint32_t osc_phase_hold_x(uint32_t total_cycles, uint16_t deg) {
 
 static inline uint32_t osc_ramp_entry_target(uint8_t osc, uint8_t quarters) {
   quarters &= 3;
+  const uint8_t blk = VOICE_TO_PIO[osc];
   if (!osc_uses_sync_program[osc]) {
-    return pio_offset_free + PIO_RAMP_ENTRY_FREE[quarters];
+    return pio_offset_free[blk] + PIO_RAMP_ENTRY_FREE[quarters];
   }
   switch (soft_sync_chunks_clamped()) {
-    case 2:  return pio_offset_sync + PIO_RAMP_ENTRY_SYNC_2[quarters];
-    case 3:  return pio_offset_sync + PIO_RAMP_ENTRY_SYNC_3[quarters];
-    default: return pio_offset_sync + PIO_RAMP_ENTRY_SYNC_1[quarters];
+    case 2:  return pio_offset_sync[blk] + PIO_RAMP_ENTRY_SYNC_2[quarters];
+    case 3:  return pio_offset_sync[blk] + PIO_RAMP_ENTRY_SYNC_3[quarters];
+    default: return pio_offset_sync[blk] + PIO_RAMP_ENTRY_SYNC_1[quarters];
   }
 }
 
@@ -489,7 +485,7 @@ uint16_t OSC3DetuneVal = 256;
 
 bool PWMPotsControlManual;
 
-uint16_t PW[NUM_OSCILLATORS];  // panel / mod PW target per oscillator
+uint16_t PW[NUM_PW_CHANNELS];  // panel / mod PW target per voice
 
 void serial_panel_task();
 float get_chan_level(float freq_to_amp_comp);

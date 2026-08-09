@@ -221,7 +221,7 @@ void note_on(uint8_t note, uint8_t velocity) {
       break;
 
     case 2:
-      // Mode 2 stub: fill all capacity slots (DCO4 stack). Engine still only runs VOICE_TASK.
+      // Mode 2 stack: same note on all voice slots.
       for (int i = 0; i < NUM_VOICES_TOTAL; i++)
       {
         VOICES[i] = 1;

@@ -16,14 +16,14 @@ For how the refactored files are split today (`autotune_context.h`, `autotune_me
 
 ### Hardware Context (high level)
 
-- **MCU**: RP2040 / RP2350 (Pico 2 monosynth board).
-- **Architecture**: 1 MIDI voice × **3 oscillators** (OSC1–3).
+- **MCU**: RP2040 / RP2350 (WEACT / Pico-class).
+- **Architecture**: **4 MIDI voices × 2 oscillators** (`NUM_VOICES_TOTAL=4`, `NUM_OSCILLATORS=8`).
 - **Control signals**:
-  - A **range PWM** per oscillator (amplitude / duty compensation).
-  - A shared **PW PWM** on voice 0.
-  - Oscillators are driven by **three SMs on pio0** (indices from `VOICE_TO_SM`, permuted by `assign_sm_mapping()`; OSC1↔OSC2 sync, OSC3 free-running).
+  - A **range PWM** per oscillator (amplitude / duty compensation) — HW slice, 8 pins.
+  - A **PW PWM** per MIDI voice (`PW_PINS[]` = `{3,2,4,5}`; A+B of a voice share one PW DAC).
+  - Freq SMs: voices 0–1 on pio0, voices 2–3 on pio1 (`VOICE_TO_SM` permuted by `assign_sm_mapping()`; sync is pair-local A↔B).
 - **Measurement input**:
-  - A digital pin (`DCO_calibration_pin`) receives the DCO signal.
+  - A digital pin (`DCO_calibration_pin` = **GP10**) receives the DCO signal.
   - The code times rising and falling edges using `micros()` to infer duty cycle and frequency.
 
 ---
@@ -161,16 +161,15 @@ Legacy initializer for PID‑based DCO calibration:
 Main DCO amplitude calibration routine (current “production” path):
 
 1. **Global shutdown / reset**:
-   - `disable_all_oscillators_and_range_pwm()` (parks RANGE GPIOs and shared PW at max wrap).
-2. **Shared PW calibration (once)**:
-   - On voice 0: `find_PW_center(0)`, `find_PW_limit_v2(LOW/HIGH)`, restore `PW_CENTER[0]`.
-3. **Per‑oscillator amp-comp loop** (`currentDCO` = 0 .. `NUM_OSCILLATORS - 1`):
+   - `disable_all_oscillators_and_range_pwm()` (parks 8 RANGE GPIOs and **4** PW channels at max wrap).
+2. **Per‑oscillator loop** (`currentDCO` = 0 .. `NUM_OSCILLATORS - 1`):
    - `restart_DCO_calibration()`.
-   - Set `ampCompCalibrationVal` from `initManualAmpCompCalibrationVal + manualCalibrationOffset` and apply to RANGE PWM.
-   - Run `calibrate_DCO()`; print `calibrationData`; `update_FS_voice(currentDCO)`.
-4. **Finalization**:
+   - Set `ampCompCalibrationVal` from `initManualAmpCompCalibrationVal + manualCalibrationOffset` and `write_range_pwm`.
+   - **If osc is even** (`voice = osc/2`): `find_PW_center(0)`, `find_PW_limit_v2(LOW/HIGH)`, apply `PW_CENTER[voice]` to `PW_PINS[voice]`. Odd oscs skip PW (share the voice’s PW DAC).
+   - Run `calibrate_DCO()`; print `calibrationData`; `update_FS_voice(currentDCO)` (8 amp-comp tables).
+3. **Finalization**:
    - `calibrationFlag = false`
-   - `init_FS()` to reload calibration data from storage.
+   - `init_FS()` to reload calibration data from storage (PW banks are **4** slots; size mismatch reseeds).
    - `precompute_amp_comp_for_engine()` to rebuild runtime amp‑comp tables.
 
 ### `VCO_calibration()`

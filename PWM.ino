@@ -111,7 +111,7 @@ void init_pwm()
     pwm_set_enabled(RANGE_PWM_SLICES[i], true);
   }
 
-  for (int i = 0; i < NUM_OSCILLATORS; i++)
+  for (int i = 0; i < NUM_PW_CHANNELS; i++)
   {
     if (PW_PINS[i] == PW_PIN_UNASSIGNED) {
       PW_PWM_SLICES[i] = 0xFF;  // not a real slice — level_pwm share checks must ignore
@@ -183,7 +183,7 @@ static bool level_pwm_slice_shares_voice_wrap(uint8_t slice) {
     if (RANGE_PWM_SLICES[i] == 0xFF) continue;
     if (slice == RANGE_PWM_SLICES[i]) return true;
   }
-  for (int i = 0; i < NUM_OSCILLATORS; i++) {
+  for (int i = 0; i < NUM_PW_CHANNELS; i++) {
     if (PW_PWM_SLICES[i] == 0xFF) continue;
     if (slice == PW_PWM_SLICES[i]) return true;
   }
@@ -221,6 +221,8 @@ void init_level_pwm() {
     if (RANGE_PWM_SLICES[i] != 0xFF) {
       level_wrap_for_slice[RANGE_PWM_SLICES[i] & 7] = DIV_COUNTER;
     }
+  }
+  for (int i = 0; i < NUM_PW_CHANNELS; i++) {
     if (PW_PWM_SLICES[i] != 0xFF) {
       level_wrap_for_slice[PW_PWM_SLICES[i] & 7] = DIV_COUNTER_PW;
     }

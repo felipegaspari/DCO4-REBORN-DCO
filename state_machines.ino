@@ -1,32 +1,38 @@
-// Which oscillator has its reset driven by another, and which one drives it.
-// syncMode 1: OSC2's sideset drives OSC1's reset pin, so OSC1 is the slave.
-// syncMode 2: OSC1's sideset drives OSC2's reset pin, so OSC2 is the slave.
-// OSC3 is always free-running.
-static int sync_slave_osc() {
-  if (syncMode == 1) return 0;
-  if (syncMode == 2) return 1;
+// Per-voice even/odd pairing (DCO_A = v*2, DCO_B = v*2+1).
+// syncMode 1: B's sideset drives A's reset (A slave, B master).
+// syncMode 2: A's sideset drives B's reset (B slave, A master).
+static inline int pair_slave(int voice) {
+  const int a = voice * 2;
+  if (syncMode == 1) return a;
+  if (syncMode == 2) return a + 1;
   return -1;
 }
 
-static int sync_master_osc() {
-  if (syncMode == 1) return 1;
-  if (syncMode == 2) return 0;
+static inline int pair_master(int voice) {
+  const int a = voice * 2;
+  if (syncMode == 1) return a + 1;
+  if (syncMode == 2) return a;
   return -1;
 }
 
-// Give the slave a lower state machine index than its master. When two SMs write the
-// same pin on the same cycle the higher-numbered one wins, so a master that outranks
-// its slave never loses a sync edge to a tie.
+// Give the slave a lower state machine index than its master within the PIO block.
+// When two SMs write the same pin on the same cycle the higher-numbered one wins.
 void assign_sm_mapping() {
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
-    VOICE_TO_SM[i] = i;
+    VOICE_TO_SM[i] = (uint8_t)(i & 3);
   }
-
-  int slave = sync_slave_osc();
-  int master = sync_master_osc();
-  if (slave >= 0 && master >= 0 && slave > master) {
-    VOICE_TO_SM[slave] = master;
-    VOICE_TO_SM[master] = slave;
+  if (syncMode == 0) {
+    return;
+  }
+  for (int v = 0; v < NUM_VOICES_TOTAL; v++) {
+    const int slave = pair_slave(v);
+    const int master = pair_master(v);
+    if (slave < 0 || master < 0) continue;
+    if (VOICE_TO_SM[slave] > VOICE_TO_SM[master]) {
+      const uint8_t tmp = VOICE_TO_SM[slave];
+      VOICE_TO_SM[slave] = VOICE_TO_SM[master];
+      VOICE_TO_SM[master] = tmp;
+    }
   }
 }
 
@@ -37,53 +43,44 @@ static const pio_program_t *soft_sync_program_for_chunks(uint8_t chunks) {
   return &frequency_sync_poll_program;
 }
 
-// Keep free-running + exactly one poll image on pio0. Swapping among N=1/2/3 removes the
-// old poll program and loads the new one (12 + 13..15 <= 27 of 32 slots). Hard sync
-// (softSyncChunks == 0) leaves whatever poll image is already resident.
-static void ensure_soft_sync_program(uint8_t chunks) {
+// Keep free-running + exactly one poll image on a freq PIO block. Swapping among
+// N=1/2/3 removes the old poll program and loads the new one (12 + 13..15 <= 27/32).
+static void ensure_soft_sync_program(uint8_t pio_idx, uint8_t chunks) {
   if (chunks < 1) chunks = 1;
   if (chunks > 3) chunks = 3;
-  if (chunks == pio_loaded_sync_chunks) return;
+  if (chunks == pio_loaded_sync_chunks[pio_idx]) return;
 
-  if (pio_loaded_sync_chunks != 0) {
-    pio_remove_program(pio[0], soft_sync_program_for_chunks(pio_loaded_sync_chunks),
-                       pio_offset_sync);
+  if (pio_loaded_sync_chunks[pio_idx] != 0) {
+    pio_remove_program(pio[pio_idx],
+                       soft_sync_program_for_chunks(pio_loaded_sync_chunks[pio_idx]),
+                       pio_offset_sync[pio_idx]);
   }
-  pio_offset_sync = pio_add_program(pio[0], soft_sync_program_for_chunks(chunks));
-  pio_loaded_sync_chunks = chunks;
+  pio_offset_sync[pio_idx] = pio_add_program(pio[pio_idx], soft_sync_program_for_chunks(chunks));
+  pio_loaded_sync_chunks[pio_idx] = chunks;
 }
 
-// Load the oscillator programs into pio0 and start all voice SMs. Called from setup1().
+// Load oscillator programs into pio0+pio1 and start all voice SMs. Called from setup1().
+// RP2350: also claim pio2 SM0–3 for per-voice sub-osc (no noise LFSR on either MCU).
 void init_pio() {
-  // Claim SMs through the SDK so other PIOProgram users cannot steal them.
-  // Oscillators always occupy pio0 SM0–2; pio1 SM0 = sub-osc, SM1 = noise LFSR.
-  for (int sm = 0; sm < NUM_OSCILLATORS; sm++) {
+  for (int sm = 0; sm < 4; sm++) {
     pio_sm_claim(pio[0], sm);
+    pio_sm_claim(pio[1], sm);
   }
-  pio_sm_claim(pio[SUBOSC_PIO], SUBOSC_SM);
-  pio_sm_claim(pio[NOISE_PIO], NOISE_SM);
 
-  // Free-running program plus one soft-sync poll image (default N=1). Switching hard↔soft
-  // with the same N is a re-init; changing N among 1/2/3 reloads the poll image.
-  pio_offset_free = pio_add_program(pio[0], &frequency_sync_4_jumps_program);
-  pio_loaded_sync_chunks = 0;
-  ensure_soft_sync_program(softSyncChunks > 0 ? softSyncChunks : 1);
+  const uint8_t syncChunks = softSyncChunks > 0 ? softSyncChunks : 1;
+  for (int blk = 0; blk < 2; blk++) {
+    pio_offset_free[blk] = pio_add_program(pio[blk], &frequency_sync_4_jumps_program);
+    pio_loaded_sync_chunks[blk] = 0;
+    ensure_soft_sync_program((uint8_t)blk, syncChunks);
+  }
 
-  // pio1: noise LFSR must load first at origin 0 (out pc,1 XOR); then sub-osc.
-  // pio2 stays free for ENABLE_PIO_MIDI.
-  noise_lfsr_offset = pio_add_program(pio[NOISE_PIO], &noise_lfsr_program);
+#if defined(PICO_RP2350)
+  for (int sm = 0; sm < NUM_VOICES_TOTAL; sm++) {
+    pio_sm_claim(pio[SUBOSC_PIO], sm);
+  }
   subosc_offset_div2 = pio_add_program(pio[SUBOSC_PIO], &subosc_div2_program);
   subosc_offset_div4 = pio_add_program(pio[SUBOSC_PIO], &subosc_div4_program);
-  if (dcoNoiseUsesPioWhite()) {
-    const int out_pin =
-#ifdef ENABLE_NOISE_OUT
-        (int)NOISE_OUT_PIN;
-#else
-        -1;
 #endif
-    noise_lfsr_init(pio[NOISE_PIO], NOISE_SM, noise_lfsr_offset, 0xC0FFEE01u,
-                    out_pin);
-  }
 
   assign_sm_mapping();
   start_voice_sms();
@@ -104,68 +101,59 @@ static void pio_reset_pin_apply_polarity(uint pin) {
 #endif
 }
 
-// Configure every oscillator state machine on pio0 and start them on the same cycle.
+// Configure every oscillator SM on its PIO block and start them same-cycle per block.
 // Safe to call again whenever the sync topology changes.
 void start_voice_sms() {
-  int slave = sync_slave_osc();
-  int master = sync_master_osc();
-  bool softSync = (softSyncChunks > 0) && (slave >= 0) && (master >= 0);
+  const bool anySync = (syncMode == 1 || syncMode == 2);
+  const bool softSync = (softSyncChunks > 0) && anySync;
   uint8_t chunks = soft_sync_chunks_clamped();
   if (chunks < 1) chunks = 1;
 
-  // Stop every voice SM before a possible poll-program reload (instruction memory must
-  // not change under a running SM).
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
-    pio_sm_set_enabled(pio[0], VOICE_TO_SM[i], false);
+    pio_sm_set_enabled(pio[VOICE_TO_PIO[i]], VOICE_TO_SM[i], false);
   }
   if (softSync) {
-    ensure_soft_sync_program(chunks);
+    ensure_soft_sync_program(0, chunks);
+    ensure_soft_sync_program(1, chunks);
   }
 
-  uint32_t enableMask = 0;
+  uint32_t enableMask[2] = { 0, 0 };
 
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
-    uint8_t sm = VOICE_TO_SM[i];
+    const uint8_t blk = VOICE_TO_PIO[i];
+    const uint8_t sm = VOICE_TO_SM[i];
+    const int voice = i / 2;
+    const int slave = pair_slave(voice);
+    const int master = pair_master(voice);
 
-    // Hard sync: the master's sideset drives the slave's reset pin as well as its own,
-    // discharging the slave's integrator on the master's cycle while the slave's SM
-    // keeps its own schedule. This only works because every SM is on pio0 — a GPIO's
-    // function select names one block, so oscillators on separate blocks could not
-    // share a pin.
-    //
-    // Soft sync drives nothing extra: the slave polls the master's pin instead, so the
-    // master leaves its sideset on its own reset pin.
+    // Hard sync: master's sideset drives the slave's RESET (same PIO block only).
+    // Soft sync: slave polls master's pin; master keeps sideset on its own RESET.
     uint8_t sidesetPin = RESET_PINS[i];
     if (!softSync && master >= 0 && i == master) {
       sidesetPin = RESET_PINS[slave];
     }
 
-    pio_sm_clear_fifos(pio[0], sm);
+    pio_sm_clear_fifos(pio[blk], sm);
 
     if (softSync && i == slave) {
-      frequency_sync_poll_init(pio[0], sm, pio_offset_sync, RESET_PINS[i], sidesetPin,
+      frequency_sync_poll_init(pio[blk], sm, pio_offset_sync[blk], RESET_PINS[i], sidesetPin,
                                RESET_PINS[master], chunks);
       osc_uses_sync_program[i] = true;
     } else {
-      frequency_sync_4_jumps(pio[0], sm, pio_offset_free, RESET_PINS[i], sidesetPin);
+      frequency_sync_4_jumps(pio[blk], sm, pio_offset_free[blk], RESET_PINS[i], sidesetPin);
       osc_uses_sync_program[i] = false;
     }
 
-    // Preload the reset pulse width into Y, then restore the divider that Y's write
-    // consumed out of the OSR.
     osc_load_period_stopped(i, pioPulseLength, osc_last_clk_div[i]);
-
-    enableMask |= (1u << sm);
+    enableMask[blk] |= (1u << sm);
   }
 
-  // After pio_gpio_init in the SM inits: apply (or clear) pad polarity on every RESET.
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
     pio_reset_pin_apply_polarity(RESET_PINS[i]);
   }
 
-  // Same-cycle start. Separate pio_sm_set_enabled calls used to leave a few hundred
-  // nanoseconds of skew between oscillators, which capped phase-align accuracy.
-  pio_enable_sm_mask_in_sync(pio[0], enableMask);
+  pio_enable_sm_mask_in_sync(pio[0], enableMask[0]);
+  pio_enable_sm_mask_in_sync(pio[1], enableMask[1]);
 }
 
 // Reload every oscillator's reset pulse width (Y), preserving the running period.
@@ -175,12 +163,13 @@ void start_voice_sms() {
 // the next voice_task frame. All SMs are stopped, loaded, then started in the same
 // cycle so sync pairs do not tear.
 void osc_reload_reset_pulse_all(uint32_t y) {
-  uint32_t enableMask = 0;
+  uint32_t enableMask[2] = { 0, 0 };
 
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
+    const uint8_t blk = VOICE_TO_PIO[i];
     const uint8_t sm = VOICE_TO_SM[i];
-    pio_sm_set_enabled(pio[0], sm, false);
-    enableMask |= (1u << sm);
+    pio_sm_set_enabled(pio[blk], sm, false);
+    enableMask[blk] |= (1u << sm);
   }
 
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
@@ -192,7 +181,8 @@ void osc_reload_reset_pulse_all(uint32_t y) {
     osc_load_period_stopped(i, y, clk_div);
   }
 
-  pio_enable_sm_mask_in_sync(pio[0], enableMask);
+  pio_enable_sm_mask_in_sync(pio[0], enableMask[0]);
+  pio_enable_sm_mask_in_sync(pio[1], enableMask[1]);
 }
 
 // Report the sync topology and, importantly, which PIO block owns each reset pin.
@@ -202,18 +192,17 @@ void osc_reload_reset_pulse_all(uint32_t y) {
 // pio_gpio_init() silently re-pointed the slave's reset pin at the master's block and the
 // slave stopped driving its own core. Every RESET pin must read back as PIO0 here.
 void pio_topology_report() {
-  int slave = sync_slave_osc();
-  int master = sync_master_osc();
-
   bench_out_reset();
-  bench_out_printf("[pio topology] syncMode=%u softSyncChunks=%u slave=%d master=%d\n",
-                   syncMode, softSyncChunks, slave, master);
+  bench_out_printf("[pio topology] syncMode=%u softSyncChunks=%u voices=%u oscs=%u\n",
+                   syncMode, softSyncChunks, NUM_VOICES_TOTAL, NUM_OSCILLATORS);
 
-  bool allOnPio0 = true;
+  bool ownershipOk = true;
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
     gpio_function_t fn = gpio_get_function(RESET_PINS[i]);
-    bool onPio0 = (fn == GPIO_FUNC_PIO0);
-    if (!onPio0) allOnPio0 = false;
+    const gpio_function_t expect =
+        (VOICE_TO_PIO[i] == 0) ? GPIO_FUNC_PIO0 : GPIO_FUNC_PIO1;
+    const bool onExpected = (fn == expect);
+    if (!onExpected) ownershipOk = false;
 
     const char *prog = "free";
     if (osc_uses_sync_program[i]) {
@@ -223,17 +212,20 @@ void pio_topology_report() {
         default: prog = "poll1"; break;
       }
     }
-    bench_out_printf("  OSC%d reset=GP%-2u sm=%u program=%s funcsel=%d%s\n",
-                     i + 1, RESET_PINS[i], VOICE_TO_SM[i], prog,
-                     (int)fn, onPio0 ? "" : "  <-- NOT PIO0");
+    bench_out_printf("  OSC%d reset=GP%-2u pio=%u sm=%u program=%s funcsel=%d%s\n",
+                     i + 1, RESET_PINS[i], VOICE_TO_PIO[i], VOICE_TO_SM[i], prog,
+                     (int)fn, onExpected ? "" : "  <-- WRONG BLOCK");
   }
 
   bench_out_printf("  reset pin ownership: %s\n",
-                   allOnPio0 ? "OK (all PIO0)" : "BROKEN (a pin was stolen by another block)");
+                   ownershipOk ? "OK (pair-local PIO)" : "BROKEN (a pin was stolen)");
 
-  if (master >= 0 && slave >= 0) {
-    bench_out_printf("  master OSC%d is sm=%u, slave OSC%d is sm=%u -> tie-break %s\n",
-                     master + 1, VOICE_TO_SM[master], slave + 1, VOICE_TO_SM[slave],
+  for (int v = 0; v < NUM_VOICES_TOTAL; v++) {
+    const int slave = pair_slave(v);
+    const int master = pair_master(v);
+    if (master < 0 || slave < 0) continue;
+    bench_out_printf("  V%d master OSC%d sm=%u, slave OSC%d sm=%u -> tie-break %s\n",
+                     v, master + 1, VOICE_TO_SM[master], slave + 1, VOICE_TO_SM[slave],
                      VOICE_TO_SM[master] > VOICE_TO_SM[slave] ? "OK (master outranks slave)"
                                                               : "WRONG (master can lose edges)");
   }
@@ -242,11 +234,12 @@ void pio_topology_report() {
 
 // Park one oscillator at clk_div (core 1 only — called from pio_defer_service).
 static void pio_period_probe_run(uint8_t osc, uint32_t clk_div) {
-  uint8_t sm = VOICE_TO_SM[osc];
+  const uint8_t blk = VOICE_TO_PIO[osc];
+  const uint8_t sm = VOICE_TO_SM[osc];
 
-  pio_sm_set_enabled(pio[0], sm, false);
+  pio_sm_set_enabled(pio[blk], sm, false);
   osc_load_period_stopped(osc, pioPulseLength, clk_div);
-  pio_sm_set_enabled(pio[0], sm, true);
+  pio_sm_set_enabled(pio[blk], sm, true);
 }
 
 void pio_period_probe(uint8_t osc, uint32_t clk_div) {
@@ -284,22 +277,28 @@ void pio_solve_period_model(uint32_t clk_div_a, double measured_hz_a,
                 (unsigned)PIO_PERIOD_OVERHEAD_BY_CHUNKS[3]);
 }
 
-// (Re)configure the sub-oscillator. divide 0 stops it, 2 and 4 give a square one and
-// two octaves below OSC1. Needs SUBOSC_PIN wired to a mixer input to be audible.
+// (Re)configure per-voice sub-oscs. divide 0 stops them; 2 / 4 = one / two octaves
+// below that voice's OSC1 RESET. RP2040: no PIO (param stored only).
 void set_subosc_divide(uint8_t divide) {
   subOscDivide = divide;
-
+#if defined(PICO_RP2350)
   PIO p = pio[SUBOSC_PIO];
-  pio_sm_set_enabled(p, SUBOSC_SM, false);
-
+  for (int v = 0; v < NUM_VOICES_TOTAL; v++) {
+    pio_sm_set_enabled(p, (uint)v, false);
+  }
   if (divide == 0) {
     return;
   }
-
-  bool div4 = (divide >= 4);
-  subosc_init(p, SUBOSC_SM, div4 ? subosc_offset_div4 : subosc_offset_div2,
-              RESET_PINS[0], SUBOSC_PIN, div4);
-  pio_sm_set_enabled(p, SUBOSC_SM, true);
+  const bool div4 = (divide >= 4);
+  const uint offset = div4 ? subosc_offset_div4 : subosc_offset_div2;
+  for (int v = 0; v < NUM_VOICES_TOTAL; v++) {
+    if (SUBOSC_PINS[v] == SUBOSC_PIN_UNASSIGNED) continue;
+    subosc_init(p, (uint)v, offset, RESET_PINS[v * 2], SUBOSC_PINS[v], div4);
+    pio_sm_set_enabled(p, (uint)v, true);
+  }
+#else
+  (void)divide;
+#endif
 }
 
 // ---- Core-0 → core-1 deferred PIO requests -----------------------------------

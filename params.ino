@@ -369,7 +369,7 @@ static void apply_param_sync_mode(int16_t v) {
 
 // PARAM_SOFT_SYNC: 0 = hard sync (sideset, weight 4); 1..3 = soft sync with that many
 // trailing polled chunks (weights 5/6/7, receptive ~40%/67%/86%). Changing among 1..3
-// reloads the poll program image on pio0.
+// reloads the poll program image on pio0 and pio1.
 static void apply_param_soft_sync(int16_t v) {
   if (v < 0) v = 0;
   if (v > 3) v = 3;

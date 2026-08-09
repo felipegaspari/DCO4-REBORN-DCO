@@ -180,9 +180,9 @@
 
 // #define SERIAL_FRAMING_COBS  // A/B vs default RAW; host: dco_control --cobs
 
-// All RANGE pins via dithered PIO PWM (wrap 4666, 3-frame → ~14000). Comment out
-// to restore hardware PWM slices on RANGE_PINS[].
-#define RANGE0_PIO_DITHER_TEST
+// All RANGE pins via dithered PIO PWM (wrap 4666, 3-frame → ~14000). Off for 8 oscs:
+// dither needs one SM per RANGE pin and there are none spare. HW PWM slices instead.
+// #define RANGE0_PIO_DITHER_TEST
 
 // Phase 3 CV hardware (provisional pins in globals.h / docs/PINOUT.md).
 // Leave commented on benches without filter/VCA/mux/DAC attached.

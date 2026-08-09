@@ -65,10 +65,11 @@ float    cCoeff[NUM_OSCILLATORS][ampCompTableSize - 1];
 #ifdef USE_FLOAT_AMP_COMP
 float    ampCompFrequencyHz[NUM_OSCILLATORS][ampCompTableSize + 1];
 // Dense LUT: index = integer Hz, value = RANGE PWM.
-// Filled once after float precompute from get_chan_level_float_quad() so integer-Hz
-// LUT at integer Hz matches float quadratic exactly; lookup uses nearest Hz.
-// Selectable for speed A/B; RP2350 live default is FLOAT_QUAD.
+// ~14 KB/osc → ~112 KB at 8 oscs; omit the table (FLOAT_QUAD stays live).
+#if NUM_OSCILLATORS < 8
+#define USE_AMP_COMP_LUT 1
 uint16_t ampCompLut[NUM_OSCILLATORS][AMP_COMP_MAX_HZ + 1];
+#endif
 #endif
 
 // ---------------------------------------------------------------------------
@@ -104,6 +105,9 @@ static inline const char *amp_comp_method_name(uint8_t m) {
 static inline void amp_comp_set_method(uint8_t m) {
 #ifdef USE_FLOAT_AMP_COMP
   if (m > AMP_COMP_FIXED) m = AMP_COMP_FLOAT_QUAD;
+#ifndef USE_AMP_COMP_LUT
+  if (m == AMP_COMP_LUT) m = AMP_COMP_FLOAT_QUAD;
+#endif
 #else
   m = AMP_COMP_FIXED;
 #endif
@@ -382,6 +386,7 @@ uint16_t get_chan_level_lut(float freqHz, uint8_t voiceN);
 #endif
 
 #ifdef USE_FLOAT_AMP_COMP
+#ifdef USE_AMP_COMP_LUT
 // Fill dense LUT from float quadratic (ampWinCache reset after fill in precompute).
 static inline void fill_amp_comp_lut_from_quad() {
   for (uint8_t o = 0; o < NUM_OSCILLATORS; ++o) {
@@ -390,6 +395,7 @@ static inline void fill_amp_comp_lut_from_quad() {
     }
   }
 }
+#endif
 
 // After float sanitize, copy breakpoints into Q8 arrays for fixed precompute.
 static inline void amp_comp_seed_fixed_from_float_tables() {
@@ -449,7 +455,9 @@ static inline void precompute_amp_comp_for_engine() {
   // FIXED early-out uses plateauStartFreqQ only (see get_chan_level_lookup_fast).
   memcpy(plateauStartFreqQ, plateauQSave, sizeof(plateauQSave));
 
+#ifdef USE_AMP_COMP_LUT
   fill_amp_comp_lut_from_quad();
+#endif
 #else
   precomputeCoefficients(/*rewritePlateaus=*/true);
 #endif
@@ -464,7 +472,11 @@ static inline void precompute_amp_comp_for_engine() {
 static inline uint16_t get_chan_level_by_method(float freqHz, uint8_t voiceN) {
   switch (amp_comp_method) {
     case AMP_COMP_LUT:
+#ifdef USE_AMP_COMP_LUT
       return get_chan_level_lut(freqHz, voiceN);
+#else
+      return get_chan_level_float_quad(freqHz, voiceN);
+#endif
     case AMP_COMP_FIXED: {
       if (freqHz <= 0.0f) return 0;
       if (freqHz >= (float)AMP_COMP_MAX_HZ) {

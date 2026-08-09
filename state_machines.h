@@ -21,9 +21,13 @@ void set_subosc_divide(uint8_t divide);
 // Inline + direct TXF/instr MMIO: note-on EXACT_Y calls the fused noclear variant;
 // boot/topology paths use osc_load_period_stopped() which still FJOIN-clears TX.
 
+static inline pio_hw_t *osc_pio_hw(uint8_t osc) {
+  return (VOICE_TO_PIO[osc] == 0) ? pio0_hw : pio1_hw;
+}
+
 static inline void osc_load_period_stopped_noclear(uint8_t osc, uint32_t y, uint32_t clk_div) {
   const uint sm = VOICE_TO_SM[osc];
-  pio_hw_t *const hw = pio0_hw;
+  pio_hw_t *const hw = osc_pio_hw(osc);
 
   const uint pull_instr = pio_encode_pull(false, false);
   const uint out_y_instr = pio_encode_out(pio_y, 31);
@@ -42,7 +46,7 @@ static inline void osc_load_period_stopped_noclear(uint8_t osc, uint32_t y, uint
 // Hoists pull/out encodings once and loads OSC A then B back-to-back.
 static inline void osc_load_periods_stopped_noclear(uint8_t osc_a, uint32_t y_a, uint32_t clk_div_a,
                                                    uint8_t osc_b, uint32_t y_b, uint32_t clk_div_b) {
-  pio_hw_t *const hw = pio0_hw;
+  pio_hw_t *const hw = osc_pio_hw(osc_a);
   const uint sm_a = VOICE_TO_SM[osc_a];
   const uint sm_b = VOICE_TO_SM[osc_b];
   const uint pull_instr = pio_encode_pull(false, false);
@@ -71,7 +75,7 @@ static inline void osc_load_periods_stopped_noclear(uint8_t osc_a, uint32_t y_a,
 // SM must already be stopped. Old 8-chunk recipe: jmp 10; out x.
 static inline void osc_phase_align_hold_stopped(uint8_t osc, uint32_t x_count) {
   const uint sm = VOICE_TO_SM[osc];
-  pio_hw_t *const hw = pio0_hw;
+  pio_hw_t *const hw = osc_pio_hw(osc);
   const uint32_t clk_div = osc_last_clk_div[osc];
 
   const uint pull_instr = pio_encode_pull(false, false);
@@ -91,7 +95,7 @@ static inline void osc_phase_align_hold_stopped(uint8_t osc, uint32_t x_count) {
 // Boot / topology paths: disable does not empty TX — clear before Y/OSR reload.
 static inline void osc_load_period_stopped(uint8_t osc, uint32_t y, uint32_t clk_div) {
   const uint sm = VOICE_TO_SM[osc];
-  pio_hw_t *const hw = pio0_hw;
+  pio_hw_t *const hw = osc_pio_hw(osc);
 
   // Same FJOIN-RX trick as pio_sm_clear_fifos(), without the call.
   hw_set_bits(&hw->sm[sm].shiftctrl, PIO_SM0_SHIFTCTRL_FJOIN_RX_BITS);

@@ -17,7 +17,7 @@ bool firstTuneFlag = false;
 // Manual DCO calibration workflow state and per-oscillator manual offsets
 // that are added on top of automatic amp compensation.
 uint8_t manualCalibrationStage;
-int8_t manualCalibrationOffset[NUM_OSCILLATORS] = { 0, 0, 0 };
+int8_t manualCalibrationOffset[NUM_OSCILLATORS] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 /************************************************/
 /****************** DCO calibration ******************/
 
@@ -47,6 +47,11 @@ int8_t initManualAmpCompCalibrationValPreset = 35;
 // weact rp2040 dco //volatile int8_t initManualAmpCompCalibrationVal[NUM_OSCILLATORS] = {24,26,25,25,25,18,20,25};
 // Per-oscillator baseline manual amp-comp starting values.
 int8_t initManualAmpCompCalibrationVal[NUM_OSCILLATORS] = {
+  initManualAmpCompCalibrationValPreset,
+  initManualAmpCompCalibrationValPreset,
+  initManualAmpCompCalibrationValPreset,
+  initManualAmpCompCalibrationValPreset,
+  initManualAmpCompCalibrationValPreset,
   initManualAmpCompCalibrationValPreset,
   initManualAmpCompCalibrationValPreset,
   initManualAmpCompCalibrationValPreset

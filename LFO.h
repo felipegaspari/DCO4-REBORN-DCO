@@ -19,7 +19,7 @@
 #include "_build_libs/mo-lfo/mo-lfo.h"
 // After Mainboard absorption, DCO is the sole LFO clock:
 //   LFO1 → pitch (volatile Q24 arrays) + EnvVCA depth (LFO1toVCA)
-//   LFO2 → OSC2/3 pitch (fine+coarse folded) + PW + EnvVCF depth (LFO2toVCF)
+//   LFO2 → OSC2 (DCO_B) pitch (fine+coarse folded) + PW + EnvVCF depth (LFO2toVCF)
 //   drift LFOs → pitch drift + soft VCF_DRIFT
 // Do not run a second LFO engine on Mainboard in hub mode (Phase 5 archives it).
 
@@ -90,6 +90,11 @@ lfo LFO1_class(LFO_DAC_SIZE_UNUSED);
 lfo LFO2_class(LFO_DAC_SIZE_UNUSED);
 
 lfo LFO_DRIFT_CLASS[NUM_OSCILLATORS] = {
+  lfo(LFO_DAC_SIZE_UNUSED),
+  lfo(LFO_DAC_SIZE_UNUSED),
+  lfo(LFO_DAC_SIZE_UNUSED),
+  lfo(LFO_DAC_SIZE_UNUSED),
+  lfo(LFO_DAC_SIZE_UNUSED),
   lfo(LFO_DAC_SIZE_UNUSED),
   lfo(LFO_DAC_SIZE_UNUSED),
   lfo(LFO_DAC_SIZE_UNUSED)

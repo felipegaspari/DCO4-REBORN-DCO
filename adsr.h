@@ -69,14 +69,14 @@ uint16_t ADSRMinLevel = 0;
 // 0=OSC1, 1=OSC2, 2=OSC1+OSC2, 3=OSC3, 4=all
 int8_t ADSR3ToOscSelect = 2;
 
-// EnvDCO → pitch: 0 = unipolar env×depth (default); 1 = centered (env−16384; mid S ≈ note).
+// EnvDCO → pitch: 0 = unipolar env×depth (default); 1 = centered ((env−16384)<<1; mid S ≈ note, ±2 oct @ full CW).
 uint8_t env_dco_pitch_centered = 0;
 static constexpr int16_t ENV_DCO_PITCH_CENTER_Q15 = 16384;
 
 static inline int16_t env_dco_pitch_wave_q15(int16_t env_q15) {
-  if (!env_dco_pitch_centered || env_q15 == 0)
+  if (!env_dco_pitch_centered)
     return env_q15;
-  return (int16_t)((int32_t)env_q15 - ENV_DCO_PITCH_CENTER_Q15);
+  return (int16_t)(((int32_t)env_q15 - ENV_DCO_PITCH_CENTER_Q15) << 1);
 }
 
 uint16_t ADSR1_attack = 0;
@@ -129,10 +129,12 @@ int32_t ADSR1toPWM_scale = 0;
 adsr adsr1_voice_0(ADSR_1_CC, ADSR1_curve1, ADSR1_curve2, false, 7, 7, 7);
 adsr adsr1_voice_1(ADSR_1_CC, ADSR1_curve1, ADSR1_curve2, false, 7, 7, 7);
 adsr adsr1_voice_2(ADSR_1_CC, ADSR1_curve1, ADSR1_curve2, false, 7, 7, 7);
+adsr adsr1_voice_3(ADSR_1_CC, ADSR1_curve1, ADSR1_curve2, false, 7, 7, 7);
 
 adsr adsr_vca_voice_0(ADSR_CV_CC, ADSR_VCA_curve1, ADSR_VCA_curve2, false, 1, 2, 1);
 adsr adsr_vca_voice_1(ADSR_CV_CC, ADSR_VCA_curve1, ADSR_VCA_curve2, false, 1, 2, 1);
 adsr adsr_vca_voice_2(ADSR_CV_CC, ADSR_VCA_curve1, ADSR_VCA_curve2, false, 1, 2, 1);
+adsr adsr_vca_voice_3(ADSR_CV_CC, ADSR_VCA_curve1, ADSR_VCA_curve2, false, 1, 2, 1);
 
 // Shared filter envelopes (VCF1 + VCF2); not per voice.
 adsr adsr_vcf_voice(ADSR_CV_CC, ADSR_VCF_curve1, ADSR_VCF_curve2, false, 4, 6, 1);
@@ -147,6 +149,7 @@ ADSRStruct ADSRVoices[] = {
   { adsr1_voice_0, adsr_vca_voice_0 },
   { adsr1_voice_1, adsr_vca_voice_1 },
   { adsr1_voice_2, adsr_vca_voice_2 },
+  { adsr1_voice_3, adsr_vca_voice_3 },
 };
 
 void init_ADSR();

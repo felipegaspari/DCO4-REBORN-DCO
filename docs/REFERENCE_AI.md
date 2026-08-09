@@ -1,6 +1,6 @@
 ## DCO Project: AI Codebase Reference
 
-This document is a **semantic map** of the DCO board firmware for the DCO3 monosynth (RP2040 / RP2350-class, **1 voice × 3 oscillators**).  
+This document is a **semantic map** of the DCO board firmware for **DCO4-REBORN** (RP2040 / RP2350-class, **4 MIDI voices × 2 oscillators**).  
 It explains what each file does and how the main subsystems (voices, modulation, calibration, storage, I/O) fit together.
 
 Related docs:
@@ -38,16 +38,16 @@ Related docs:
 
 - **`globals.h`**  
   - System‑wide constants and state:
-    - Voice/osc counts: `NUM_VOICES_TOTAL = 3`, `NUM_OSCILLATORS = 3`, `NUM_VOICES_VOICE_TASK = 1` (mono engine bound; PW per-osc; para planned via `setVoiceMode`).
+    - Voice/osc counts: `NUM_VOICES_TOTAL = 4`, `NUM_OSCILLATORS = 8`. Runtime `NUM_VOICES` from `setVoiceMode` (0→1, 1→4, 2→stack). Each voice: `DCO_A = i*2`, `DCO_B = i*2+1`.
     - Clock and PIO timing constants (`sysClock_Hz` = Arduino `F_CPU` until boot, then `clock_get_hz(clk_sys)` via `sys_clock_hz_refresh()`; runtime `pioPulseLength` default 1600 / debug 160 ∈ [200, 50000], OSR chunk sizes, timing overheads).
     - **Period model** `period = Y + weight*clk_div + overhead`, with weights/overheads `{4,5,6,7}` / `{12,13,14,15}` indexed by `softSyncChunks` (`PIO_*_BY_CHUNKS[]`; N=1 aliases `PIO_RAMP_WEIGHT_SYNC` / `PIO_PERIOD_OVERHEAD_SYNC`). Each trailing polled chunk adds one weight and one overhead cycle.
     - Per-osc PIO state: `osc_uses_sync_program[]`, `osc_last_y[]`, `osc_last_clk_div[]`, `softSyncChunks`, `pio_loaded_sync_chunks`, `subOscDivide`.
     - Fixed‑point pitch‑bend multipliers (`pitchBendMultiplier_q24`); LFO pitch mods live in `LFO.h` (`lfo1_pitch_mod_q24[]`, `lfo2_pitch_mod_q24[]`).
     - Global voice arrays (`VOICE_NOTES`, `VOICES`, `note_on_flag`, shared `PW[0]`, etc.).
-    - Hardware pin mappings: RESET/RANGE for OSC1–3, single `PW_PINS[0]`, `SUBOSC_PIN = 8`.
-    - `VOICE_TO_PIO = {0,0,0}` — **all three oscillators share pio0.** A GPIO's function select names exactly one PIO block, so oscillators on separate blocks cannot share a reset pin: `pio_gpio_init()` on the second block silently steals the pin from the first, which is what broke hard sync when the layout was `{0,1,2}`. `pio_topology_report()` asserts this.
-    - `VOICE_TO_SM` is **mutable**, rewritten by `assign_sm_mapping()`: the slave takes the lower SM index because when two SMs write a pin on the same cycle the higher-numbered one wins, so the master must outrank its slave or it drops the occasional sync edge.
-    - `DCO_calibration_pin = 6` (temporary A/B on Pico header; was 10; GP25 aborted); `ENABLE_FS_CALIBRATION`.
+    - Hardware pin mappings (old DCO4 WEACT): RESET/RANGE ×8, PW `{3,2,4,5}` (+ 4× `0xFF`), `DCO_calibration_pin = 10`. RP2350 `SUBOSC_PINS[]` all `0xFF` until assigned. See [`PINOUT.md`](PINOUT.md).
+    - `VOICE_TO_PIO = {0,0,0,0,1,1,1,1}` — voices 0–1 on pio0 (osc 0–3), voices 2–3 on pio1 (osc 4–7). A voice pair must share a PIO block so hard-sync sideset can share RESET. `pio_gpio_init()` on a second block steals the pin from the first. `pio_topology_report()` asserts ownership.
+    - `VOICE_TO_SM` is **mutable**, rewritten by `assign_sm_mapping()` per pair: the slave takes the lower local SM index because when two SMs write a pin on the same cycle the higher-numbered one wins.
+    - `DCO_calibration_pin = 10`; `ENABLE_FS_CALIBRATION`.
     - Shared PIO array `pio[3]`, timer variables, MIDI pitch bend state and helper prototypes.
 
 ---
@@ -68,14 +68,14 @@ Related docs:
     - `voice_task_main()` → `voice_task_float()` **or** `voice_task_fixed_point()` depending on `USE_FLOAT_VOICE_TASK`.
 
     - **`voice_task_fixed_point()`** (fixed hot path, when `!USE_FLOAT_VOICE_TASK`):
-      - For each active MIDI voice (monosynth: one voice driving **OSC1/OSC2/OSC3**):
+      - For each active MIDI voice (`NUM_VOICES`; **DCO_A = i*2 / DCO_B = i*2+1**):
         - Computes per‑voice portamento in either **time‑based frequency space** or **slew‑rate note space** (Q24 / Q16).
         - Combines fixed‑point modulators:
           - Pitch‑bend (`calcPitchbend_q24`).
-          - LFO1 per‑osc pitch mod (`lfo1_pitch_mod_q24[LFO1_PITCH_OSCn]`, includes `LFO1toDCO` + extra) and LFO2 OSC2/3 mods.
-          - Unison detune per osc (`OSC_UNISON_STEP` = `{0, +1, -1}`; optional poly voice-index term if `NUM_VOICES_TOTAL > 1`).
+          - LFO1 per‑osc pitch mod (`lfo1_pitch_mod_q24[]`, includes `LFO1toDCO` + extra) and LFO2 → **DCO_B only**.
+          - Unison detune per voice index (`+1,-1,+2,-2`).
           - Per‑osc drift LFO (`LFO_DRIFT_LEVEL`) with analog drift amount.
-          - ADSR‑to‑detune in Q24 using `ADSR1toDETUNE1_scale_q24` and `linToLogLookup` (select includes OSC3 / all).
+          - ADSR‑to‑detune in Q24 using `ADSR1toDETUNE1_scale_q24` and `env_dco_pitch_wave_q15` (gated by `ADSR3ToOscSelect`: 0=A, 1=B, 2/4=A+B).
         - Evaluates the pitch multiplier table per `PITCH_INTERP_MODE`: `interpolateRatioQ16_cached` (`RATIO_Q16`, slopeQ20 fused) or `interpolatePitchMultiplierIntQ16_cached` (`Q12`). See [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
         - Produces final osc frequencies in **Q24 Hz**, then clock‑dividers via `CLKDIV_MODE`:
           - **0 GOLD**: Q24 → double Hz → `llround(sys / hz)` (gold standard / A/B).
@@ -83,14 +83,14 @@ Related docs:
           - **2 Q16**: Q16 Hz → 64/32 (shipping).
           - **3 Q8**: Q8 Hz, two 32/32 + remainder (`f_int < 16` → internal precise Q8).
           - **4 FAST_Q4**: compact **Q4 Hz** then 32‑bit divide (~1 µs/voice).
-          - Corrected OSR clock dividers for OSC1–3 including OSC2 phase‑alignment; OSC3 free-running.
+          - Corrected OSR clock dividers for A+B including DCO_B phase‑alignment.
         - Performs **amplitude compensation** via `get_chan_level_lookup_fast()` (Q8 Hz domain) using precomputed quadratic windows (`amp_comp.h`) → **RANGE PWM** via `write_range_pwm()` (slice or PIO dither; not a PIO oscillator).
-        - Writes new dividers into the three PIO SMs on pio0 and amp levels into RANGE channels.
+        - Writes new dividers into the eight PIO SMs (pio0+pio1) and amp levels into RANGE channels.
         - At 99 µs intervals (`timer99microsFlag`), updates shared PW PWM, combining ADSR1 and LFO2 modulation in integer math and using `get_PW_level_interpolated()`.
 
     - **`voice_task_float()`** (float hot path, when `USE_FLOAT_VOICE_TASK` — **current default**):
       - Same overall structure (portamento → modifiers → ratio → clkdiv → amp → PIO/PWM/PW), but in **Hz / float**:
-        - Float portamento state; pitch bend / LFO / ADSR / drift / OSC3 interval+detune converted from Q24 globals where needed.
+        - Float portamento state; pitch bend / LFO / ADSR / drift / DCO_B interval+detune converted from Q24 globals where needed.
         - Pitch table: `interpolateRatioFloat_cached_fast` when `PITCH_INTERP_FLOAT_FAST`; walk `interpolateRatioFloat_cached` when `PITCH_INTERP_FLOAT`; or fixed `RATIO_Q16` / IntQ16 via `PITCH_INTERP_MODE` (`×10000`→Q16 glue) for A/B. Shipping default is fixed voice + `RATIO_Q16` (this float path is override-only).
         - Clkdiv via `clkdiv_live_hz_total_cycles` (`CLKDIV_MODE`; Q16/Q8/FAST_Q4 convert Hz→Q24).
         - Amp via `get_chan_level_for_engine()` → float or fixed facade depending on `USE_FLOAT_AMP_COMP`.
@@ -124,7 +124,7 @@ Related docs:
 
 - **`state_machines.h` / `state_machines.ino`**  
   - **Full subsystem reference: [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md)** — programs, period model, sync modes, phase align, sub-osc, invariants and bench procedures. Read it before changing anything in this section.
-  - `init_pio()` loads `frequency_sync_4_jumps` plus one soft-sync poll image (`frequency_sync_poll` / `_2` / `_3`) into **pio0**, plus the two sub-osc programs into pio1, then calls `assign_sm_mapping()` and `start_voice_sms()`.
+  - `init_pio()` loads `frequency_sync_4_jumps` plus one soft-sync poll image into **pio0 and pio1** (8 freq SMs). RP2350: two sub-osc programs on **pio2** SM0–3 (pins TBD). No noise LFSR. Then `assign_sm_mapping()` and `start_voice_sms()`.
   - `start_voice_sms()`:
     - Calls `ensure_soft_sync_program()` so the resident poll image matches `softSyncChunks` when soft sync is on (swap via remove/add; hard sync leaves the current image unused).
     - Picks each oscillator's program: the slave runs the poll variant when `softSyncChunks > 0`, everything else runs `frequency_sync_4_jumps`.
@@ -137,9 +137,8 @@ Related docs:
 
 - **`PWM.h` / `PWM.ino`**  
   - Voice and cal write amplitude through **`write_range_pwm(osc, level)`** (domain still `0..DIV_COUNTER` = 14000).
-  - **`RANGE0_PIO_DITHER_TEST` on (shipping):** dithered PIO PWM on the same `RANGE_PINS[]` (GP17/16/14) — wrap 4666, 3-frame dither → 13998 levels, ~54 kHz @ 250 MHz. `init_range_pio_dither()` after `init_pio()`; 6 DMA channels. Detail: [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §4.4.
-  - **Flag off:** `init_pwm()` configures hardware PWM slices (`RANGE_PWM_SLICES` / `RANGE_PWM_CHANNELS`, `wrap = DIV_COUNTER`).
-  - Shared PW PWM (voice 0): `PW_PINS` mapped to `PW_PWM_SLICES`, `wrap = DIV_COUNTER_PW`.
+  - **`RANGE0_PIO_DITHER_TEST` off (4×2):** hardware PWM slices on all eight `RANGE_PINS[]` (`RANGE_PWM_SLICES` / `RANGE_PWM_CHANNELS`, `wrap = DIV_COUNTER`). Dither is not feasible for 8 oscs. Detail: [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §4.4.
+  - PW PWM (one pin per voice): `PW_PINS` `{3,2,4,5}` (+ 4× unassigned) mapped to `PW_PWM_SLICES`, `wrap = DIV_COUNTER_PW`.
 
 ---
 

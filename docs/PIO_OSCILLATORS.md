@@ -1,6 +1,6 @@
 # DCO PIO Oscillators, Sync and Phase Align
 
-How the three oscillator cores are driven from PIO: the resident programs, the state machine
+How the eight oscillator cores (4 voices × 2 DCOs) are driven from PIO: the resident programs, the state machine
 topology, the period arithmetic, the two sync flavours, phase align, and the sub-oscillator.
 
 **Live source of truth for the programs:** [`pico-dco.pio.h`](../pico-dco.pio.h) — *not* the
@@ -76,7 +76,7 @@ If the analog switch is **active-low** (DG411: IN low closes the discharge path)
 `ENABLE_PIO_RESET_INVERT` in [`DCO.ino`](../DCO.ino). `start_voice_sms()` then applies GPIO
 `OUTOVER` + `INOVER` invert on every `RESET_PINS[]` entry so the pad is active-low while
 soft-sync `jmp pin`, hard-sync sideset, phase-align `set pins, 0`, and the sub-oscillator
-`wait` on OSC1 RESET all keep the same logical sense. Leave the flag undefined for
+`wait` on that voice’s OSC A RESET all keep the same logical sense. Leave the flag undefined for
 active-high / direct FET discharge.
 
 > **Open item.** The constant is **3000** cycles (13.3 us), roughly 1.8x the ~1700 the RC
@@ -107,20 +107,20 @@ amplitude, which the amp-comp tables compensate.
 
 ## 3. Block and pin topology
 
-### 3.1 All three oscillators must live on PIO0
+### 3.1 Each voice pair must share one PIO block
 
 ```c
-static constexpr uint8_t VOICE_TO_PIO[NUM_OSCILLATORS] = { 0, 0, 0 };
+static constexpr uint8_t VOICE_TO_PIO[NUM_OSCILLATORS] = { 0, 0, 0, 0, 1, 1, 1, 1 };
 ```
 
-A GPIO's function select can name **exactly one** PIO block. Hard sync works by having two state
-machines drive the *same* reset pin, which is only possible when both are in the same block,
-because state machines within a block share the pin's function select.
+Voices 0–1 (osc 0–3) live on **pio0**; voices 2–3 (osc 4–7) on **pio1**. A GPIO's function select
+can name **exactly one** PIO block. Hard sync works by having two state machines drive the *same*
+reset pin, which is only possible when both are in the same block.
 
-This is the bug the layout was fixed to solve. With `VOICE_TO_PIO = {0,1,2}`, calling
+This is the bug the 3-osc layout hit with `VOICE_TO_PIO = {0,1,2}`: calling
 `pio_gpio_init(pio[1], 29)` to let OSC2 reach OSC1's reset pin silently re-pointed GPIO 29 from
-PIO0 to PIO1 — so OSC1's own state machine could no longer drive its own core. OSC1 stopped
-being a synced slave and became a pitch clone of OSC2.
+PIO0 to PIO1 — so OSC1's own state machine could no longer drive its own core. On 4×2 the same
+rule applies **per voice pair** (A+B), not across all eight oscillators.
 
 ```mermaid
 flowchart LR
@@ -141,29 +141,30 @@ flowchart LR
 
 | Block | Contents | Instructions used |
 |-------|----------|-------------------|
-| **PIO0** | `frequency_sync_4_jumps` + one of `frequency_sync_poll{,_2,_3}` (+ `range_pwm_dither` when `RANGE0_PIO_DITHER_TEST`) | 25–27 of 32; **29–31** with RANGE dither |
-| **PIO1** | `noise_lfsr` (origin 0, SM1) + `subosc_div2` + `subosc_div4` (SM0) (+ `range_pwm_dither` when flag on) | 24 of 32; **28** with RANGE dither |
-| **PIO2** | reserved for `ENABLE_PIO_MIDI` | 0 |
+| **PIO0** | 4 freq SMs (voices 0–1): `frequency_sync_4_jumps` + one of `frequency_sync_poll{,_2,_3}` | ~25–27 of 32 |
+| **PIO1** | 4 freq SMs (voices 2–3): same programs | ~25–27 of 32 |
+| **PIO2** (RP2350 only) | 4 sub-osc SMs (`subosc_div2` / `subosc_div4`); pins TBD | 4–8 of 32 |
+| Noise LFSR | **not loaded** (CPU `DCO_Noise` only) | — |
+| RANGE dither | **off** (`RANGE0_PIO_DITHER_TEST` not feasible for 8 oscs) | HW PWM slices |
 
-Only one soft-sync poll image is resident at a time. Changing `softSyncChunks` among 1/2/3
-reloads that image via `pio_remove_program` / `pio_add_program` (section 7.4).
+Only one soft-sync poll image is resident **per freq block**. Changing `softSyncChunks` among 1/2/3
+reloads that image via `pio_remove_program` / `pio_add_program` (section 7.4) on both pio0 and pio1.
 
-With `RANGE0_PIO_DITHER_TEST`, the same 4-inst RANGE program is loaded on **pio0 and pio1**.
-SMs: pio1 SM2/SM3 (RANGE osc0/1), pio0 SM3 (RANGE osc2). Voice SMs stay pio0 SM0–2; subosc/noise stay pio1 SM0/SM1.
+RP2040 has no pio2: sub-osc param is stored but SMs are not claimed.
 
 ### 3.3 Pins
 
+Live map in [`globals.h`](../globals.h) / [`PINOUT.md`](PINOUT.md) (old DCO4 WEACT):
+
 | Signal | GPIO | Direction |
 |--------|------|-----------|
-| OSC1 RESET | 29 | PIO0 out |
-| OSC2 RESET | 27 | PIO0 out |
-| OSC3 RESET | 19 | PIO0 out |
-| Sub-osc square | 8 | PIO1 out (`SUBOSC_PIN`) |
-| OSC1 RANGE | 17 | PIO1 SM2 out when `RANGE0_PIO_DITHER_TEST`; else PWM slice |
-| OSC2 RANGE | 16 | PIO1 SM3 out when flag on; else PWM slice |
-| OSC3 RANGE | 14 | PIO0 SM3 out when flag on; else PWM slice |
+| RESET ×8 | 29, 27, 19, 18, 15, 13, 12, **8** | pio0 (osc 0–3) / pio1 (osc 4–7) out |
+| RANGE ×8 | 28, 22, 17, 16, 14, 11, 9, 7 | HW PWM slice (`RANGE0_PIO_DITHER_TEST` off) |
+| PW ×4 | 3, 2, 4, 5 | PWM (one per MIDI voice) |
+| Cal sense | 10 | GPIO in |
+| SUB ×4 | **TBD** (`SUBOSC_PINS[]` = `0xFF`) | RP2350 pio2 out; wait on that voice’s OSC A RESET |
 
-Live `RANGE_PINS[]` in [`globals.h`](../globals.h) is `{17, 16, 14}`. Same GPIOs in both PWM modes.
+GP8 is OSC8 RESET, not sub-osc.
 
 ---
 
@@ -171,23 +172,20 @@ Live `RANGE_PINS[]` in [`globals.h`](../globals.h) is `{17, 16, 14}`. Same GPIOs
 
 | Program | Length | Loaded by `init_pio()` | Weight | Overhead | Role |
 |---------|--------|------------------------|--------|----------|------|
-| `frequency_sync_4_jumps` | 12 | **yes**, PIO0 | 4 | 12 | Free-running and hard-sync oscillator |
-| `frequency_sync_poll` | 13 | one of three, PIO0 | 5 | 13 | Soft-sync slave, N=1 (~40%) |
-| `frequency_sync_poll_2` | 14 | one of three, PIO0 | 6 | 14 | Soft-sync slave, N=2 (~67%) |
-| `frequency_sync_poll_3` | 15 | one of three, PIO0 | 7 | 15 | Soft-sync slave, N=3 (~86%) |
-| `noise_lfsr` | 12 | **yes**, PIO1 @ origin 0, SM1 | — | — | White LFSR → RX FIFO + optional GP2 bit out |
-| `subosc_div2` | 4 | **yes**, PIO1 | — | — | Divide OSC1 by 2 |
-| `subosc_div4` | 8 | **yes**, PIO1 | — | — | Divide OSC1 by 4 |
-| `range_pwm_dither` | 4 | no — `init_range_pio_dither()` after `init_pio()` | — | 1 clk/count | RANGE amp PWM (3-frame dither, wrap 4666) |
+| `frequency_sync_4_jumps` | 12 | **yes**, pio0+pio1 | 4 | 12 | Free-running and hard-sync oscillator |
+| `frequency_sync_poll` | 13 | one of three, pio0+pio1 | 5 | 13 | Soft-sync slave, N=1 (~40%) |
+| `frequency_sync_poll_2` | 14 | one of three, pio0+pio1 | 6 | 14 | Soft-sync slave, N=2 (~67%) |
+| `frequency_sync_poll_3` | 15 | one of three, pio0+pio1 | 7 | 15 | Soft-sync slave, N=3 (~86%) |
+| `noise_lfsr` | 12 | **no** (4×2) | — | — | Not loaded; CPU `DCO_Noise` only |
+| `subosc_div2` | 4 | RP2350 pio2 | — | — | Divide that voice’s OSC A by 2 |
+| `subosc_div4` | 8 | RP2350 pio2 | — | — | Divide that voice’s OSC A by 4 |
+| `range_pwm_dither` | 4 | **no** (4×2) | — | 1 clk/count | Not used; RANGE is HW PWM |
 | `frequency` | 18 | no | — | — | Legacy 8-chunk oscillator |
 | `frequency_sync` | 20 | no | — | — | Legacy sync experiment |
 | `frequency_pulse1` | 5 | no | — | — | Legacy PW generator |
 
-`noise_lfsr` must be added **before** the sub-osc programs: it requires instruction
-memory origin 0 (`out pc, 1` XORs via absolute addresses 0/1). SM1 JOIN_RX supplies one
-seed word per `update_noise_gens()`; CPU xorshift-fills a white buffer, then Voss pink /
-leaky brown run from that buffer with no further MMIO. With `ENABLE_NOISE_OUT`, `mov pins, isr`
-also drives **GP2** at ~80 kHz bit rate for listen/scope.
+`noise_lfsr` is **not loaded** on 4×2 (no spare SM; CPU `DCO_Noise` only). Historical note: it
+required instruction memory origin 0 (`out pc, 1` XORs via absolute addresses 0/1).
 
 ### 4.1 The `.pio.h` file is hand-maintained
 
@@ -262,8 +260,8 @@ pad regardless of function select, so a slave can read a pin another state machi
 
 Hand-encoded in [`range_pwm_dither.pio.h`](../range_pwm_dither.pio.h) (not `init_pio()`). Intent is
 commented in [`pico-dco.pio`](../pico-dco.pio). Flag: `RANGE0_PIO_DITHER_TEST` in [`DCO.ino`](../DCO.ino)
-— **on** = all three `RANGE_PINS[]` use this program; comment out = hardware slice PWM
-(`wrap = DIV_COUNTER` = 14000). Voice/amp-comp still write **0..14000** via `write_range_pwm()`.
+— **off on 4×2** (not feasible for 8 oscs). Comment out = hardware slice PWM on all eight
+`RANGE_PINS[]` (`wrap = DIV_COUNTER` = 14000). Voice/amp-comp still write **0..14000** via `write_range_pwm()`.
 
 1-cycle-per-count sideset PWM (beats slice wrap-14000 ripple: ~54 kHz carrier @ 250 MHz vs ~17.9 kHz):
 
@@ -443,16 +441,16 @@ one the engine pushed.
 
 ### 7.1 Roles
 
-`syncMode` selects which oscillator is the slave. OSC3 is always free-running.
+`syncMode` selects which oscillator is the slave **within each voice pair** (`DCO_A = v*2`,
+`DCO_B = v*2+1`). Pairs are independent.
 
 | `syncMode` | Master | Slave | Meaning |
 |------------|--------|-------|---------|
-| 0 | — | — | All three independent |
-| 1 | OSC2 | OSC1 | OSC2's sideset drives OSC1's reset pin |
-| 2 | OSC1 | OSC2 | OSC1's sideset drives OSC2's reset pin |
+| 0 | — | — | A and B independent |
+| 1 | B | A | B’s sideset drives A’s reset pin |
+| 2 | A | B | A’s sideset drives B’s reset pin |
 
-Resolved by `sync_slave_osc()` / `sync_master_osc()` in
-[`state_machines.ino`](../state_machines.ino).
+Resolved by `pair_slave()` / `pair_master()` in [`state_machines.ino`](../state_machines.ino).
 
 ### 7.2 The state machine index invariant
 
@@ -464,14 +462,17 @@ occasional click with no obvious cause.
 `assign_sm_mapping()` therefore rewrites `VOICE_TO_SM` so the slave always sits **below** its
 master:
 
-| `syncMode` | `VOICE_TO_SM` | Result |
-|------------|---------------|--------|
-| 0 | `{0, 1, 2}` | Irrelevant, nothing shares a pin |
-| 1 | `{0, 1, 2}` | Slave OSC1 = SM0, master OSC2 = SM1 |
-| 2 | `{1, 0, 2}` | Slave OSC2 = SM0, master OSC1 = SM1 |
+Default `VOICE_TO_SM` is `{0,1,2,3, 0,1,2,3}` (`i & 3` — local SM within each PIO block). Sync
+is **per voice pair** (A = `v*2`, B = `v*2+1`):
 
-This is why `VOICE_TO_SM` is **mutable**, unlike `VOICE_TO_PIO`. The mapping is always a
-permutation of `{0,1,2}`, so `start_voice_sms()` reconfiguring all three always covers every SM.
+| `syncMode` | Pair roles | Local SM swap if needed |
+|------------|------------|-------------------------|
+| 0 | none | leave `i & 3` |
+| 1 | A slave, B master | slave SM < master SM |
+| 2 | B slave, A master | swap within the pair if B’s SM was higher |
+
+This is why `VOICE_TO_SM` is **mutable**, unlike `VOICE_TO_PIO`. `start_voice_sms()` reconfigures
+all eight SMs across pio0 and pio1.
 
 ### 7.3 Hard sync versus soft sync
 
@@ -505,17 +506,17 @@ iteration, N trailing chunks occupy `2N / (4+N)` of the ramp time:
 | 2 | 6 | ~67% (`4/6`) | 14 | 26/32 |
 | 3 | 7 | ~86% (`6/7`) | 15 | 27/32 |
 
-All three are implemented. PIO0 cannot hold free + every poll variant at once (12+13+14 = 39),
+All three are implemented. A freq block cannot hold free + every poll variant at once (12+13+14 = 39),
 so `ensure_soft_sync_program()` keeps **exactly one** poll image beside `frequency_sync_4_jumps`
-and swaps it when `softSyncChunks` changes among 1/2/3. Hard sync leaves the current poll image
-resident unused.
+on **each** of pio0 and pio1, and swaps it when `softSyncChunks` changes among 1/2/3. Hard sync
+leaves the current poll image resident unused.
 
 ---
 
 ## 8. Phase align
 
-`phaseAlignOSC2` (degrees, via `PARAM_OSC_SYNC_MODE`) offsets OSC2's **first flyback** relative
-to OSC1 at note-on. It applies only when `oscSync > 1`. Heard DCO "phase" is that reset edge,
+`phaseAlignOSC2` (degrees, via `PARAM_OSC_SYNC_MODE`) offsets **DCO_B**’s first flyback relative
+to **DCO_A** at note-on (per voice pair). It applies only when `oscSync > 1`. Heard DCO "phase" is that reset edge,
 not the analog ramp start. Mono only (`voiceMode == 0`).
 
 That one parameter carries three regimes, because `oscSync` also gates the note-on restart
@@ -601,9 +602,9 @@ EXACT_Y note-on:
 
 ## 9. Sub-oscillator
 
-Four instructions on PIO1 turn OSC1's reset pin into a 50% square one or two octaves down. Each
-master cycle presents one rising and one falling edge, so a `wait 1` / `wait 0` pair consumes
-exactly one master cycle.
+Four instructions on **pio2** (RP2350 only) turn that voice’s OSC A reset pin into a 50% square
+one or two octaves down. Each master cycle presents one rising and one falling edge, so a
+`wait 1` / `wait 0` pair consumes exactly one master cycle. RP2040: param stored, no PIO.
 
 ```
 .program subosc_div2
@@ -616,13 +617,14 @@ exactly one master cycle.
 `subosc_div4` uses four wait pairs per half-cycle for a second sub-octave. Selected by
 `subOscDivide` (0 = off, 2, 4) through `PARAM_SUBOSC_DIVIDE` (id 37).
 
-> **Trap.** `subosc_init()` points `sm_config_set_in_pins` at `RESET_PINS[0]` but must **not**
-> call `pio_gpio_init` on it. That would move GPIO 29's function select to PIO1 and steal the
-> output away from PIO0 — the same class of bug described in section 3.1. Input sampling reads
-> the pad directly and needs no function select change.
+> **Trap.** `subosc_init()` points `sm_config_set_in_pins` at `RESET_PINS[v*2]` (that voice’s OSC A)
+> but must **not** call `pio_gpio_init` on it. That would move the RESET pad’s function select to
+> pio2 and steal the output away from pio0/pio1 — the same class of bug described in section 3.1.
+> Input sampling reads the pad directly and needs no function select change.
 
-Output is on `SUBOSC_PIN` = GP8, freed when the SerialPIO screen UART was removed. **This is
-inaudible until the carrier board gives GP8 a mixer input.**
+Output pins are `SUBOSC_PINS[v]` — **TBD** (all `0xFF`; `set_subosc_divide()` skips unassigned).
+**GP8 is OSC8 RESET**, not a sub-osc out. Inaudible until four SUB GPIOs are assigned and the
+carrier has mixer inputs.
 
 ---
 
@@ -634,18 +636,18 @@ inaudible until the carrier board gives GP8 a mixer input.**
 |----------|---------|-------------|---------------|
 | `sync_slave_osc()` / `sync_master_osc()` | Resolve `syncMode` into oscillator indices, or -1 | `assign_sm_mapping()`, `start_voice_sms()`, `pio_topology_report()` | none |
 | `assign_sm_mapping()` | Rewrite `VOICE_TO_SM` so the slave sits below its master | `init_pio()`, `setSyncMode()` | Call **before** `start_voice_sms()` |
-| `init_pio()` | Load free + one poll image into PIO0 and both sub-osc programs into PIO1, then start everything | `setup1()` | Boot only |
+| `init_pio()` | Load free + one poll image into pio0 and pio1 (8 freq SMs); RP2350: both sub-osc programs into pio2 | `setup1()` | Boot only |
 | `ensure_soft_sync_program(n)` | Swap the resident poll image to N trailing chunks (1..3) | `init_pio()`, `start_voice_sms()` | SMs must be stopped |
-| `start_voice_sms()` | Ensure poll image; choose each SM's program, pins; apply RESET polarity; preload Y; start all three on one cycle | `init_pio()`, `setSyncMode()` | Safe to re-call whenever topology changes |
+| `start_voice_sms()` | Ensure poll image; choose each SM's program, pins; apply RESET polarity; preload Y; start all eight SMs (per-block sync enable) | `init_pio()`, `setSyncMode()` | Safe to re-call whenever topology changes |
 | `pio_reset_pin_apply_polarity(pin)` | OUTOVER+INOVER invert/clear for `ENABLE_PIO_RESET_INVERT` | `start_voice_sms()` | RESET pins only |
 | `osc_load_period_stopped(osc, y, clk_div)` | Push Y then `clk_div` (with FJOIN clear) | `start_voice_sms()`, `osc_set_reset_pulse()` | **SM must already be stopped.** |
 | `osc_load_periods_stopped_noclear(...)` | Dual-osc Y + clk_div, no FJOIN | Both engine note-on EXACT_Y paths | After frame put+pull (TX empty); caller disable/enable |
 | `osc_phase_align_hold_stopped(osc, x)` | Preload X, restore clk_div, `set pins, 0`, jmp `loop_final` | Both engine note-on EXACT_Y paths when deg ≠ 0 | **SM must already be stopped**; after noclear load |
 | `osc_set_reset_pulse(osc, y)` | Change only Y, restoring `osc_last_clk_div[osc]` | `apply_param_osc_sync_mode()` | Stops and restarts the SM itself; parameter path, not audio path |
-| `pio_topology_report()` | Print sync roles and verify every RESET pin reads back as PIO0 | Bench / diagnostics | Serial up |
+| `pio_topology_report()` | Print sync roles and verify each RESET pin’s function select matches `VOICE_TO_PIO[]` | Bench / diagnostics | Serial up |
 | `pio_period_probe(osc, clk_div)` | Park an oscillator at a fixed divider and print the predicted period | Bench | Disturbs the oscillator |
 | `pio_solve_period_model(...)` | Back-solve weight and overhead from two frequency readings | Bench | Two distinct dividers, same Y |
-| `set_subosc_divide(divide)` | (Re)configure the sub-oscillator; 0 stops it | `init_pio()`, `apply_param_subosc_divide()` | none |
+| `set_subosc_divide(divide)` | (Re)configure per-voice sub-oscs on pio2 (RP2350); skip `0xFF` pins; 0 stops them | `init_pio()`, `apply_param_subosc_divide()` | none |
 
 ### 10.2 [`globals.h`](../globals.h) inlines
 
@@ -668,7 +670,7 @@ and `globals.h` is included first.
 
 | Variable | Meaning |
 |----------|---------|
-| `VOICE_TO_PIO[]` | Always `{0,0,0}`. Do not change (section 3.1) |
+| `VOICE_TO_PIO[]` | Always `{0,0,0,0,1,1,1,1}`. Do not split a voice pair across blocks (section 3.1) |
 | `VOICE_TO_SM[]` | Mutable; permuted by `assign_sm_mapping()` |
 | `osc_uses_sync_program[]` | Which resident program each SM runs; drives all the weight/address helpers |
 | `osc_last_y[]` | Y currently loaded; `pio_clk_div_for_y()` solves against it |
@@ -776,6 +778,6 @@ generated frequency should agree to the displayed precision.
 | **`pioPulseLength` = 3000 vs ~1700** | The RC analysis (section 2.1) calls for ~7.5 us; the constant is 13.3 us. Reducing it would recover ramp amplitude at the top of the range, but the amp-comp tables and `find_gap` calibration were measured with 3000, so it needs a full recalibration pass, not just a constant edit. |
 | **`.pio` source drift** | Duplicate `.program frequency`, two `init_sm_pin` signatures (section 4.1). Worth cleaning so the file could be assembled again as a cross-check on the hand-written header. |
 | **Hard-sync listening check** | The static and runtime checks pass, but the detune-sweep listening test in 12.1 has not been performed on hardware. |
-| **Sub-oscillator** | Firmware complete; GP8 needs a mixer input on the carrier before it is audible. |
+| **Sub-oscillator** | RP2350 pio2 SMs ready; `SUBOSC_PINS[]` still `0xFF`. Assign 4 GPIOs + mixer inputs before audible. |
 | **Soft-sync thresholds** | N=1/2/3 implemented via poll-program swap (section 7.4). Listening comparison across thresholds still open. |
 | **Legacy programs** | `frequency`, `frequency_sync`, `frequency_pulse1` are still in the header but never loaded. Removing them would free nothing at runtime, but would reduce confusion. |

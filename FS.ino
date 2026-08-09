@@ -1,4 +1,7 @@
 #include "include_all.h"
+
+static void ensure_pw_fs_banks();
+
 // Mount LittleFS and load amp-comp / PW / offset calibration into runtime arrays (float or Q8).
 // Called from setup1() and again at end of DCO_calibration().
 void init_FS() {
@@ -56,7 +59,9 @@ void init_FS() {
   //   }
   // }
 
-  // PW CALIBRATION VALUES VALUES FROM FS
+  // PW CALIBRATION VALUES FROM FS (one slot per MIDI voice).
+  ensure_pw_fs_banks();
+
   // PW_CENTER
   if (!LittleFS.exists("PWCenter")) {
     filePWCenterFS = LittleFS.open("PWCenter", "w+");
@@ -67,16 +72,13 @@ void init_FS() {
   filePWCenterFS.read(PWCenterBankBuffer, FSPWBankSize);
   filePWCenterFS.close();
 
-  for (int i = 0; i < NUM_OSCILLATORS; i++) {
+  for (int i = 0; i < NUM_PW_CHANNELS; i++) {
     uint16_t uint16Data;
     for (int j = 0; j < FSPWDataSize; j++) {
       ((uint8_t *)&uint16Data)[j] = PWCenterBankBuffer[i * 2 + j];
     }
 
     PW_CENTER[i] = (uint16_t)uint16Data;
-
-    // delay(1000);
-    // Serial.println((String) "PW_CENTER " + i + (String) ": " + uint16Data);
   }
   // PW_HIGH_LIMIT
     if (!LittleFS.exists("PWHighLimit")) {
@@ -88,16 +90,13 @@ void init_FS() {
   filePWHighLimitFS.read(PWHighLimitBankBuffer, FSPWBankSize);
   filePWHighLimitFS.close();
 
-  for (int i = 0; i < NUM_OSCILLATORS; i++) {
+  for (int i = 0; i < NUM_PW_CHANNELS; i++) {
     uint16_t uint16Data;
     for (int j = 0; j < FSPWDataSize; j++) {
       ((uint8_t *)&uint16Data)[j] = PWHighLimitBankBuffer[i * 2 + j];
     }
     PW_HIGH_LIMIT[i] = (uint16_t)uint16Data;
-
-    // // Debug:
-    // // Serial.println((String) "PW_HIGH_LIMIT " + i + (String) ": " + uint16Data);
-  } 
+  }
   // PW_LOW_LIMIT
   if (!LittleFS.exists("PWLowLimit")) {
     filePWLowLimitFS = LittleFS.open("PWLowLimit", "w+");
@@ -108,15 +107,12 @@ void init_FS() {
   filePWLowLimitFS.read(PWLowLimitBankBuffer, FSPWBankSize);
   filePWLowLimitFS.close();
 
-  for (int i = 0; i < NUM_OSCILLATORS; i++) {
+  for (int i = 0; i < NUM_PW_CHANNELS; i++) {
     uint16_t uint16Data;
     for (int j = 0; j < FSPWDataSize; j++) {
       ((uint8_t *)&uint16Data)[j] = PWLowLimitBankBuffer[i * 2 + j];
     }
     PW_LOW_LIMIT[i] = (uint16_t)uint16Data;
-
-    // delay(1000);
-    // Serial.println((String) "PW_LOW_LIMIT " + i + (String) ": " + uint16Data);
   }
 
   // Manual calibration offsets (one signed byte per oscillator).
@@ -166,12 +162,15 @@ void update_FS_voice(byte voiceN) {
 }
 
 
-// Persist PW center for one oscillator. Called from find_PW_center() (osc 0 today).
-void update_FS_PWCenter(byte oscN, uint16_t value) {
+// Persist PW center for one MIDI voice. Called from find_PW_center().
+void update_FS_PWCenter(byte voiceN, uint16_t value) {
+  if (voiceN >= NUM_PW_CHANNELS) {
+    return;
+  }
   byte calibrationDataBytes[FSPWDataSize];
   byte *b = (byte *)&value;
 
-  uint16_t startByteN = oscN * FSPWDataSize;
+  uint16_t startByteN = voiceN * FSPWDataSize;
 
   filePWCenterFS = LittleFS.open("PWCenter", "r+");
   filePWCenterFS.seek(startByteN);
@@ -179,12 +178,15 @@ void update_FS_PWCenter(byte oscN, uint16_t value) {
   filePWCenterFS.close();
 }
 
-// Persist PW high limit for one oscillator. Called from find_PW_limit_v2().
-void update_FS_PW_High_Limit(byte oscN, uint16_t value) {
+// Persist PW high limit for one MIDI voice. Called from find_PW_limit_v2().
+void update_FS_PW_High_Limit(byte voiceN, uint16_t value) {
+  if (voiceN >= NUM_PW_CHANNELS) {
+    return;
+  }
   byte calibrationDataBytes[FSPWDataSize];
   byte *b = (byte *)&value;
 
-  uint16_t startByteN = oscN * FSPWDataSize;
+  uint16_t startByteN = voiceN * FSPWDataSize;
 
   filePWHighLimitFS = LittleFS.open("PWHighLimit", "r+");
   filePWHighLimitFS.seek(startByteN);
@@ -192,12 +194,15 @@ void update_FS_PW_High_Limit(byte oscN, uint16_t value) {
   filePWHighLimitFS.close();
 }
 
-// Persist PW low limit for one oscillator. Called from find_PW_limit_v2().
-void update_FS_PW_Low_Limit(byte oscN, uint16_t value) {
+// Persist PW low limit for one MIDI voice. Called from find_PW_limit_v2().
+void update_FS_PW_Low_Limit(byte voiceN, uint16_t value) {
+  if (voiceN >= NUM_PW_CHANNELS) {
+    return;
+  }
   byte calibrationDataBytes[FSPWDataSize];
   byte *b = (byte *)&value;
 
-  uint16_t startByteN = oscN * FSPWDataSize;
+  uint16_t startByteN = voiceN * FSPWDataSize;
 
   filePWLowLimitFS = LittleFS.open("PWLowLimit", "r+");
   filePWLowLimitFS.seek(startByteN);
@@ -242,10 +247,38 @@ static void write_fs_bank(const char* name, const uint8_t* data, size_t size) {
   f.close();
 }
 
-// Pack one uint16 little-endian into a PW bank buffer at oscN * 2.
-static void pack_pw_u16(uint8_t* bank, uint8_t oscN, uint16_t value) {
-  bank[oscN * FSPWDataSize + 0] = (uint8_t)(value & 0xFF);
-  bank[oscN * FSPWDataSize + 1] = (uint8_t)((value >> 8) & 0xFF);
+// Pack one uint16 little-endian into a PW bank buffer at voiceN * 2.
+static void pack_pw_u16(uint8_t* bank, uint8_t voiceN, uint16_t value) {
+  bank[voiceN * FSPWDataSize + 0] = (uint8_t)(value & 0xFF);
+  bank[voiceN * FSPWDataSize + 1] = (uint8_t)((value >> 8) & 0xFF);
+}
+
+static bool fs_file_size_ok(const char* name, size_t expected) {
+  File f = LittleFS.open(name, "r");
+  if (!f) {
+    return false;
+  }
+  const size_t sz = f.size();
+  f.close();
+  return sz == expected;
+}
+
+// Rewrite 4-voice PW banks if missing or still the old 8-slot (16 B) size.
+static void ensure_pw_fs_banks() {
+  if (fs_file_size_ok("PWCenter", FSPWBankSize) &&
+      fs_file_size_ok("PWHighLimit", FSPWBankSize) &&
+      fs_file_size_ok("PWLowLimit", FSPWBankSize)) {
+    return;
+  }
+  static const uint16_t kCenter[NUM_PW_CHANNELS] = { 570, 552, 540, 553 };
+  for (uint8_t v = 0; v < NUM_PW_CHANNELS; ++v) {
+    pack_pw_u16(PWCenterBankBuffer, v, kCenter[v]);
+    pack_pw_u16(PWLowLimitBankBuffer, v, 0);
+    pack_pw_u16(PWHighLimitBankBuffer, v, DIV_COUNTER_PW);
+  }
+  write_fs_bank("PWCenter", PWCenterBankBuffer, FSPWBankSize);
+  write_fs_bank("PWLowLimit", PWLowLimitBankBuffer, FSPWBankSize);
+  write_fs_bank("PWHighLimit", PWHighLimitBankBuffer, FSPWBankSize);
 }
 
 // Build one oscillator's 22 [freq_x100, RANGE PWM] pairs matching real cal layout.
@@ -258,7 +291,9 @@ void generate_fake_calibration_data(uint8_t osc, uint32_t* out) {
   }
 
   // Small per-osc spread so tables are not identical.
-  static const float kOscScale[NUM_OSCILLATORS] = { 1.00f, 1.02f, 0.98f };
+  static const float kOscScale[NUM_OSCILLATORS] = {
+    1.00f, 1.02f, 0.98f, 1.01f, 0.99f, 1.03f, 0.97f, 1.00f
+  };
   const float oscScale = kOscScale[osc];
   const uint32_t pwmSat = (uint32_t)(0.98f * (float)DIV_COUNTER);
 
@@ -348,10 +383,13 @@ void seed_fake_calibration_tables(bool force) {
       }
     }
 
-    // Sane PW defaults (empty FS would otherwise load zeros over RAM defaults).
-    pack_pw_u16(PWCenterBankBuffer, osc, 570);
-    pack_pw_u16(PWLowLimitBankBuffer, osc, 0);
-    pack_pw_u16(PWHighLimitBankBuffer, osc, DIV_COUNTER_PW);
+  }
+
+  static const uint16_t kPwCenterDefault[NUM_PW_CHANNELS] = { 570, 552, 540, 553 };
+  for (uint8_t v = 0; v < NUM_PW_CHANNELS; ++v) {
+    pack_pw_u16(PWCenterBankBuffer, v, kPwCenterDefault[v]);
+    pack_pw_u16(PWLowLimitBankBuffer, v, 0);
+    pack_pw_u16(PWHighLimitBankBuffer, v, DIV_COUNTER_PW);
   }
 
   write_fs_bank("voiceTables", voiceTablesBankBuffer, FSBankSize);
