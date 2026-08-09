@@ -151,7 +151,7 @@ Legacy initializer for PID‑based DCO calibration:
   - `[2] = sNotePitches[manual_DCO_calibration_start_note - 12] * 100`
   - `[3] = initManualAmpCompCalibrationVal[currentDCO]`
 - Sets PID parameters (`PIDMinGap`, `samplesNumber`, `sampleTime`, output limits).
-- Turns off all oscillators and parks the shared PW voice.
+- Turns off all oscillators and parks all 4 PW channels.
 - Calls `voice_task_autotune(0, PIDLimitsFormula)` to start the first measurement.
 
 > This path works with `PID_dco_calibration()`, which is largely superseded by the newer `calibrate_DCO()` routine.

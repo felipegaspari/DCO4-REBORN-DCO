@@ -62,7 +62,7 @@ flowchart TD
 
 ### `DCO.ino`
 
-Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine flags (**pitch ids** / **board defaults** / **overrides** / **guards** at top). Monosynth: 1 voice × 3 oscillators.
+Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine flags (**pitch ids** / **board defaults** / **overrides** / **guards** at top). **4 MIDI voices × 2 oscillators**.
 
 **Functions**
 - `setup()` — Core 0 init: serial, MIDI, LFOs, pins, USB strings, cal pin.
@@ -585,13 +585,13 @@ Constants only. **No function definitions.**
 - `disable_all_oscillators_and_range_pwm()` — Mute oscs / park RANGE (PIO `range_pio_set_level(DIV_COUNTER)` when `RANGE0_PIO_DITHER_TEST`, else GPIO high); calls `reset_pw_to_DIV_COUNTER_PW`.
   - **Called from:** `init_DCO_calibration()`, `DCO_calibration()`, `restart_DCO_calibration()`.
   - **When:** Cal setup (note `init_DCO_calibration` unreachable at boot).
-- `reset_pw_to_DIV_COUNTER_PW()` — Shared PW PWM → max wrap.
+- `reset_pw_to_DIV_COUNTER_PW()` — All 4 voice PW PWM → max wrap.
   - **Called from:** `disable_all_oscillators_and_range_pwm()`.
   - **When:** Cal setup.
 - `init_DCO_calibration()` — Legacy/boot cal kickoff.
   - **Called from:** `setup1()` only if `calibrationFlag` — but flag is set `false` just above → **unreachable**.
   - **When:** Would be boot; currently never.
-- `DCO_calibration()` — Full auto-cal: PW center/limits once on voice 0, then `calibrate_DCO` + FS write per osc 0..2, reload, precompute; clears `calibrationFlag`.
+- `DCO_calibration()` — Full auto-cal: even osc → PW center/limits for `voice=osc/2`; every osc → `calibrate_DCO` + FS amp write 0..7; reload; precompute; clears `calibrationFlag`.
   - **Called from:** `loop1()` when `calibrationFlag && !manualCalibrationFlag`.
   - **When:** Auto-cal (blocking one-shot).
 - `restart_DCO_calibration()` — Reset state between oscillators.
@@ -600,7 +600,7 @@ Constants only. **No function definitions.**
 - `find_PW_for_target_duty()` — Search PW for target duty.
   - **Called from:** `find_PW_center()`.
   - **When:** Auto-cal PW stage.
-- `find_PW_center()` — Find ~50% PW center; `update_FS_PWCenter`.
+- `find_PW_center()` — Find ~50% PW center for `voiceIdx = currentDCO/2`; `update_FS_PWCenter(voice)`.
   - **Called from:** `DCO_calibration()` (even DCOs).
   - **When:** Auto-cal.
 - `search_PW_limit_from_center()` — Walk PW toward low/high duty limit.
@@ -614,7 +614,7 @@ Constants only. **No function definitions.**
   - **When:** Cal measurement (live via wrapper).
 - `cal_sense_probe_log()` — 40 ms raw cal-sense edge probe (no period gate); `[CAL_SENSE] pin=…` ~2 Hz.
   - **Called from:** `DCO_calibration_debug()` on gap timeout.
-  - **When:** Manual-cal timeout diagnostics. Bench table: [`AUTOTUNE.md`](AUTOTUNE.md) “Cal-sense bench checks” (`DCO_calibration_pin`, currently GP6).
+  - **When:** Manual-cal timeout diagnostics. Bench table: [`AUTOTUNE.md`](AUTOTUNE.md) “Cal-sense bench checks” (`DCO_calibration_pin` = GP10).
 - `DCO_calibration_debug()` — Live gap → `[MANUAL_GAP]` + `serialSendParam32` for UI; probe on TIMEOUT.
   - **Called from:** `loop1()` manual-cal branch every iter.
   - **When:** Manual-cal.
@@ -684,24 +684,24 @@ Globals / prototypes. **No function definitions.**
 
 ### `FS.h`
 
-Constants / buffers; declares fake-calibration helpers under `ENABLE_FS_CALIBRATION`.
+Constants / buffers; declares fake-calibration helpers under `ENABLE_FS_CALIBRATION`. Amp-comp `FSBankSize` × `NUM_OSCILLATORS` (8); PW `FSPWBankSize` × `NUM_PW_CHANNELS` (4).
 
 ### `FS.ino`
 
 **Functions**
-- `init_FS()` — Mount LittleFS; load tables into float or Q8 arrays.
+- `init_FS()` — Mount LittleFS; load amp-comp (8 osc) + PW (4 voices); rewrite PW files if size ≠ `FSPWBankSize`.
   - **Called from:** `setup1()`; end of `DCO_calibration()`; end of `seed_fake_calibration_tables()`.
   - **When:** Boot; after auto-cal write; after fake seed.
 - `update_FS_voice()` — Persist one osc amp table.
   - **Called from:** `DCO_calibration()` per osc; `seed_fake_calibration_tables()`.
   - **When:** Auto-cal; fake seed.
-- `update_FS_PWCenter()` — Persist PW center.
+- `update_FS_PWCenter()` — Persist PW center for one MIDI voice (0..3).
   - **Called from:** `find_PW_center()`; `seed_fake_calibration_tables()`.
   - **When:** Auto-cal; fake seed.
-- `update_FS_PW_High_Limit()` — Persist PW high limit.
+- `update_FS_PW_High_Limit()` — Persist PW high limit (voice 0..3).
   - **Called from:** `find_PW_limit_v2()`; `seed_fake_calibration_tables()`.
   - **When:** Auto-cal; fake seed.
-- `update_FS_PW_Low_Limit()` — Persist PW low limit.
+- `update_FS_PW_Low_Limit()` — Persist PW low limit (voice 0..3).
   - **Called from:** `find_PW_limit_v2()`; `seed_fake_calibration_tables()`.
   - **When:** Auto-cal; fake seed.
 - `update_FS_ManualCalibrationOffset()` — Persist manual offset.
@@ -710,7 +710,7 @@ Constants / buffers; declares fake-calibration helpers under `ENABLE_FS_CALIBRAT
 - `generate_fake_calibration_data()` — Build one osc’s 22 `[freq_x100, RANGE PWM]` pairs (archived curve shape, real note schedule).
   - **Called from:** `seed_fake_calibration_tables()`.
   - **When:** Fake seed.
-- `seed_fake_calibration_tables(force)` — Write full fake amp-comp + PW banks to LittleFS (`"w"` truncate), then `init_FS()`. Precomputes when `force=true`. Silent (no Serial). `force=false` only if `voiceTables` is missing.
+- `seed_fake_calibration_tables(force)` — Write full fake amp-comp (8 osc) + PW defaults (4 voices) to LittleFS (`"w"` truncate), then `init_FS()`. Precomputes when `force=true`. Silent (no Serial). `force=false` only if `voiceTables` is missing.
   - **Called from:** `setup1()` with `false` (before `init_FS`); `apply_param_debug_command` case **30** with `true`.
   - **When:** Boot if file missing; on-demand force-overwrite.
 
