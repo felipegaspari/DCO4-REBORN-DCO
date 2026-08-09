@@ -17,11 +17,9 @@
 // Same isolated-project pattern as ADSR_Bezier (relative _build_libs path).
 // mo-lfo has a .cpp — it is compiled via #include in LFO.ino (not sketchbook).
 #include "_build_libs/mo-lfo/mo-lfo.h"
-// After Mainboard absorption, DCO is the sole LFO clock:
-//   LFO1 → pitch (volatile Q24 arrays) + EnvVCA depth (LFO1toVCA)
-//   LFO2 → OSC2 (DCO_B) pitch (fine+coarse folded) + PW + EnvVCF depth (LFO2toVCF)
-//   drift LFOs → pitch drift + soft VCF_DRIFT
-// Do not run a second LFO engine on Mainboard in hub mode (Phase 5 archives it).
+// With ENABLE_MB_MOD_STREAM (classic PCB): Mainboard clocks LFO1/LFO2 + EnvDCO.
+// DCO consumes 'm' Q15, bakes local pitch depths, keeps pitch-drift LFOs + Character.
+// Shim (flag off): Core0 still runs LFO1()/LFO2() locally.
 
 enum Lfo1PitchSlot : uint8_t {
   LFO1_PITCH_OSC1 = 0,

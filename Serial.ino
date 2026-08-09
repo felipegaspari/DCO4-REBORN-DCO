@@ -1,5 +1,5 @@
-// Serial1 = MIDI DIN @ 31250; Serial2 = Input hub @ 2.5M (inner panel protocol).
-// Screen has no DCO port: gap 'x' rides the Input link and Input relays it.
+// Serial1 = MIDI DIN @ 31250; Serial2 = Mainboard @ 2.5M.
+// USB CDC still accepts Input-style 'a'..'d'/'p'/'q' for bench without the panel.
 
 static void input_handle_adsr1(char, const uint8_t* payload, uint8_t len) {
   if (len != INPUT_SERIAL_LEN_ADSR_BLOCK) return;
@@ -75,8 +75,8 @@ static void input_handle_filter_block(char, const uint8_t* payload, uint8_t len)
   cv_bake_lfo2_to_vcf_scale();
 }
 
-// USB and panel share one LUT. Tag the drain so USB 'p' can mirror to Input
-// without echoing the panel's own stream (loop).
+// USB uses the Input-style LUT. Serial2 uses the Mainboard LUT.
+// Tag the drain so USB 'p' can mirror to Mainboard without echoing MB→DCO.
 enum ParamIngress : uint8_t {
   PARAM_SRC_INPUT = 0,
   PARAM_SRC_USB   = 1,
@@ -196,8 +196,97 @@ static const SerialCommandDef inputSerialCommands[] = {
   { INPUT_CMD_PRESET_NAME,   INPUT_SERIAL_LEN_PRESET_NAME,  input_handle_preset_name  },
 };
 
+static void mb_handle_param16(char, const uint8_t* payload, uint8_t len) {
+  if (len != INPUT_SERIAL_LEN_PARAM_16) return;
+  ParamFrame frame;
+  decode_param_p(payload, frame);
+  update_parameters(frame.id, (int16_t)frame.value);
+}
+
+#define MB_BENCH_RING_CAP 512
+static uint8_t mb_bench_ring[MB_BENCH_RING_CAP];
+static uint16_t mb_bench_ring_head = 0;
+static uint16_t mb_bench_ring_tail = 0;
+static uint16_t mb_bench_ring_count = 0;
+
+static void mb_handle_bench_text(char, const uint8_t* payload, uint8_t len) {
+  if (len < 1) return;
+  uint8_t n = payload[0];
+  if (n > SERIAL_BENCH_TEXT_DATA_MAX) n = SERIAL_BENCH_TEXT_DATA_MAX;
+  if ((uint8_t)(n + 1u) > len) n = (uint8_t)(len - 1u);
+  for (uint8_t i = 0; i < n; i++) {
+    if (mb_bench_ring_count >= MB_BENCH_RING_CAP) break;
+    mb_bench_ring[mb_bench_ring_head] = payload[1 + i];
+    mb_bench_ring_head = (uint16_t)((mb_bench_ring_head + 1u) % MB_BENCH_RING_CAP);
+    mb_bench_ring_count++;
+  }
+}
+
+void mb_bench_text_drain() {
+  if (mb_bench_ring_count == 0u) return;
+#ifdef ENABLE_USB_CONTROL
+  if (Serial.available() > 0) return;
+#endif
+  int avail = Serial.availableForWrite();
+  if (avail <= 0) return;
+
+  uint16_t n = mb_bench_ring_count;
+  if (n > 64u) n = 64u;
+  if ((uint16_t)avail < n) n = (uint16_t)avail;
+
+  uint16_t first = (uint16_t)(MB_BENCH_RING_CAP - mb_bench_ring_tail);
+  if (first > n) first = n;
+  Serial.write(mb_bench_ring + mb_bench_ring_tail, first);
+  mb_bench_ring_tail = (uint16_t)((mb_bench_ring_tail + first) % MB_BENCH_RING_CAP);
+  mb_bench_ring_count = (uint16_t)(mb_bench_ring_count - first);
+  n = (uint16_t)(n - first);
+  if (n > 0u) {
+    Serial.write(mb_bench_ring + mb_bench_ring_tail, n);
+    mb_bench_ring_tail = (uint16_t)((mb_bench_ring_tail + n) % MB_BENCH_RING_CAP);
+    mb_bench_ring_count = (uint16_t)(mb_bench_ring_count - n);
+  }
+}
+
+static void mb_handle_mod_stream(char, const uint8_t* payload, uint8_t len) {
+  if (len != SERIAL_PAYLOAD_LEN_MOD_STREAM) return;
+  LFO1Level = (int16_t)decode_u16_le(payload + 0);
+  LFO2Level = (int16_t)decode_u16_le(payload + 2);
+  for (uint8_t i = 0; i < 4 && i < NUM_VOICES_TOTAL; i++) {
+    ADSR1Level_q15[i] = (int16_t)decode_u16_le(payload + 4 + i * 2);
+  }
+  matrix_pitch_mod_q24 = (int32_t)decode_u32_le(payload + 12);
+#ifdef ENABLE_MB_MOD_STREAM
+  if (LFO1toOSC1_q24 == 0 && LFO1toOSC2_q24 == 0 && LFO1toOSC3_q24 == 0) {
+    const int32_t m = applyDepthQ24(LFO1Level, LFO1toDCO_q24);
+    lfo1_pitch_mod_q24[LFO1_PITCH_OSC1] = m;
+    lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] = m;
+    lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] = m;
+  } else {
+    lfo1_pitch_mod_q24[LFO1_PITCH_OSC1] =
+      applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC1_q24);
+    lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] =
+      applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC2_q24);
+    lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] =
+      applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC3_q24);
+  }
+  lfo2_pitch_mod_q24[LFO2_PITCH_OSC2] =
+    applyDepthQ24(LFO2Level, LFO2toOSC2_q24 + LFO2toOSC2_coarse_q24);
+  lfo2_pitch_mod_q24[LFO2_PITCH_OSC3] =
+    applyDepthQ24(LFO2Level, LFO2toOSC3_q24 + LFO2toOSC3_coarse_q24);
+  __dmb();
+#endif
+}
+
+static const SerialCommandDef mainboardSerialCommands[] = {
+  { SERIAL_CMD_PARAM_16,    INPUT_SERIAL_LEN_PARAM_16,      mb_handle_param16     },
+  { SERIAL_CMD_MOD_STREAM,  SERIAL_PAYLOAD_LEN_MOD_STREAM,  mb_handle_mod_stream  },
+  { SERIAL_CMD_BENCH_TEXT,  SERIAL_PAYLOAD_LEN_BENCH_TEXT,  mb_handle_bench_text  },
+};
+
 static SerialCommandTable inputSerialLut;
 static SerialParserContext inputSerialParser = {};
+static SerialCommandTable mainboardSerialLut;
+static SerialParserContext mainboardSerialParser = {};
 
 void init_serial() {
   Serial1.setFIFOSize(256);
@@ -216,6 +305,11 @@ void init_serial() {
     inputSerialLut,
     inputSerialCommands,
     sizeof(inputSerialCommands) / sizeof(inputSerialCommands[0])
+  );
+  serial_command_table_init(
+    mainboardSerialLut,
+    mainboardSerialCommands,
+    sizeof(mainboardSerialCommands) / sizeof(mainboardSerialCommands[0])
   );
 }
 
@@ -243,8 +337,8 @@ void init_usb() {
 void __not_in_flash_func(serial_panel_task)() {
   g_param_ingress = PARAM_SRC_INPUT;
   serial_parser_drain(
-    inputSerialParser,
-    inputSerialLut,
+    mainboardSerialParser,
+    mainboardSerialLut,
     Serial2,
     SERIAL_DRAIN_BYTE_BUDGET
   );
@@ -269,8 +363,8 @@ void __not_in_flash_func(serial_usb_task)() {
 
 #endif  // ENABLE_USB_CONTROL
 
-// TX slim 'x' to Input: gap (154) and cal offsets (155). Input relays 154 on to Screen.
-// Drop the frame if Serial2 TX is not ready (USB-only bench with no Input board).
+// TX slim 'x' to Mainboard: gap (154) and cal offsets (155). MB relays to Input → Screen.
+// Drop the frame if Serial2 TX is not ready (USB-only bench with no Mainboard).
 // Persistable USB/MIDI 'p' echo is serialSendParam16 / serial_echo_persistable_param16.
 void serialSendParam32(byte paramNumber, uint32_t paramValue) {
   if (Serial2.availableForWrite() < 1) {
@@ -279,4 +373,30 @@ void serialSendParam32(byte paramNumber, uint32_t paramValue) {
   uint8_t payload[INPUT_SERIAL_LEN_PARAM_32];
   encode_param32(payload, (uint8_t)paramNumber, paramValue);
   serial_frame_write(Serial2, INPUT_CMD_PARAM_32, payload, INPUT_SERIAL_LEN_PARAM_32);
+}
+
+void serial_send_note_on(uint8_t voice, uint8_t velocity, uint8_t note, uint8_t flags) {
+  if (Serial2.availableForWrite() < 1) {
+    return;
+  }
+  uint8_t payload[SERIAL_PAYLOAD_LEN_NOTE_ON] = { voice, velocity, note, flags };
+  serial_frame_write(Serial2, SERIAL_CMD_NOTE_ON, payload, SERIAL_PAYLOAD_LEN_NOTE_ON);
+}
+
+void serial_send_note_off(uint8_t voice) {
+  if (Serial2.availableForWrite() < 1) {
+    return;
+  }
+  serial_frame_write(Serial2, SERIAL_CMD_NOTE_OFF, &voice, SERIAL_PAYLOAD_LEN_NOTE_OFF);
+}
+
+void serial_send_expression() {
+  if (Serial2.availableForWrite() < 1) {
+    return;
+  }
+  uint8_t payload[SERIAL_PAYLOAD_LEN_EXPRESSION];
+  payload[0] = midi_aftertouch;
+  payload[1] = midi_mod_wheel;
+  encode_u16_le(payload + 2, (uint16_t)midi_pitch_bend);
+  serial_frame_write(Serial2, SERIAL_CMD_EXPRESSION, payload, SERIAL_PAYLOAD_LEN_EXPRESSION);
 }

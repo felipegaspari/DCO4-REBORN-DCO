@@ -91,8 +91,12 @@ void __not_in_flash_func(update_CV_outs)() {
     matrix_pitch_mod_q24 = 0;
     return;
   }
+#ifdef ENABLE_MB_MOD_STREAM
+  return;
+#else
   matrix_pitch_mod_q24 = mod_matrix_eval_pitch_q24(LFO1Level, LFO2Level);
   return;
+#endif
 #else
   // Snapshot Core0 LFO mailbox once (VCA/VCF + matrix LFO1/LFO2 sources).
   const int16_t local_LFO1Level = LFO1Level;

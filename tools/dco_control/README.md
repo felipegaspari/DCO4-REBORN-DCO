@@ -108,7 +108,7 @@ bench-only buttons:
 | LFOs | Waveforms, speeds, and the LFO routing depths |
 | Calibration | Autotune trigger, manual calibration stage/offsets, PIO pulse length (Y) via debug 160, fake-cal seed |
 | Character | Master Character amount (ParamId 221) plus diagnostic noise jitters via debug 160 (`0xC8` / `0xCA` / `0xCB`); see [`docs/CHARACTER.md`](../../docs/CHARACTER.md) |
-| Diagnostics | PIO topology / period probes and hot-path profiler buttons |
+| Diagnostics | PIO topology / period probes, DCO hot-path profiler, Mainboard profiler (40–42) |
 
 Anything the board prints — the topology report, profiler tables, `DCO_DEBUG_REPORT`
 output, autotune progress — lands in the **Board output** pane under the tabs. Drag the
@@ -169,6 +169,11 @@ On the same tab, the **Hot-path profiler** buttons drive `PARAM_DEBUG_COMMAND` v
 - **Reset profiler** clears every accumulator.
 - **Toggle ~1 Hz dump** turns the automatic report on or off; the board immediately prints
   `bench periodic on` or `off`.
+
+**Mainboard profiler** (40 / 41 / 42) is a separate panel. DCO forwards those opcodes to
+the STM32 over Serial2; dump ASCII returns as slim `'t'` chunks and lands in the same Board
+pane. Needs Mainboard `RUNNING_AVERAGE`. Do not reuse DCO 10 / 11 / 12. See
+[`DCO/docs/BENCHMARKING.md`](../../docs/BENCHMARKING.md) §12.
 
 Two controls on the Oscillators tab (Sync section) are easy to mistake for each other, because they are different
 parameters doing different jobs:

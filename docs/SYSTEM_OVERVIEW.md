@@ -1,61 +1,51 @@
 # DCO4-REBORN System Overview
 
-DCO4-REBORN is a **fully digitally controlled analog polysynth**, forked from DCO3-MONOSYNTH and restored to **old DCO4 voicing**: digital control and calibration drive analog DCO / filter / VCA hardware. The goal includes patch saving for all parameters.
+DCO4-REBORN is a **digitally controlled analog polysynth** on **classic DCO4 PCB wiring**: STM32 Mainboard in the UART middle, **4 MIDI voices × 2 oscillators**. Control math is DCO3-style (Q15/Q24, bake-on-write, slim LE serial, jump-table ParamIds).
 
-The shipping instrument is **three firmwares** (Mainboard absorbed into DCO). Board-specific details live in each board folder / docs.
-
-**DCO board:** RP2040 or RP2350 (**A** with helper, or **B** solo), **4 MIDI voices × 2 oscillators**, freq on PIO (pio0+pio1, 8 SMs), amp via RANGE HW PWM (no dither), **PW PWM ×4** (live), EnvDCO/VCA/VCF, LFOs. RP2350: 4 sub-osc SMs on pio2 (pins TBD). Cut/Res/VCA/dist/levels/wave-mux **firmware kept**, flags off, not wired. Autotune stack retained (PW center/limits + amp-comp).
-
-**Dual MCU (concept):** RP2350A + helper RP2040 sharing Input TX — see [`DUAL_MCU.md`](DUAL_MCU.md). `DCO/` keeps full IO code for a later RP2350B-only build.
-
-**Absorption:** STM32 Mainboard firmware is archived under [`../../_archived/Mainboard/`](../../_archived/Mainboard/). History: [`MAINBOARD_ABSORPTION.md`](MAINBOARD_ABSORPTION.md).
+Board-specific detail lives in each folder’s `docs/`. Reintegration contract: [`MAINBOARD_REINTEGRATION.md`](MAINBOARD_REINTEGRATION.md) and [`../../MAINBOARD-CONTROLLER/docs/MAINBOARD_REINTEGRATION.md`](../../MAINBOARD-CONTROLLER/docs/MAINBOARD_REINTEGRATION.md).
 
 ---
 
 ## Boards and ownership
 
-| Board | Repo / folder | MCU | Owns |
-|-------|---------------|-----|------|
-| **DCO (voice + hub)** | `DCO/` | RP2040 or RP2350A/B | MIDI, 4×2 PIO DCOs, PW ×4, EnvDCO/VCA/VCF, LFOs, cal, LittleFS; Input UART (panel + gap). Cut/Res/VCA/mux **code** retained, flags off, not wired. Full dist/mode/FX **code** for solo-B |
-| **Voice aux** | [`VOICE-AUX/`](../../VOICE-AUX/) | RP2040 | RX-only on Input TX; AS3320 mode, dist Drive/Mix, FX stubs — [`DUAL_MCU.md`](DUAL_MCU.md) |
-| **Input controller** | `INPUT-CONTROLLER/` | RP2040 | Front panel, presets; UART to voice (fanout to DCO ± aux); relays gap `'x'` 154 → Screen |
-| **Screen controller** | `SCREEN-CONTROLLER/` | RP2040 | ILI9488 + LVGL; UI from Input; gap relayed by Input |
-| ~~Mainboard~~ | [`_archived/Mainboard/`](../../_archived/Mainboard/) | STM32 | *Archived* — no firmware path remains on any board |
+| Board | Folder | MCU | Owns |
+|-------|--------|-----|------|
+| **DCO** | `DCO/` | RP2040 / RP2350 | MIDI (USB+DIN), voice alloc (mono/poly/stack), PIO pitch, RANGE/PW PWM, amp-comp, autotune, LittleFS, Character pitch/PW jitter, per-osc **pitch** drift |
+| **Mainboard** | `MAINBOARD-CONTROLLER/` | STM32 | EnvVCA ×4, EnvVCF ×4, EnvDCO ×4, LFO1/LFO2, VCF drift, mod matrix, VCA/VCF/reso PWM, MCP4728, 74HC595, Input RX, DCO peer |
+| **Input** | `INPUT-CONTROLLER/` | RP2040 | Panel scan, presets, Screen UI frames; relays gap 154 |
+| **Screen** | `SCREEN-CONTROLLER/` | RP2040 | LVGL UI |
+| Voice aux | `VOICE-AUX/` | RP2040 | Optional Dist / filter-mode helper |
 
-**ParamId space:** shared `params_def.h` across boards. Do not renumber IDs.
+OSC3 ParamIds (33–35, 38, 87–89) stay in the enum for presets. Analog 4×2 has SQR1 / SQR2 / Sub only — OSC3 level dest is a no-op on Mainboard. Dist 52–53 is stubbed unless that analog exists.
+
+**ParamId space:** canonical copy is DCO `params_def.h` (synced to Mainboard/Input). Do not renumber.
 
 ---
 
-## Inter-board links (default — three boards; optional voice aux)
+## Inter-board links (classic DCO4 PCB)
 
 ```mermaid
 flowchart LR
-  World["MIDI USB + DIN"] --> DCO["DCO hub RP2350"]
-  Input["Input"] -->|"Input Serial1 TX GP0 @ 2.5M\na..f, p, w"| Fan["TX_fanout"]
-  Fan --> DCO
-  Fan --> Aux["RP2040 aux RX-only"]
-  DCO -->|"DCO Serial2 TX GP20 to Input Serial1 RX GP1\ngap x 154 + cal 155"| Input
-  Input -->|"Input Serial2 TX GP4: UI + gap forward"| Screen["Screen"]
-  DCO --> AnalogFront["Osc + RANGE + PW"]
-  Aux --> AnalogPost["Mode + Dist + FX"]
+  MIDI["MIDI USB+DIN"] --> DCO["DCO RP2040/2350"]
+  DCO -->|"Serial2 GP20/21 2.5M"| MB["STM32 Mainboard"]
+  Input["Input"] -->|"Serial2 GP4/5"| MB
+  Input -->|"Serial1 GP0/1"| Screen["Screen"]
+  MB -->|"Serial1 PA9/PA10"| Screen
+  MB -->|"Serial8 PE0/PE1"| Input
+  MB --> Analog["4x VCA + 4x VCF + reso\nMCP4728 + 74HC595"]
 ```
-
-### Link details (hub default)
 
 | Link | Baud | Peers | Role |
 |------|------|-------|------|
-| DCO `Serial1` | 31250 | DIN MIDI | MIDI in (RX1 / TX0) — interim HW; PIO MIDI later |
-| DCO `Serial2` **RX GP21** | 2.5M | Input `Serial1` **TX GP0** | Panel in (slim `'a'`–`'d'`, `'p'`, `'q'`; LE, no finish). Input firmware still sends the old BE format until updated. Same TX may fan out to RP2040 aux RX ([`DUAL_MCU.md`](DUAL_MCU.md)) |
-| DCO `Serial2` **TX GP20** | 2.5M | Input `Serial1` **RX GP1** | Gap/offset `'x'` 154 / 155 + persistable `'p'` mirror out (DCO only — aux never TX) |
-| Input `Serial2` **TX GP4** | 2.5M | Screen `Serial1` **RX GP13** | UI frames / preset names + forwarded gap `'x'` 154 |
+| DCO `Serial1` | 31250 | DIN MIDI | MIDI in |
+| DCO `Serial2` GP20/21 | 2.5M | Mainboard `Serial2` PD5/PD6 | `'n'`/`'o'`/`'e'`/`'x'`/`'p'` DCO→MB; `'m'`/`'p'` MB→DCO |
+| Input `Serial2` GP4/5 | 2.5M | Mainboard `Serial8` PE0/PE1 | slim `'a'`–`'d'`/`'p'`/`'q'` Input→MB; `'x'`/`'p'` MB→Input |
+| Input `Serial1` GP0 | 2.5M | Screen `Serial1` GP13 | UI frames + relayed gap 154 |
+| Mainboard `Serial1` | 2.5M | Screen (optional second feed) | unused if Input already mirrors UI |
 
-On a Pico the silkscreen `UART0` is GP0/GP1 and is Arduino-Pico's `Serial1`; `UART1` is `Serial2`.
+Protocol is **slim little-endian**, no finish byte. PW = `'p'` 210, ADSR1→VCA = `'p'` 222. Do not restore BE `'p'` or Input `'e'`/`'f'` blocks.
 
-The DCO↔Input link is one two-way UART pair on each side: the DCO's `Serial2` (TX GP20 / RX GP21) against the Input's `Serial1` (TX GP0 / RX GP1). The Input reaches the Screen on its other UART, `Serial2` TX GP4, whose RX (GP5) has no conductor since the Screen never transmits.
-
-Gap (`PARAM_GAP_FROM_DCO` 154) and cal offsets (`PARAM_MANUAL_CALIBRATION_OFFSET_FROM_DCO` 155) both TX out the DCO's `Serial2` TX, the DCO's only peer link. Input receives them on its `Serial1` RX, keeps 155 and forwards 154 verbatim to Screen. Persistable USB/MIDI `'p'` IDs use the same TX for LittleFS RAM mirror (panel ingress never echoes). The DCO has no Screen port and no PIO software UART: `serial_read_from_dco()` on Input is the sole relay.
-
-Note edges never leave the DCO. `noteStart[]` / `noteEnd[]` drive EnvDCO/EnvVCA/EnvVCF locally, so the old `'n'`/`'o'` note frames are gone.
+Gap 154 / cal 155: DCO `'x'` → Mainboard → Input → Screen (154 only on Screen).
 
 ---
 
@@ -63,8 +53,9 @@ Note edges never leave the DCO. `noteStart[]` / `noteEnd[]` drive EnvDCO/EnvVCA/
 
 | Flag | Default | Role |
 |------|---------|------|
-| `ENABLE_CV_OUTS` / `WAVE_MUX` | off | Cut/Res/VCA/dist/levels/mux writers — **kept compiled-out** for later expansion; not used on this board. PW PWM is independent (always live). |
+| `ENABLE_MAINBOARD_LINK` | on | Serial2 = Mainboard peer |
+| `ENABLE_MB_MOD_STREAM` | on | Consume `'m'`; skip local LFO1/2 + EnvDCO clocks |
+| `ENABLE_CV_OUTS` / `WAVE_MUX` | off | Analog writers stay compiled-out on this board |
+| `ENABLE_USB_CONTROL` | on | USB CDC Input-style frames for bench |
 
-The serial topology is no longer switchable: Serial1 is DIN MIDI, Serial2 is the Input link. The old `ENABLE_INPUT_UART`, `ENABLE_SCREEN_UART` and `ENABLE_LEGACY_MAINBOARD_LINK` flags were removed with the Mainboard and SerialPIO paths.
-
-Pin map: [`PINOUT.md`](PINOUT.md). Mod matrix: [`MOD_MATRIX.md`](MOD_MATRIX.md). Wave mux: [`WAVE_MUX.md`](WAVE_MUX.md).
+Pin map: [`PINOUT.md`](PINOUT.md). Mod matrix (DCO depth apply): [`MOD_MATRIX.md`](MOD_MATRIX.md).

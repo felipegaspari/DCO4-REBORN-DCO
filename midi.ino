@@ -74,7 +74,9 @@ void handleNoteOff(byte channel, byte pitch, byte velocity) {
 void handleControlChange(byte channel, byte number, byte value) {
   // CC 1 (mod wheel) → mod matrix source 11.
   if (number == 1) {
+    midi_mod_wheel = value;
     mod_matrix_set_mod_wheel(value);
+    serial_send_expression();
     return;
   }
   // CC #42 is used to set the pitch bend range in semitones.
@@ -145,15 +147,18 @@ void handleProgramChange(byte channel, byte program) {
 // MIDI pitch-bend callback → midi_pitch_bend (offset to 0..16383 style).
 void handlePitchBend(byte channel, int pitchBend) {
   midi_pitch_bend = pitchBend + 8192;
+  serial_send_expression();
 }
 
 // Channel aftertouch → mod matrix source.
 void handleAfterTouchChannel(byte channel, byte pressure) {
   (void)channel;
+  midi_aftertouch = pressure;
   mod_matrix_set_aftertouch(pressure);
+  serial_send_expression();
 }
 
-// Allocate voice(s) from MIDI note-on per voiceMode/polyMode; set ADSR flags (EnvDCO/VCA/VCF are local).
+// Allocate voice(s) from MIDI note-on per voiceMode/polyMode; notify Mainboard via 'n'.
 // Mono: last-note stack push, then VOICE_NOTES/gate/note_on_flag + noteStart (porta + ADSR).
 void note_on(uint8_t note, uint8_t velocity) {
   mod_matrix_on_note_on();
@@ -168,6 +173,7 @@ void note_on(uint8_t note, uint8_t velocity) {
       note_on_flag[0] = 1;
       noteStart[0] = 1;
       noteEnd[0] = 0;
+      serial_send_note_on(0, velocity, note, NOTE_FLAG_RETRIGGER);
       return;
 
       break;
@@ -183,6 +189,7 @@ void note_on(uint8_t note, uint8_t velocity) {
               midi_velocity[i] = velocity;
               note_on_flag[i] = 1;
               noteStart[i] = 1;
+              serial_send_note_on(i, velocity, note, NOTE_FLAG_RETRIGGER);
               return;  // note already playing
             }
           }
@@ -195,6 +202,7 @@ void note_on(uint8_t note, uint8_t velocity) {
           midi_velocity[voice_num] = velocity;
           note_on_flag[voice_num] = 1;
           noteStart[voice_num] = 1;
+          serial_send_note_on(voice_num, velocity, note, NOTE_FLAG_RETRIGGER);
         }
       }
 
@@ -208,6 +216,7 @@ void note_on(uint8_t note, uint8_t velocity) {
               note_on_flag[i] = 1;
               noteStart[i] = 1;
               noteEnd[i] = 0;
+              serial_send_note_on(i, velocity, note, NOTE_FLAG_RETRIGGER);
               return;  // note already playing
             }
           }
@@ -220,6 +229,7 @@ void note_on(uint8_t note, uint8_t velocity) {
         note_on_flag[voice_num] = 1;
         noteStart[voice_num] = 1;
         noteEnd[voice_num] = 0;
+        serial_send_note_on(voice_num, velocity, note, NOTE_FLAG_RETRIGGER);
       }
       break;
 
@@ -232,6 +242,7 @@ void note_on(uint8_t note, uint8_t velocity) {
         midi_velocity[i] = velocity;
         note_on_flag[i] = 1;
         noteStart[i] = 1;
+        serial_send_note_on(i, velocity, note, NOTE_FLAG_RETRIGGER);
       }
       break;
     default:
@@ -241,7 +252,7 @@ void note_on(uint8_t note, uint8_t velocity) {
   last_midi_pitch_bend = 0;
 }
 
-// Release matching voice(s) on MIDI note-off; set noteEnd flags for the local envelopes.
+// Release matching voice(s) on MIDI note-off; 'o' only when the voice actually gates off.
 // Mono: stack remove; empty → gate off; else fall back to top + note_on_flag (porta, no ADSR retrigger).
 void note_off(uint8_t note) {
   if (voiceMode == 0) {
@@ -255,6 +266,7 @@ void note_off(uint8_t note) {
       VOICES[0] = 0;
       noteEnd[0] = 1;
       noteStart[0] = 0;
+      serial_send_note_off(0);
       return;
     }
     // Still holding other keys: sound new top; porta via note_on_flag only.
@@ -262,6 +274,7 @@ void note_off(uint8_t note) {
     VOICES[0] = millis();
     note_on_flag[0] = 1;
     noteEnd[0] = 0;
+    serial_send_note_on(0, midi_velocity[0], VOICE_NOTES[0], NOTE_FLAG_PORTA_ONLY);
     return;
   }
 
@@ -275,6 +288,7 @@ void note_off(uint8_t note) {
       VOICES[i] = 0;
       noteEnd[i] = 1;
       noteStart[i] = 0;
+      serial_send_note_off(i);
     }
   }
 }

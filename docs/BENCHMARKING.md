@@ -90,6 +90,10 @@ probes at its next loop iteration; core 0 then **formats** the report into a RAM
 drains it over USB in small chunks across later `loop()` turns. **Core 1 never prints.**
 The tables land in the tool's Board output pane.
 
+**Mainboard profiler** (STM32) uses separate opcodes **40 / 41 / 42** on the same
+`PARAM_DEBUG_COMMAND` id. DCO forwards them over Serial2; dump ASCII comes back as slim
+`'t'` chunks into this Board pane. See §12. Do not reuse DCO **10 / 11 / 12**.
+
 While that paced TX is active, both cores' `BENCH_PERIOD` probes **and** stage cycle probes
 skip samples so dump traffic cannot inflate period or stage `max`. Path counters pause too.
 After each snapshot/reset, period probes invalidate their previous timestamp so the first
@@ -608,3 +612,26 @@ noise_gens                  56302     10.00      5.38     33.42    563379.54    
 - **Engine 1:** Cheapest parent on this RP2040 set (`noise_gens` ~7.12 µs / 4.4%win); refill is a no-op (~8c).
 - **Engine 2:** Table-sum path (~9 KB heap per gen); **highest** `noise_gens` mean / `%win` here (~13.62 µs / 6.9).
 - **Engine 3:** Kellett pink is heavy per sample, but with the default mixed colors the **parent** mean (~10 µs) sits between engines 0 and 1.
+
+## 12. Mainboard profiler (`'t'` relay)
+
+STM32 Mainboard has a slim single-core `bench.h` (micros, no Pico SysTick / dual-core).
+Default sketch flags: `#define RUNNING_AVERAGE`, stride 1, no `RUNNING_AVERAGE_PERIOD`.
+dco_control Diagnostics **Mainboard profiler** sends `PARAM_DEBUG_COMMAND` (id 160):
+
+| Button | Value | Effect |
+|--------|------:|--------|
+| Dump Mainboard once | `40` | Dump once after ≥1 s window |
+| Reset Mainboard profiler | `41` | Reset accumulators |
+| Toggle Mainboard ~1 Hz dump | `42` | Toggle automatic dump |
+
+DCO `apply_param_debug_command` forwards 40–42 as `'p'` 160 on Serial2 and does **not**
+treat them as DCO 10–12. Mainboard applies locally and does **not** `forward_dco` (no bounce).
+
+Dump text is formatted on Mainboard (`=================== MAINBOARD BENCH ===================`)
+and sent as slim `'t'` frames: `[n:u8][n bytes ASCII]`, `n ≤ 15`, payload padded to 16.
+DCO copies chunks into a 512-byte ring (separate from the DCO 6144 dump buffer) and drains
+to USB CDC in `loop()` like `bench_out_drain_chunk`. `'m'` stays on the 1 ms tick.
+
+Probes wrap classic REBORN `loop()` sections: `loop_period`, `millisTimer`, `serial_1_8`,
+`ms1_block` (`DRIFT_LFOs`), `sendSerial`, `serial_2`, `lfos`, `adsr`, `cv_outs`.

@@ -372,6 +372,14 @@ BENCH_COMMANDS = (
     ("Toggle ~1 Hz dump", 12),
 )
 
+# Mainboard profiler (PARAM_DEBUG_COMMAND 160). DCO forwards 40–42 over Serial2;
+# STM32 dumps ASCII back as slim 't' chunks → Board output. Needs MB RUNNING_AVERAGE.
+BENCH_MB_COMMANDS = (
+    ("Dump Mainboard once", 40),
+    ("Reset Mainboard profiler", 41),
+    ("Toggle Mainboard ~1 Hz dump", 42),
+)
+
 # Amp-comp method + benches (PARAM_DEBUG_COMMAND 160). Method select always acks;
 # speed/accuracy need AMP_COMP_BENCHMARK + RUNNING_AVERAGE. See BENCHMARKING.md §8.
 AMP_COMP_COMMANDS = (

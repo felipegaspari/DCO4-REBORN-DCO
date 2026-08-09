@@ -171,8 +171,12 @@
 // =============================================================================
 // BOARD / IO
 // =============================================================================
-// Serial hub: Serial2 GP20/21 is the only peer link (Input panel protocol + 'x'
-// gap/cal TX). Screen is reached by Input relaying gap 154 on its Screen port.
+// Classic PCB: Serial2 GP20/21 peers with STM32 Mainboard (not Input).
+// TX 'n'/'o'/'e'/'x'/'p'; RX slim 'p' (+ 'm' if ENABLE_MB_MOD_STREAM). Input talks to Mainboard.
+#define ENABLE_MAINBOARD_LINK
+// Opt-in: consume Mainboard 'm' and skip local LFO1/2 + EnvDCO clocks.
+// Default off: DCO runs LFO1/2, all envelopes, and matrix→pitch locally.
+// #define ENABLE_MB_MOD_STREAM
 
 // Accept slim panel protocol on USB CDC too (tools/dco_control). Comment out for
 // production: stray terminal bytes are read as frame headers while enabled.
@@ -363,6 +367,7 @@ void __not_in_flash_func(loop)() {
   }
 
   if (timer50microsFlag == 1) {
+#ifndef ENABLE_MB_MOD_STREAM
     {
       BENCH_BEGIN(loop0_lfo1);
       LFO1();
@@ -375,6 +380,7 @@ void __not_in_flash_func(loop)() {
       LFO2();
       BENCH_END(loop0_lfo2);
     }
+#endif
   }
   if (timer51microsFlag == 1) {
     {
@@ -387,6 +393,7 @@ void __not_in_flash_func(loop)() {
   // Snapshot core 0's probes and print once core 1 has handed its own over. All profiler
   // serial traffic happens here, never on the audio core.
   bench_poll_core0();
+  mb_bench_text_drain();
   mem_diag_poll_core0();
 }
 

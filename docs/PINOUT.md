@@ -41,16 +41,13 @@ Full programs / sync / phase align: [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md).
 
 | Role | Peripheral | Pins | Baud | Notes |
 |------|------------|------|------|-------|
-| **Input** (panel + gap) | HW `UART1` / `Serial2` | **GP20 TX / GP21 RX** | 2 500 000 | Only peer link, against the Input's `Serial1`: GP21 RX ← Input TX GP0 (panel data); GP20 TX → Input RX GP1 (`'x'` 154/155). Input relays gap 154 to Screen |
-| ~~Screen (direct)~~ | *(removed)* | — | 2 500 000 | Was SerialPIO GP8/9; deleted — gap reaches Screen through Input. GP8 is OSC8 RESET. |
-| **DIN MIDI** | HW `UART0` interim → **PIO UART** | **GP0 TX / GP1 RX** | 31 250 | Keep USB MIDI |
-| ~~Mainboard link~~ | *(removed)* | — | — | Archived STM32; no firmware path remains |
+| **Mainboard** | HW `UART1` / `Serial2` | **GP20 TX / GP21 RX** | 2 500 000 | Classic PCB: DCO Serial2 ↔ STM32 Serial2. TX `'n'`/`'o'`/`'e'`/`'x'`/`'p'`; RX `'m'`/`'p'` |
+| ~~Screen (direct)~~ | *(removed)* | — | 2 500 000 | Gap 154 reaches Screen via Mainboard → Input → Screen. GP8 is OSC8 RESET. |
+| **DIN MIDI** | HW `UART0` | **GP0 TX / GP1 RX** | 31 250 | Keep USB MIDI |
 
 Soft bit-bang at 2.5 M is not acceptable.
 
-**Current:** DIN on HW UART0 @ GP0/1 (`Serial1` in Arduino-Pico); Input on HW UART1 @ GP20/21 (`Serial2`). Both hardware UARTs are spoken for, and the DCO has no Screen port — gap display goes out on the Input link and Input forwards it on its own `Serial2`.
-
-The DCO's pins on the Input link are fixed at GP20 TX / GP21 RX, and both wires terminate on the Input's `Serial1`: GP21 RX comes from the Input's TX (GP0), GP20 TX goes to the Input's RX (GP1). The Input's other UART, `Serial2`, drives the Screen from GP4; its RX (GP5) is not wired.
+**Current:** DIN on HW UART0 @ GP0/1 (`Serial1`); Mainboard on HW UART1 @ GP20/21 (`Serial2`). Input talks to Mainboard on its Serial2 (GP4/5) and to Screen on Serial1 (GP0). See [`MAINBOARD_REINTEGRATION.md`](MAINBOARD_REINTEGRATION.md).
 
 ---
 
@@ -127,4 +124,4 @@ ENABLE_PIO_MIDI          // DIN on PIO UART — later PCB bring-up
 ```
 PCM5102 I2S noise listen lives on **VOICE-AUX** (see [`../../VOICE-AUX/docs/I2S_NOISE.md`](../../VOICE-AUX/docs/I2S_NOISE.md)).
 
-Leave Phase 3 HW flags commented in `DCO.ino` on this board. The Input link on Serial2 is unconditional: the `ENABLE_INPUT_UART`, `ENABLE_SCREEN_UART` and `ENABLE_LEGACY_MAINBOARD_LINK` flags were removed along with the Mainboard and SerialPIO paths.
+Leave `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` commented on this board. Serial2 is the Mainboard link (`ENABLE_MAINBOARD_LINK` / `ENABLE_MB_MOD_STREAM`).

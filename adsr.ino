@@ -52,6 +52,13 @@ void init_ADSR() {
 // Each noteOn/noteOff/getWave reads micros()/millis() itself — do not share one
 // timestamp across edges + getWave (unsigned delta underflow skips A/R).
 void __not_in_flash_func(ADSR_update)() {
+#ifdef ENABLE_MB_MOD_STREAM
+  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+    noteStart[i] = 0;
+    noteEnd[i] = 0;
+  }
+  return;
+#endif
   for (int i = 0; i < NUM_VOICES; i++) {
     if (noteEnd[i] == 1) {
       ADSRVoices[i].adsr1_voice.noteOff();

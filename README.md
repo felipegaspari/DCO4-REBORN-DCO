@@ -17,9 +17,9 @@ Firmware for the **DCO voice board** of DCO4-REBORN: **4 MIDI voices × 2 oscill
 
 `setVoiceMode`: 0 mono / 1 poly / 2 stack.
 
-## Hub mode
+## Mainboard peer (classic PCB)
 
-Serial1 is DIN MIDI, Serial2 is the Input board — the DCO's only peer link. It pairs with the Input's Serial1: the DCO's Serial2 RX (GP21) is fed by the Input's TX (GP0), while the DCO's Serial2 TX (GP20) drives the Input's RX (GP1). Gap 154 and cal offsets 155 go out as `'x'` frames on that TX, and Input forwards 154 to the Screen; the DCO has no Screen port of its own. Soft EnvVCA/EnvVCF always run. Leave `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` off on this board (writers retained for later). Docs: [`docs/MAINBOARD_ABSORPTION.md`](docs/MAINBOARD_ABSORPTION.md), [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md).
+Serial1 is DIN MIDI. Serial2 GP20/21 is the **STM32 Mainboard** (not Input). TX `'n'`/`'o'`/`'e'`/`'x'`/`'p'`; RX slim `'p'` + `'m'` (LFO1/2 Q15, EnvDCO Q15×4, matrix pitch Q24). `ENABLE_MB_MOD_STREAM` (default) disables local LFO1/2 + EnvDCO clocks; pitch drift + Character + depth bakes stay here. Leave `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` off — analog lives on Mainboard. Docs: [`docs/MAINBOARD_REINTEGRATION.md`](docs/MAINBOARD_REINTEGRATION.md), [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md).
 
 ## Build
 
@@ -38,9 +38,9 @@ Vendored Arduino libraries used by the build (passed via `--libraries ./_build_l
 
 | Library | Path | Notes |
 |---------|------|--------|
-| `ADSR_Bezier` | `_build_libs/ADSR_Bezier` → `../../ADSR_Bezier` | Symlink to monorepo root; track **`main`**. Toggle math backend in [`adsr.h`](adsr.h) via `ADSR_BEZIER_USE_FLOAT` (default `0` = fixed-point). |
+| `ADSR_Bezier` | `_build_libs/ADSR_Bezier` → `../../ADSR_Bezier` | Symlink to monorepo root; track **`Q15`**. Toggle math backend in [`adsr.h`](adsr.h) via `ADSR_BEZIER_USE_FLOAT` (default `0` = fixed-point). |
 | `DCO_Noise` | `_build_libs/DCO_Noise` → `../../DCO_Noise` | Symlink to monorepo root; noise engines (`begin`/`next`). Fleet size in [`noise.h`](noise.h). |
-| `mo-lfo` | `_build_libs/mo-lfo` → `../../mo-lfo` | Symlink to monorepo root. Isolated like ADSR: `LFO.h` includes the header via `_build_libs/...`; `LFO.ino` `#include`s `mo-lfo.cpp` so Arduino IDE links it (no sketchbook library). |
+| `mo-lfo` | `_build_libs/mo-lfo` → `../../mo-lfo` | Symlink to monorepo root; track **`q15`**. Isolated like ADSR: `LFO.h` includes the header via `_build_libs/...`; `LFO.ino` `#include`s `mo-lfo.cpp` so Arduino IDE links it (no sketchbook library). |
 | `MIDI_Library` | `_build_libs/MIDI_Library` | Vendored copy |
 | `PID_v1` | `_build_libs/PID_v1` | Vendored copy |
 
@@ -51,11 +51,11 @@ Vendored Arduino libraries used by the build (passed via `--libraries ./_build_l
 ```bash
 cd _build_libs
 rm -f ADSR_Bezier
-git submodule add -b main https://github.com/felipegaspari/ADSR_Bezier.git ADSR_Bezier
+git submodule add -b Q15 https://github.com/felipegaspari/ADSR_Bezier.git ADSR_Bezier
 git submodule update --init _build_libs/ADSR_Bezier
 ```
 
-Ensure `ADSR_Bezier` is on branch **`main`**. To try the float envelope path on Pico 2, set `ADSR_BEZIER_USE_FLOAT` to `1` in `adsr.h` before building.
+Ensure `ADSR_Bezier` is on branch **`Q15`** (and `mo-lfo` on **`q15`**). To try the float envelope path on Pico 2, set `ADSR_BEZIER_USE_FLOAT` to `1` in `adsr.h` before building.
 
 ## Docs
 

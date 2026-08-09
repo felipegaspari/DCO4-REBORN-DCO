@@ -4,8 +4,8 @@
 #include <stdint.h>
 
 // Central definition of all parameter IDs used across MCUs.
-// This DCO header mirrors the mainboard's params_def.h numeric values
-// so that parameters sent over Serial are interpreted consistently.
+// Canonical ParamId list for DCO / Mainboard / Input / Screen.
+// Mainboard and Input copy this file. Do not renumber.
 //
 // IMPORTANT:
 //   - Do not change numeric values of existing IDs.
@@ -211,6 +211,8 @@ enum ParamId : uint16_t {
   // 3 = period probe at a high divider. See DCO/docs/PIO_OSCILLATORS.md section 12.
   // 10 = dump profiler once, 11 = reset profiler, 12 = toggle ~1 Hz dump
   // (RUNNING_AVERAGE builds only). See DCO/docs/BENCHMARKING.md.
+  // 40 = Mainboard dump once, 41 = MB reset, 42 = MB toggle ~1 Hz dump.
+  // DCO forwards 40–42 to Mainboard over Serial2; MB applies locally (no bounce).
   // 13 = SRAM / heap / per-core stack dump (ENABLE_MEM_DIAG; runtime polls on).
   // 14 / 15 = mem_diag loop polls off / on. See MEMORY.md.
   // 20–22 amp-comp method, 24–25 amp benches, 26–27 note retrig, 28–29 pitch benches.

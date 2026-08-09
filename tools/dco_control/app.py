@@ -1106,6 +1106,11 @@ class App:
              "Fixed: Q24 helpers. Float: native Hz for GOLD/FLOAT; Hz→Q24 then helper for integer. "
              "Accuracy vs GOLD_REF. Live float honors CLKDIV_MODE via clkdiv_live_hz.",
              2, 0),
+            ("Mainboard profiler", params.BENCH_MB_COMMANDS,
+             "Opcodes 40 / 41 / 42 go to the STM32 Mainboard (DCO forwards PARAM_DEBUG_COMMAND). "
+             "Needs RUNNING_AVERAGE on Mainboard (default on). Dump waits ≥1 s then rides "
+             "Serial2 't' chunks back to this Board pane. Do not reuse DCO 10 / 11 / 12.",
+             2, 1),
         )
         self._diag_panels = []
         for title, commands, note, grid_row, grid_col in panel_specs:

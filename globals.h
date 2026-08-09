@@ -252,6 +252,8 @@ PIO pio[2] = { pio0, pio1 };
 
 uint8_t midi_serial_status = 0;
 int midi_pitch_bend = 8192, last_midi_pitch_bend = 8192;
+uint8_t midi_aftertouch = 0;
+uint8_t midi_mod_wheel = 0;
 uint8_t pitchBendRange = 2;
 
 // Precompute 1/12 in Q24 for fast multiplier calculation
