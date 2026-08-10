@@ -4,8 +4,8 @@
 #include <stdint.h>
 
 // Ensure large, hot lookup tables can be forced into RAM when needed.
-#ifndef SRAM_DATA
-#define SRAM_DATA __attribute__((section(".sram")))
+#ifndef SRAM_DATA_CONSTANTS
+#define SRAM_DATA_CONSTANTS __attribute__((section(".sram_constant")))
 #endif
 
 #define NOTE_C_1 8.176
@@ -145,7 +145,7 @@
 #define NOTE_D10 18794.545
 #define NOTE_DS10 19912.13
 
-SRAM_DATA float sNotePitches[] = {
+SRAM_DATA_CONSTANTS const float sNotePitches[] = {
     NOTE_C_1, NOTE_CS_1, NOTE_D_1, NOTE_DS_1, NOTE_E_1, NOTE_F_1, NOTE_FS_1, NOTE_G_1, NOTE_GS_1, NOTE_A_1, NOTE_AS_1, NOTE_B_1,
     NOTE_C0, NOTE_CS0, NOTE_D0, NOTE_DS0, NOTE_E0, NOTE_F0, NOTE_FS0, NOTE_G0, NOTE_GS0, NOTE_A0, NOTE_AS0, NOTE_B0,
     NOTE_C1, NOTE_CS1, NOTE_D1, NOTE_DS1, NOTE_E1, NOTE_F1, NOTE_FS1, NOTE_G1, NOTE_GS1, NOTE_A1, NOTE_AS1, NOTE_B1,
@@ -160,7 +160,7 @@ SRAM_DATA float sNotePitches[] = {
     NOTE_C10, NOTE_CS10, NOTE_D10, NOTE_DS10};
 
 // Q24 fixed-point note frequency table (Hz * 2^24) stored as 64-bit to avoid overflow
-SRAM_DATA int64_t sNotePitches_q24[] = {
+SRAM_DATA_CONSTANTS const int64_t sNotePitches_q24[] = {
     (int64_t)(NOTE_C_1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_CS_1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_D_1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_DS_1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_E_1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_F_1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_FS_1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_G_1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_GS_1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_A_1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_AS_1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_B_1 * (double)(1ULL << 24) + 0.5),
     (int64_t)(NOTE_C0 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_CS0 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_D0 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_DS0 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_E0 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_F0 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_FS0 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_G0 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_GS0 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_A0 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_AS0 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_B0 * (double)(1ULL << 24) + 0.5),
     (int64_t)(NOTE_C1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_CS1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_D1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_DS1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_E1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_F1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_FS1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_G1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_GS1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_A1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_AS1 * (double)(1ULL << 24) + 0.5), (int64_t)(NOTE_B1 * (double)(1ULL << 24) + 0.5),

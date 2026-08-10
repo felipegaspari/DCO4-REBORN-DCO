@@ -408,9 +408,7 @@ void __not_in_flash_func(voice_task_fixed_point)() {
     const bool pitchTargetChanged = note1 != lastNote1[i] || note2 != lastNote2[i];
     lastNote1[i] = note1;
     lastNote2[i] = note2;
-
     
-
     BENCH_BEGIN(vt_osc_detune);
     static constexpr int32_t DETUNE_SCALE_Q24 = (int32_t)(0.0002f * (float)(1 << 24) + 0.5f);
     int32_t detune_steps = ((int)256 - OSC2DetuneVal);
