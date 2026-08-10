@@ -26,7 +26,7 @@ Related docs:
     - Board defaults (both MCUs): fixed voice/amp/CV (no `USE_FLOAT_*`), `PITCH_INTERP_RATIO_Q16`, amp method `FIXED`, `CLKDIV_MODE CLKDIV_Q16`. No `USE_FLOAT_ENGINE` umbrella.
     - Overrides can `#undef` / `#define` those flags (pitch A/B needs `#undef PITCH_INTERP_MODE` first).
     - Full catalog: [`BUILD_FLAGS.md`](BUILD_FLAGS.md). Math depth: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
-  - Configures USB product strings in `setup()` (via Adafruit TinyUSB; product **DCO3-MONO**), toggles board pins (23/24) for hardware fixes, and selects DCO calibration mode.
+  - Configures USB product strings in `init_usb()` (via Adafruit TinyUSB; product **DCO4-REBORN**), toggles board pins (23/24) for hardware fixes, and selects DCO calibration mode.
   - Core 0 writes LFO pitch mods into `lfo1_pitch_mod_q24[]` / `lfo2_pitch_mod_q24[]` every ~50 µs; core 1 reads them in the voice task (float path converts Q24 → float each frame).
   - `loop1()` calls `voice_task_main()` (dispatch to float or fixed), then `bench_service(1)` to hand its profiler counters to core 0, then `mem_diag_poll_core1()` (empty without `ENABLE_MEM_DIAG`; runtime 14/15 can disable).
   - **Profiling** (`RUNNING_AVERAGE`, optionally `RUNNING_AVERAGE_FINE`): both loops are bracketed by `BENCH_*` probes from [`bench.h`](../bench.h); core 0 does all the printing from `bench_poll_core0()`. See [`BENCHMARKING.md`](BENCHMARKING.md).
@@ -355,7 +355,7 @@ Related docs:
 
 - **`usb_descriptors.c`**  
   - USB MIDI device descriptors (much of the file is commented / legacy).  
-  - Product identity is also set from `setup()` (USB product **DCO3-MONO** via TinyUSB APIs).
+  - Product identity is also set from `init_usb()` (USB product **DCO4-REBORN** via TinyUSB APIs).
 
 - **`irq_tuner.*`**  
   - Experimental IRQ tuner — excised to `_removed/`; not in the live build.

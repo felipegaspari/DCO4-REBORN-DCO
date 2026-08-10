@@ -59,8 +59,8 @@ _MOD_SOURCES = (
 
 _MOD_DESTS = (
     ("Off / empty", 255),
-    ("0 OSC1 level", 0),
-    ("1 OSC2 level", 1),
+    ("0 OSC A level", 0),
+    ("1 OSC B level", 1),
     ("2 OSC3 level", 2),
     ("3 Sub level", 3),
     ("4 VCF1 reso", 4),
@@ -99,6 +99,7 @@ class Param:
     pulse_value: int = 1
     note: str = ""
     cc: int | None = None
+    hidden: bool = False  # keep in PARAMS (MIDI map / presets); skip GUI
 
 
 @dataclass(frozen=True)
@@ -154,20 +155,45 @@ def _phase_choices() -> tuple:
     return tuple(entries)
 
 
+# Bézier curve indices 0–7; names match SCREEN displayParams.ino (attack vs decay
+# differ because attack uses the reversed tables). Decay's screen case 8 LINEAR is
+# unreachable (firmware/encoder clamp to 7) and is omitted.
+_ENV_ATTACK_CURVES = (
+    ("0 - EXP", 0),
+    ("1 - SOFT", 1),
+    ("2 - STEEP", 2),
+    ("3 - CONCAVE", 3),
+    ("4 - FAST S", 4),
+    ("5 - SLOW THEN LIN", 5),
+    ("6 - ALMOST LIN", 6),
+    ("7 - LINEAR", 7),
+)
+_ENV_DECAY_CURVES = (
+    ("0 - EXP", 0),
+    ("1 - SOFT", 1),
+    ("2 - STEEP", 2),
+    ("3 - CONVEX", 3),
+    ("4 - FAST START S", 4),
+    ("5 - SLOW THEN LIN", 5),
+    ("6 - FAST THEN LIN", 6),
+    ("7 - ALMOST LIN", 7),
+)
+
+
 PARAMS: list[Param] = [
     # --- Oscillators (pitch, sync, voice, levels, wave enables) ---
     # Wire value is biased: table_index = midi - 36 + value (36 ⇒ unison).
     Param(13, "Octave shift", GROUP_OSC, "combo",
           choices=tuple((f"{(s - 36) // 12:+d}", s) for s in range(0, 73, 12)),
           default=24, cc=2),
-    Param(14, "OSC2 interval (semitones)", GROUP_OSC, "slider", 0, 60, 36, cc=3),
-    Param(33, "OSC3 interval (semitones)", GROUP_OSC, "slider", 0, 60, 36, cc=4),
-    Param(15, "OSC2 detune", GROUP_OSC, "slider", 0, 512, 0, cc=5),
-    Param(34, "OSC3 detune", GROUP_OSC, "slider", 0, 512, 0, cc=8),
+    Param(14, "OSC B interval (semitones)", GROUP_OSC, "slider", 0, 60, 36, cc=3),
+    Param(33, "OSC3 interval (semitones)", GROUP_OSC, "slider", 0, 60, 36, cc=4, hidden=True),
+    Param(15, "OSC B detune", GROUP_OSC, "slider", 0, 512, 0, cc=5),
+    Param(34, "OSC3 detune", GROUP_OSC, "slider", 0, 512, 0, cc=8, hidden=True),
     Param(31, "Hard sync topology", GROUP_OSC, "combo", default=0,
-          choices=(("0 - all free running", 0), ("1 - OSC2 masters OSC1", 1), ("2 - OSC1 masters OSC2", 2)),
+          choices=(("0 - all free running", 0), ("1 - OSC B masters OSC A", 1), ("2 - OSC A masters OSC B", 2)),
           note="which oscillator's sideset drives which reset pin; not the note-on phase "
-               "reset, which is 'Osc sync / phase align OSC2' below",
+               "reset, which is 'Osc sync / phase align OSC B' below",
           cc=20),
     Param(36, "Soft sync", GROUP_OSC, "combo", default=0,
           choices=(("0 - hard sync (cap only)", 0),
@@ -179,10 +205,10 @@ PARAMS: list[Param] = [
     Param(37, "Sub-oscillator divide", GROUP_OSC, "combo", default=0,
           choices=(("Off", 0), ("Divide by 2", 2), ("Divide by 4", 4)),
           note="output on GP8, needs a mixer input on the carrier to be audible", cc=22),
-    Param(17, "Osc sync / phase align OSC2", GROUP_OSC, "combo", default=0,
+    Param(17, "Osc sync / phase align OSC B", GROUP_OSC, "combo", default=0,
           choices=_phase_choices(),
           note="Off leaves the oscillators running through note-on; every other setting "
-               "restarts OSC1 and OSC2 together there, the degree entries delaying OSC2's "
+               "restarts OSC A and OSC B together there, the degree entries delaying OSC B's "
                "first flyback (EXACT_Y). Changing this retriggers all notes.",
           cc=23),
     Param(26, "Voice mode", GROUP_OSC, "combo", default=0,
@@ -196,34 +222,38 @@ PARAMS: list[Param] = [
     Param(30, "Analog drift spread", GROUP_OSC, "slider", 1, 127, 1, cc=75),
     Param(43, "VCA level", GROUP_OSC, "slider", 0, 128, 128, cc=76),
     Param(21, "Velocity to VCA", GROUP_OSC, "slider", 0, 20, 0, cc=77),
-    Param(22, "OSC1 level", GROUP_OSC, "slider", 0, 127, 127, cc=9),
-    Param(23, "OSC2 level", GROUP_OSC, "slider", 0, 127, 0, cc=12),
-    Param(38, "OSC3 level", GROUP_OSC, "slider", 0, 127, 0, cc=83),
+    Param(22, "OSC A level", GROUP_OSC, "slider", 0, 127, 127, cc=9),
+    Param(23, "OSC B level", GROUP_OSC, "slider", 0, 127, 0, cc=12),
+    Param(38, "OSC3 level", GROUP_OSC, "slider", 0, 127, 0, cc=83, hidden=True),
     Param(24, "Sub level", GROUP_OSC, "slider", 0, 127, 0, cc=13),
-    Param(1, "OSC1 Saw enable", GROUP_OSC, "check", default=0,
-          note="DG411 via dual 595; needs ENABLE_WAVE_MUX", cc=16),
-    Param(2, "OSC1 Pulse enable", GROUP_OSC, "check", default=0, note="analog Pulse", cc=17),
-    Param(3, "OSC1 Tri enable", GROUP_OSC, "check", default=0, cc=18),
-    Param(84, "OSC2 Saw enable", GROUP_OSC, "check", default=0, cc=112),
-    Param(85, "OSC2 Pulse enable", GROUP_OSC, "check", default=0, cc=113),
-    Param(86, "OSC2 Tri enable", GROUP_OSC, "check", default=0, cc=114),
-    Param(87, "OSC3 Saw enable", GROUP_OSC, "check", default=0, cc=115),
-    Param(88, "OSC3 Pulse enable", GROUP_OSC, "check", default=0, cc=116),
-    Param(89, "OSC3 Tri enable", GROUP_OSC, "check", default=0, cc=117),
+    Param(1, "OSC A Saw enable", GROUP_OSC, "check", default=0,
+          note="DG411 via dual 595; analog mux on Mainboard", cc=16),
+    Param(2, "OSC A Pulse enable", GROUP_OSC, "check", default=0, note="analog Pulse", cc=17),
+    Param(3, "OSC A Tri enable", GROUP_OSC, "check", default=0, cc=18),
+    Param(84, "OSC B Saw enable", GROUP_OSC, "check", default=0, cc=112),
+    Param(85, "OSC B Pulse enable", GROUP_OSC, "check", default=0, cc=113),
+    Param(86, "OSC B Tri enable", GROUP_OSC, "check", default=0, cc=114),
+    Param(87, "OSC3 Saw enable", GROUP_OSC, "check", default=0, cc=115, hidden=True),
+    Param(88, "OSC3 Pulse enable", GROUP_OSC, "check", default=0, cc=116, hidden=True),
+    Param(89, "OSC3 Tri enable", GROUP_OSC, "check", default=0, cc=117, hidden=True),
 
     # --- Envelopes (curves and routing; times live in the a/b/c blocks) ---
     Param(222, "ADSR1 to VCA", GROUP_ENV, "slider", 0, 512, 512, cc=48),
     Param(126, "EnvDCO (ADSR3) enabled", GROUP_ENV, "check", default=1, cc=24),
     Param(10, "ADSR3 to osc select", GROUP_ENV, "combo", default=0,
-          choices=(("0 - OSC1", 0), ("1 - OSC2", 1), ("2 - OSC1+2", 2), ("3 - OSC3", 3), ("4 - all", 4)),
+          choices=(("0 - OSC A", 0), ("1 - OSC B", 1), ("2 - OSC A+B", 2), ("3 - OSC3", 3), ("4 - all", 4)),
           cc=25),
-    Param(47, "ADSR3 to OSC1 detune", GROUP_ENV, "slider", -511, 511, 0, cc=26),
+    Param(47, "ADSR3 to OSC A detune", GROUP_ENV, "slider", -511, 511, 0, cc=26),
     Param(223, "EnvDCO pitch centered", GROUP_ENV, "check", default=0,
           note="off = unipolar env×depth; on = (env−16384)×2 so mid sustain ≈ note, ±2 oct @ full CW. PW stays unipolar."),
-    Param(48, "ADSR1 attack curve", GROUP_ENV, "slider", 0, 7, 0, cc=27),
-    Param(49, "ADSR1 decay curve", GROUP_ENV, "slider", 0, 7, 0, cc=28),
-    Param(50, "ADSR2 attack curve", GROUP_ENV, "slider", 0, 7, 0, cc=29),
-    Param(51, "ADSR2 decay curve", GROUP_ENV, "slider", 0, 7, 0, cc=30),
+    Param(48, "ADSR1 attack curve", GROUP_ENV, "combo", default=0,
+          choices=_ENV_ATTACK_CURVES, cc=27),
+    Param(49, "ADSR1 decay curve", GROUP_ENV, "combo", default=0,
+          choices=_ENV_DECAY_CURVES, cc=28),
+    Param(50, "ADSR2 attack curve", GROUP_ENV, "combo", default=0,
+          choices=_ENV_ATTACK_CURVES, cc=29),
+    Param(51, "ADSR2 decay curve", GROUP_ENV, "combo", default=0,
+          choices=_ENV_DECAY_CURVES, cc=30),
     Param(8, "VCA ADSR restart", GROUP_ENV, "check", default=0, cc=31),
     Param(9, "VCF ADSR restart", GROUP_ENV, "check", default=0, cc=33),
 
@@ -258,14 +288,14 @@ PARAMS: list[Param] = [
     Param(41, "LFO1 speed", GROUP_LFO, "slider", 0, 4095, 0, cc=62),
     Param(42, "LFO2 speed", GROUP_LFO, "slider", 0, 4095, 0, cc=63),
     Param(40, "LFO1 to DCO", GROUP_LFO, "slider", 0, 511, 0, cc=65),
-    Param(216, "LFO1 to OSC1 extra", GROUP_LFO, "slider", 0, 255, 0, cc=14),
-    Param(217, "LFO1 to OSC2 extra", GROUP_LFO, "slider", 0, 255, 0, cc=15),
-    Param(218, "LFO1 to OSC3 extra", GROUP_LFO, "slider", 0, 255, 0, cc=19),
+    Param(216, "LFO1 to OSC A extra", GROUP_LFO, "slider", 0, 255, 0, cc=14),
+    Param(217, "LFO1 to OSC B extra", GROUP_LFO, "slider", 0, 255, 0, cc=15),
+    Param(218, "LFO1 to OSC3 extra", GROUP_LFO, "slider", 0, 255, 0, cc=19, hidden=True),
     Param(44, "LFO1 to VCA", GROUP_LFO, "slider", 0, 1023, 0, cc=66),
-    Param(16, "LFO2 to OSC2 detune", GROUP_LFO, "slider", 0, 255, 0, cc=67),
-    Param(35, "LFO2 to OSC3 detune", GROUP_LFO, "slider", 0, 255, 0, cc=68),
-    Param(219, "LFO2 to OSC2 coarse", GROUP_LFO, "slider", 0, 511, 0, cc=119),
-    Param(220, "LFO2 to OSC3 coarse", GROUP_LFO, "slider", 0, 511, 0, cc=120),
+    Param(16, "LFO2 to OSC B detune", GROUP_LFO, "slider", 0, 255, 0, cc=67),
+    Param(35, "LFO2 to OSC3 detune", GROUP_LFO, "slider", 0, 255, 0, cc=68, hidden=True),
+    Param(219, "LFO2 to OSC B coarse", GROUP_LFO, "slider", 0, 511, 0, cc=119),
+    Param(220, "LFO2 to OSC3 coarse", GROUP_LFO, "slider", 0, 511, 0, cc=120, hidden=True),
 
     # --- Mod matrix (ParamIds 60–83; see DCO/docs/MOD_MATRIX.md) ---
     # CCs skip reserved 98–101.

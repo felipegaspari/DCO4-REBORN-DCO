@@ -357,8 +357,10 @@ void __not_in_flash_func(loop)() {
 
   {
     BENCH_BEGIN(loop0_serial);
-    if (timer1msFlag) {
+    if (timer1msFlag || Serial2.available() > 0) {
       serial_panel_task();
+    }
+    if (timer1msFlag) {
 #ifdef ENABLE_USB_CONTROL
       serial_usb_task();
 #endif

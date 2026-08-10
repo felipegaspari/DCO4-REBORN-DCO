@@ -111,27 +111,26 @@ void midi_cc_handle(uint8_t number, uint8_t value) {
 // exactly as input_handle_*() in Serial.ino writes them. PW and EnvVCA→VCA are ParamIds.
 void midi_cc_apply(uint8_t target, int16_t value) {
   switch (target) {
-    case CC_LOCAL_ADSR_VCA_ATTACK:      ADSR_VCA_attack  = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCA_A); break;
-    case CC_LOCAL_ADSR_VCA_DECAY:       ADSR_VCA_decay   = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCA_D); break;
-    case CC_LOCAL_ADSR_VCA_SUSTAIN:     ADSR_VCA_sustain = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCA_S); break;
-    case CC_LOCAL_ADSR_VCA_RELEASE:     ADSR_VCA_release = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCA_R); break;
+    case CC_LOCAL_ADSR_VCA_ATTACK:      ADSR_VCA_attack  = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCA_A); serial_send_adsr_vca_block_to_mb(); break;
+    case CC_LOCAL_ADSR_VCA_DECAY:       ADSR_VCA_decay   = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCA_D); serial_send_adsr_vca_block_to_mb(); break;
+    case CC_LOCAL_ADSR_VCA_SUSTAIN:     ADSR_VCA_sustain = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCA_S); serial_send_adsr_vca_block_to_mb(); break;
+    case CC_LOCAL_ADSR_VCA_RELEASE:     ADSR_VCA_release = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCA_R); serial_send_adsr_vca_block_to_mb(); break;
 
-    case CC_LOCAL_ADSR_VCF_ATTACK:      ADSR_VCF_attack  = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_A); break;
-    case CC_LOCAL_ADSR_VCF_DECAY:       ADSR_VCF_decay   = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_D); break;
-    case CC_LOCAL_ADSR_VCF_SUSTAIN:     ADSR_VCF_sustain = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_S); break;
-    case CC_LOCAL_ADSR_VCF_RELEASE:     ADSR_VCF_release = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_R); break;
+    case CC_LOCAL_ADSR_VCF_ATTACK:      ADSR_VCF_attack  = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_A); serial_send_adsr_vcf_block_to_mb(); break;
+    case CC_LOCAL_ADSR_VCF_DECAY:       ADSR_VCF_decay   = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_D); serial_send_adsr_vcf_block_to_mb(); break;
+    case CC_LOCAL_ADSR_VCF_SUSTAIN:     ADSR_VCF_sustain = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_S); serial_send_adsr_vcf_block_to_mb(); break;
+    case CC_LOCAL_ADSR_VCF_RELEASE:     ADSR_VCF_release = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_R); serial_send_adsr_vcf_block_to_mb(); break;
 
     case CC_LOCAL_ADSR_DCO_ATTACK:      ADSR1_attack  = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_A); break;
     case CC_LOCAL_ADSR_DCO_DECAY:       ADSR1_decay   = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_D); break;
     case CC_LOCAL_ADSR_DCO_SUSTAIN:     ADSR1_sustain = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_S); break;
     case CC_LOCAL_ADSR_DCO_RELEASE:     ADSR1_release = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_R); break;
 
-    // CUTOFF/RESONANCE are used live in update_CV_outs; only mod depths need scale bake.
-    // Input 'd' bakes ADSR2+LFO2 once for the filter block (depths in the same payload).
-    case CC_LOCAL_FILTER_CUTOFF:        CUTOFF     = (uint16_t)value; break;
-    case CC_LOCAL_FILTER_RESONANCE:     RESONANCE  = (uint16_t)value; break;
-    case CC_LOCAL_FILTER_ADSR2_TO_VCF:  ADSR2toVCF = value;           cv_bake_adsr2_to_vcf_scale(); break;
-    case CC_LOCAL_FILTER_LFO2_TO_VCF:   LFO2toVCF  = (uint16_t)value; cv_bake_lfo2_to_vcf_scale(); break;
+    // Analog VCF CVs live on Mainboard; emit slim 'd' after local update + scale bake.
+    case CC_LOCAL_FILTER_CUTOFF:        CUTOFF     = (uint16_t)value; serial_send_filter_block_to_mb(); break;
+    case CC_LOCAL_FILTER_RESONANCE:     RESONANCE  = (uint16_t)value; serial_send_filter_block_to_mb(); break;
+    case CC_LOCAL_FILTER_ADSR2_TO_VCF:  ADSR2toVCF = value;           cv_bake_adsr2_to_vcf_scale(); serial_send_filter_block_to_mb(); break;
+    case CC_LOCAL_FILTER_LFO2_TO_VCF:   LFO2toVCF  = (uint16_t)value; cv_bake_lfo2_to_vcf_scale(); serial_send_filter_block_to_mb(); break;
 
     default:
       update_parameters((uint16_t)target, value);

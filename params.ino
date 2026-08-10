@@ -457,10 +457,10 @@ static void apply_param_lfo2_to_pw(int16_t v) {
 
 // PARAM_ADSR3_TO_PWM: ADSR → PWM depth (centered around 512).
 // Precompute full-scale PWM counts so hot path is (level_q15 * scale) >> 15.
-// Legacy: (level_u12 * depth) >> 11 with level 0..ADSR_1_CC.
+// (depth * ADSR_1_DACSIZE) >> 11 ≡ depth << 1 with DACSIZE=4096.
 static void apply_param_adsr1_to_pwm(int16_t v) {
   ADSR1toPWM = (int16_t)v - 512;
-  ADSR1toPWM_scale = (int32_t)(((int64_t)ADSR1toPWM * (int64_t)ADSR_1_CC) >> 11);
+  ADSR1toPWM_scale = (int32_t)ADSR1toPWM << 1;
 }
 
 // PARAM_ADSR3_TO_DETUNE1: ADSR → pitch depth (exp on knob, linear env hot).
@@ -709,7 +709,7 @@ static void apply_param_debug_command(int16_t v) {
     case 40:
     case 41:
     case 42:
-      serialSendParam16(PARAM_DEBUG_COMMAND, v);
+      serialSendParam16(PARAM_DEBUG_COMMAND, v, true);
       break;
     // Amp-comp live method (USE_FLOAT_AMP_COMP). Ack via paced Board pane when
     // RUNNING_AVERAGE (same path as profiler / amp benches); else Serial.

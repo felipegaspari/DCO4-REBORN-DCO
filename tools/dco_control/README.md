@@ -1,20 +1,24 @@
 # DCO bench controller
 
-Control the DCO board from Linux over one USB cable, with no Input board and no Screen
-attached.
+Control the **DCO4-REBORN** voice board from Linux over one USB cable (no Input / Screen
+required for pitch, PW, LFO, EnvDCO).
 
-Parameters go out over the board's USB serial port. **Notes do not go through this tool** —
-the DCO already enumerates as a USB MIDI device called `DCO3-MONO`, so play it from a MIDI
-keyboard, VMPK, or anything else that can reach an ALSA MIDI port.
+Parameters go out over the board's USB CDC port. **Notes do not go through this tool** —
+the DCO enumerates as USB MIDI **`DCO4-REBORN`**, so play it from a MIDI keyboard, VMPK,
+or any ALSA MIDI client.
+
+DCO `Serial2` is the **STM32 Mainboard**, not Input. Input already speaks slim LE to
+Mainboard. USB `'a'`/`'b'`/`'d'` update DCO locals **and** are mirrored to Mainboard
+analog VCA/VCF CVs when Serial2 is up. Input pots still send `'d'` directly on Serial8.
 
 ---
 
 ## 1. Firmware requirement
 
 The board must be built with `ENABLE_USB_CONTROL`, which is on by default in
-[`DCO.ino`](../../DCO.ino). USB CDC uses the same slim inner frames and handler LUT as
-Serial2 (`serial_input_protocol.h`). The Input board firmware still sends the older BE
-format until it is updated; this tool is the live control path.
+[`DCO.ino`](../../DCO.ino). USB CDC uses the same slim inner frames as Input
+(`serial_input_protocol.h`: `'a'`–`'d'`, `'p'`, `'q'`). This tool is the live USB
+bench path; the panel talks to Mainboard on the classic PCB.
 
 On-wire framing defaults to **RAW** (inner bytes as-is). To A/B **COBS** (`COBS(inner)+0x00`),
 uncomment `#define SERIAL_FRAMING_COBS` in [`DCO.ino`](../../DCO.ino) and start this tool
@@ -48,7 +52,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ## 3. Run
 
 ```bash
-python3 app.py                      # auto-detects the DCO3-MONO port
+python3 app.py                      # auto-detects the DCO4-REBORN port
 python3 app.py --port /dev/ttyACM0  # or name it explicitly
 python3 app.py --theme light        # dark is the default
 python3 app.py --cobs               # match firmware SERIAL_FRAMING_COBS
@@ -75,7 +79,7 @@ A classic **128-slot** program bar sits under the connection toolbar:
 | **Prev / Next** / program number | Select slot **0–127** and load it immediately (empty slots load Init defaults) |
 | **Load** | Reload the current slot from disk, discarding unsaved edits |
 | **Save** | Store the current UI into the current slot (keeps the name) |
-| **Save as…** | Prompt for a name, then save into the current slot |
+| **Save as…** | Prompt for slot (0–127) and name, then save there and switch to that slot |
 | **Init** | Set patch controls to `params.py` defaults (slot number unchanged); mark dirty until Save |
 
 A leading `*` beside the name means the UI differs from the last loaded or saved snapshot.
@@ -102,7 +106,7 @@ bench-only buttons:
 | Tab | Contents |
 |-----|----------|
 | Oscillators | Pitch/Sync left, Voice & drift right; levels and wave matrix full-width at the bottom |
-| Envelopes | Three vertical ADSR time columns side by side; curve params as spinboxes; routing and rest below |
+| Envelopes | Three vertical ADSR time columns side by side; curve params as named combos; routing and rest below |
 | Filter | Cutoff, resonance, envelope and LFO amounts, keytrack, distortion Drive/Mix |
 | PWM | Pulse width, LFO2 and envelope to PW |
 | LFOs | Waveforms, speeds, and the LFO routing depths |
@@ -218,12 +222,13 @@ point it at the board's MIDI port:
 
 ```bash
 open-stage-control --theme nord \
-                   --midi "dco3:DCO3-MONO,DCO3-MONO" \
+                   --midi "dco4:DCO4-REBORN,DCO4-REBORN" \
                    --load ../panels/dco3_panel.json
 ```
 
-The `dco3` name in that string is what the session's widgets target, so keep it. `--theme`
-is optional; `nord` and `orange` are the two built in.
+The `dco4` name in that string is what the session's widgets target, so keep it. `--theme`
+is optional; `nord` and `orange` are the two built in. If the Open Stage Control session
+file still uses `dco3`, match that name or edit the session.
 
 One tab per group, one knob per controller, grouped under the block they belong to. The
 number under each knob is the value the DCO will actually hold — `0..4095` for cutoff, the
@@ -267,6 +272,7 @@ finish byte.
 - **`'p'`** — `[id:u8][value:i16 LE]` (4 bytes total). Pulse width (`PARAM_PW_VALUE` 210)
   and EnvVCA→VCA (`PARAM_ADSR1_TO_VCA` 222) use this, not dedicated `'e'`/`'f'` commands.
 - **`'a'`/`'b'`/`'c'`/`'d'`** — packed 1 ms ADSR / filter blocks (9 bytes total).
+  `'a'`/`'b'`/`'d'` are mirrored DCO → Mainboard analog CVs; `'c'` EnvDCO stays on the DCO.
 - **Envelope attack, decay and release are exp-mapped on the wire** (0..25000), while
   sustain is linear (0..4095). `protocol.lin_to_exp()` replicates
   `linearToExponential(v, 50, 25000)` from the Input board so a slider here feels like the

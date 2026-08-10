@@ -24,7 +24,7 @@ CMD_PRESET_NAME = b"q"
 
 # The USB product string set by USBDevice.setProductDescriptor() in DCO/DCO.ino.
 # The descriptor is space-padded, so match on a prefix.
-USB_PRODUCT_PREFIX = "DCO3-MONO"
+USB_PRODUCT_PREFIX = "DCO4-REBORN"
 
 # USB CDC ignores the line rate, but pyserial requires one. Mirror the firmware's
 # Serial.begin(2000000) for symmetry.

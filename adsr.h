@@ -1,7 +1,7 @@
 #ifndef __ADSR_H__
 #define __ADSR_H__
 
-#define ADSR_1_DACSIZE 4000
+#define ADSR_1_DACSIZE 4096
 
 #define ARRAY_SIZE 512
 
@@ -56,7 +56,7 @@ int16_t ADSR_VCA_Level_q15[NUM_VOICES_TOTAL];
 int16_t ADSR_VCF_Level_q15;
 int16_t ADSR_VCF2_Level_q15;
 
-static constexpr uint16_t ADSR_1_CC = 4000;
+static constexpr uint16_t ADSR_1_CC = 4095;
 // Max CV code / levelDac export for EnvVCA/EnvVCF (legal u12 peak).
 static constexpr uint16_t ADSR_CV_CC = 4095;
 // Panel→Q15 divisor (1<<12); use with >>12 — not a storable CV level.

@@ -29,9 +29,9 @@ static inline uint16_t cv_clamp_u12(int32_t v) {
   return (uint16_t)v;
 }
 
-// (q15 * CV_U12_SCALE) >> 15; with SCALE=4096 ≡ q15 >> 3 (peak → 4095).
+// Dyadic Q15 peak 32768 → u12 via >> 3 (then sat to 4095).
 static inline uint16_t cv_q15_to_u12(int16_t q15) {
-  return cv_clamp_u12(((int32_t)q15 * CV_U12_SCALE) >> 15);
+  return cv_clamp_u12((int32_t)q15 >> 3);
 }
 
 // Boot: build AS2164 VCA linearize table (same control points as Mainboard).
@@ -50,9 +50,8 @@ void cv_bake_adsr2_to_vcf_scale() {
   // Float A/B: u12 ADSR levels × (depth / panel_full).
   ADSR2toVCF_scale = (float)ADSR2toVCF / (float)CV_PANEL_DEPTH_FULL;
 #else
-  // Q15: (src_q15 * scale) >> 15 → depth * CV_U12_MAX / PANEL_DEPTH_FULL at +1.0.
-  ADSR2toVCF_scale_q15 =
-    (int32_t)(((int64_t)ADSR2toVCF * (int64_t)CV_U12_MAX) / CV_PANEL_DEPTH_FULL);
+  // Q15: (src_q15 * scale) >> 15 → depth << 3 at +1.0 (4096/512).
+  ADSR2toVCF_scale_q15 = (int32_t)ADSR2toVCF << 3;
 #endif
 }
 
@@ -60,10 +59,9 @@ void cv_bake_lfo2_to_vcf_scale() {
 #ifdef USE_FLOAT_CV_OUTS
   LFO2toVCF_scale =
     -(float)LFO2toVCF *
-    ((float)CV_U12_MAX / ((float)CV_LFO_Q15_PEAK_DIV * 32767.0f));
+    ((float)CV_U12_SCALE / ((float)CV_LFO_Q15_PEAK_DIV * 32767.0f));
 #else
-  LFO2toVCF_scale_q15 =
-    (int32_t)(-((int64_t)LFO2toVCF * (int64_t)CV_U12_MAX) / CV_LFO_Q15_PEAK_DIV);
+  LFO2toVCF_scale_q15 = -((int32_t)LFO2toVCF << 2);
 #endif
 }
 
@@ -71,10 +69,9 @@ void cv_bake_lfo1_to_vca_scale() {
 #ifdef USE_FLOAT_CV_OUTS
   LFO1toVCA_scale =
     -(float)LFO1toVCA *
-    ((float)CV_U12_MAX / ((float)CV_LFO_Q15_PEAK_DIV * 32767.0f));
+    ((float)CV_U12_SCALE / ((float)CV_LFO_Q15_PEAK_DIV * 32767.0f));
 #else
-  LFO1toVCA_scale_q15 =
-    (int32_t)(-((int64_t)LFO1toVCA * (int64_t)CV_U12_MAX) / CV_LFO_Q15_PEAK_DIV);
+  LFO1toVCA_scale_q15 = -((int32_t)LFO1toVCA << 2);
 #endif
 }
 

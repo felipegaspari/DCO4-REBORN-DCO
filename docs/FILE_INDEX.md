@@ -62,7 +62,7 @@ flowchart TD
 
 ### `DCO.ino`
 
-Main sketch: dual-core setup/loops, USB init (product DCO3-MONO), engine flags (**pitch ids** / **board defaults** / **overrides** / **guards** at top). **4 MIDI voices × 2 oscillators**.
+Main sketch: dual-core setup/loops, USB init (product **DCO4-REBORN**), engine flags (**pitch ids** / **board defaults** / **overrides** / **guards** at top). **4 MIDI voices × 2 oscillators**.
 
 **Functions**
 - `setup()` — Core 0 init: serial, MIDI, LFOs, pins, USB strings, cal pin.
@@ -752,7 +752,7 @@ MIDI CC control surface: the `MIDI_CC_LINEAR` / `MIDI_CC_EXP_TIME` curves, the `
 - `midi_cc_handle()` — Find the controller in `midiCcMap[]`, scale it into `lo..hi`, apply the exp curve for envelope times, then `midi_cc_apply()`. Unmapped CCs ignored.
   - **Called from:** `handleControlChange()`.
   - **When:** MIDI callback.
-- `midi_cc_apply()` — Dispatch: a `CC_LOCAL_*` target writes ADSR/filter block globals here (`cv_bake_adsr2_to_vcf_scale` / `cv_bake_lfo2_to_vcf_scale` for the matching depth CC; CUTOFF/RESONANCE assign without scale bake). PW (`PARAM_PW_VALUE`) and EnvVCA→VCA (`PARAM_ADSR1_TO_VCA`) and every other mapped ParamId go to `update_parameters()` plus `serial_echo_persistable_param16()`.
+- `midi_cc_apply()` — Dispatch: a `CC_LOCAL_*` target writes ADSR/filter block globals here (`cv_bake_adsr2_to_vcf_scale` / `cv_bake_lfo2_to_vcf_scale` for the matching depth CC). VCA/VCF time CCs also TX `'a'`/`'b'` to Mainboard; filter CCs TX `'d'`. PW (`PARAM_PW_VALUE`) and EnvVCA→VCA (`PARAM_ADSR1_TO_VCA`) and every other mapped ParamId go to `update_parameters()` plus `serial_echo_persistable_param16()`.
   - **Called from:** `midi_cc_handle()`.
   - **When:** MIDI callback.
 - `handleProgramChange()` — Stub / empty as implemented.
@@ -784,12 +784,12 @@ Prototype. **No function definitions.**
 - `init_serial()` — Serial1 MIDI baud (RX 1 / TX 0 @ 31250, IRQ/`setPollingMode(false)`), Serial2 2.5M Input link against the Input's `Serial1` (RX 21 from Input TX GP0, TX 20 into Input RX GP1); builds the O(1) command LUT.
   - **Called from:** `setup()`.
   - **When:** Boot Core0.
-- `input_handle_adsr1()` / `input_handle_adsr2()` / `input_handle_adsr3()` — `'a'`/`'b'`/`'c'` LE → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times.
-  - **Called from:** Serial2 / USB parser LUT (`inputSerialLut`).
-  - **When:** Serial RX.
-- `input_handle_filter_block()` — `'d'` LE → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_bake_adsr2_to_vcf_scale()` + `cv_bake_lfo2_to_vcf_scale()`.
+- `input_handle_adsr1()` / `input_handle_adsr2()` / `input_handle_adsr3()` — `'a'`/`'b'`/`'c'` LE → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times. USB `'a'`/`'b'` also mirror to Mainboard Serial2; `'c'` stays local.
+  - **Called from:** USB parser LUT (`inputSerialLut`).
+  - **When:** USB CDC RX.
+- `input_handle_filter_block()` — `'d'` LE → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_bake_adsr2_to_vcf_scale()` + `cv_bake_lfo2_to_vcf_scale()`. USB ingress also mirrors `'d'` to Mainboard.
   - **Called from:** parser LUT.
-  - **When:** Serial RX.
+  - **When:** USB CDC RX.
 - `input_handle_param16()` — `'p'` → `update_parameters` (id + i16 LE); USB ingress also `serial_echo_persistable_param16`.
   - **Called from:** parser LUT.
   - **When:** Serial2 / USB CDC RX.
@@ -802,7 +802,7 @@ Prototype. **No function definitions.**
 - `init_usb()` — TinyUSB CDC+MIDI descriptors, `Serial.begin`, re-enumerate.
   - **Called from:** `setup()`.
   - **When:** Boot Core0.
-- `serial_usb_task()` — Same pump for USB CDC: second `SerialParserContext`, same LUT. Sets ingress `PARAM_SRC_USB` so persistable `'p'` echoes to Input. Guarded by `ENABLE_USB_CONTROL`; returns if `!Serial`. `__not_in_flash_func`. See [`tools/dco_control`](../tools/dco_control/README.md).
+- `serial_usb_task()` — Same pump for USB CDC: second `SerialParserContext`, same LUT. Sets ingress `PARAM_SRC_USB` so persistable `'p'` and analog `'a'`/`'b'`/`'d'` mirror to Mainboard. Guarded by `ENABLE_USB_CONTROL`; returns if `!Serial`. `__not_in_flash_func`. See [`tools/dco_control`](../tools/dco_control/README.md).
   - **Called from:** `loop()` when `timer1msFlag`.
   - **When:** Realtime Core0, ~1 ms, only when `ENABLE_USB_CONTROL` is defined and CDC is open.
 - `serialSendParam32()` — Slim `'x'` TX via `serial_frame_write` (id + u32 LE, 5 B) out Serial2 TX 20 into Input `Serial1` RX GP1 (gap 154, cal 155; Input relays 154 to Screen). Drops if `availableForWrite() < 1`.
@@ -814,6 +814,12 @@ Prototype. **No function definitions.**
 - `serial_echo_persistable_param16()` — If id is LittleFS-persistable, `serialSendParam16` (wire i16, not Q24). Skips cal/debug/UI and `'a'`–`'d'`.
   - **Called from:** `input_handle_param16()` when ingress is USB; `midi_cc_apply()` ParamId path.
   - **When:** USB/MIDI apply of a persistable id.
+- `serial_send_filter_block_to_mb()` — Slim `'d'` of current `CUTOFF`/`RESONANCE`/`ADSR2toVCF`/`LFO2toVCF` on Serial2.
+  - **Called from:** `midi_cc_apply()` filter CCs.
+  - **When:** MIDI CC 52–55.
+- `serial_send_adsr_vca_block_to_mb()` / `serial_send_adsr_vcf_block_to_mb()` — Slim `'a'`/`'b'` of current EnvVCA/EnvVCF times on Serial2.
+  - **Called from:** `midi_cc_apply()` VCA/VCF time CCs.
+  - **When:** MIDI envelope-time CCs.
 
 ### `serial_protocol.h`
 

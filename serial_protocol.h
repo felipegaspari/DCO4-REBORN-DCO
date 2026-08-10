@@ -38,6 +38,10 @@ static inline uint8_t serial_protocol_payload_len(uint8_t cmd) {
     case SERIAL_CMD_BENCH_TEXT:  return SERIAL_PAYLOAD_LEN_BENCH_TEXT;
     case SERIAL_CMD_PARAM_16:    return INPUT_SERIAL_LEN_PARAM_16;
     case SERIAL_CMD_PARAM_32:    return INPUT_SERIAL_LEN_PARAM_32;
+    // USB/MIDI analog mirror (Input cmds on DCO→MB Serial2). 'c' EnvDCO stays DCO-local.
+    case INPUT_CMD_ADSR1_BLOCK:
+    case INPUT_CMD_ADSR2_BLOCK:  return INPUT_SERIAL_LEN_ADSR_BLOCK;
+    case INPUT_CMD_FILTER_BLOCK: return INPUT_SERIAL_LEN_FILTER_BLOCK;
     default:                     return 0;
   }
 }

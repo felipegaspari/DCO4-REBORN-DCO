@@ -1,7 +1,54 @@
 // Serial1 = MIDI DIN @ 31250; Serial2 = Mainboard @ 2.5M.
 // USB CDC still accepts Input-style 'a'..'d'/'p'/'q' for bench without the panel.
+// Analog VCA/VCF CVs live on Mainboard: USB 'a'/'b'/'d' are mirrored on Serial2.
 
-static void input_handle_adsr1(char, const uint8_t* payload, uint8_t len) {
+// USB uses the Input-style LUT. Serial2 uses the Mainboard LUT.
+// Tag the drain so USB 'p'/'a'/'b'/'d' can mirror to Mainboard without echoing MB→DCO.
+enum ParamIngress : uint8_t {
+  PARAM_SRC_INPUT = 0,
+  PARAM_SRC_USB   = 1,
+};
+static ParamIngress g_param_ingress = PARAM_SRC_INPUT;
+
+static void serial_forward_input_block_to_mb(char cmd, const uint8_t* payload, uint8_t len) {
+  if (g_param_ingress != PARAM_SRC_USB) return;
+  if (Serial2.availableForWrite() < 1) return;
+  serial_frame_write(Serial2, (uint8_t)cmd, payload, len);
+}
+
+static void serial_send_adsr_block_to_mb(uint8_t cmd, uint16_t a, uint16_t d, uint16_t s, uint16_t r) {
+  if (Serial2.availableForWrite() < 1) return;
+  uint8_t payload[INPUT_SERIAL_LEN_ADSR_BLOCK];
+  encode_u16_le(payload + 0, a);
+  encode_u16_le(payload + 2, d);
+  encode_u16_le(payload + 4, s);
+  encode_u16_le(payload + 6, r);
+  serial_frame_write(Serial2, cmd, payload, INPUT_SERIAL_LEN_ADSR_BLOCK);
+}
+
+void serial_send_adsr_vca_block_to_mb() {
+  serial_send_adsr_block_to_mb(
+    INPUT_CMD_ADSR1_BLOCK,
+    ADSR_VCA_attack, ADSR_VCA_decay, ADSR_VCA_sustain, ADSR_VCA_release);
+}
+
+void serial_send_adsr_vcf_block_to_mb() {
+  serial_send_adsr_block_to_mb(
+    INPUT_CMD_ADSR2_BLOCK,
+    ADSR_VCF_attack, ADSR_VCF_decay, ADSR_VCF_sustain, ADSR_VCF_release);
+}
+
+void serial_send_filter_block_to_mb() {
+  if (Serial2.availableForWrite() < 1) return;
+  uint8_t payload[INPUT_SERIAL_LEN_FILTER_BLOCK];
+  encode_u16_le(payload + 0, CUTOFF);
+  encode_u16_le(payload + 2, RESONANCE);
+  encode_u16_le(payload + 4, (uint16_t)ADSR2toVCF);
+  encode_u16_le(payload + 6, LFO2toVCF);
+  serial_frame_write(Serial2, INPUT_CMD_FILTER_BLOCK, payload, INPUT_SERIAL_LEN_FILTER_BLOCK);
+}
+
+static void input_handle_adsr1(char cmd, const uint8_t* payload, uint8_t len) {
   if (len != INPUT_SERIAL_LEN_ADSR_BLOCK) return;
 
   uint16_t dirty = 0;
@@ -20,9 +67,10 @@ static void input_handle_adsr1(char, const uint8_t* payload, uint8_t len) {
   if (v != ADSR_VCA_release) { ADSR_VCA_release = v; dirty |= ADSR_DIRTY_VCA_R; }
 
   if (dirty) mark_adsr_params_dirty(dirty);
+  serial_forward_input_block_to_mb(cmd, payload, len);
 }
 
-static void input_handle_adsr2(char, const uint8_t* payload, uint8_t len) {
+static void input_handle_adsr2(char cmd, const uint8_t* payload, uint8_t len) {
   if (len != INPUT_SERIAL_LEN_ADSR_BLOCK) return;
 
   uint16_t dirty = 0;
@@ -41,9 +89,10 @@ static void input_handle_adsr2(char, const uint8_t* payload, uint8_t len) {
   if (v != ADSR_VCF_release) { ADSR_VCF_release = v; dirty |= ADSR_DIRTY_VCF_R; }
 
   if (dirty) mark_adsr_params_dirty(dirty);
+  serial_forward_input_block_to_mb(cmd, payload, len);
 }
 
-// EnvDCO times ('c') → existing ADSR1_* engine (pitch/PW)
+// EnvDCO times ('c') → existing ADSR1_* engine (pitch/PW). Stays DCO-local.
 static void input_handle_adsr3(char, const uint8_t* payload, uint8_t len) {
   if (len != INPUT_SERIAL_LEN_ADSR_BLOCK) return;
 
@@ -65,7 +114,7 @@ static void input_handle_adsr3(char, const uint8_t* payload, uint8_t len) {
   if (dirty) mark_adsr_params_dirty(dirty);
 }
 
-static void input_handle_filter_block(char, const uint8_t* payload, uint8_t len) {
+static void input_handle_filter_block(char cmd, const uint8_t* payload, uint8_t len) {
   if (len != INPUT_SERIAL_LEN_FILTER_BLOCK) return;
   CUTOFF     = decode_u16_le(payload + 0);
   RESONANCE  = decode_u16_le(payload + 2);
@@ -73,15 +122,8 @@ static void input_handle_filter_block(char, const uint8_t* payload, uint8_t len)
   LFO2toVCF  = decode_u16_le(payload + 6);
   cv_bake_adsr2_to_vcf_scale();
   cv_bake_lfo2_to_vcf_scale();
+  serial_forward_input_block_to_mb(cmd, payload, len);
 }
-
-// USB uses the Input-style LUT. Serial2 uses the Mainboard LUT.
-// Tag the drain so USB 'p' can mirror to Mainboard without echoing MB→DCO.
-enum ParamIngress : uint8_t {
-  PARAM_SRC_INPUT = 0,
-  PARAM_SRC_USB   = 1,
-};
-static ParamIngress g_param_ingress = PARAM_SRC_INPUT;
 
 static bool param_is_persistable(uint8_t id) {
   if (id >= (uint8_t)PARAM_MOD_SLOT0_SOURCE && id <= (uint8_t)PARAM_MOD_SLOT7_DEPTH) {
@@ -154,8 +196,8 @@ static bool param_is_persistable(uint8_t id) {
   }
 }
 
-void serialSendParam16(byte paramNumber, int16_t paramValue) {
-  if (Serial2.availableForWrite() < 1) {
+void serialSendParam16(byte paramNumber, int16_t paramValue, bool force) {
+  if (!force && Serial2.availableForWrite() < 1) {
     return;
   }
   uint8_t payload[INPUT_SERIAL_LEN_PARAM_16];
@@ -203,7 +245,7 @@ static void mb_handle_param16(char, const uint8_t* payload, uint8_t len) {
   update_parameters(frame.id, (int16_t)frame.value);
 }
 
-#define MB_BENCH_RING_CAP 512
+#define MB_BENCH_RING_CAP 2048
 static uint8_t mb_bench_ring[MB_BENCH_RING_CAP];
 static uint16_t mb_bench_ring_head = 0;
 static uint16_t mb_bench_ring_tail = 0;
@@ -214,8 +256,8 @@ static void mb_handle_bench_text(char, const uint8_t* payload, uint8_t len) {
   uint8_t n = payload[0];
   if (n > SERIAL_BENCH_TEXT_DATA_MAX) n = SERIAL_BENCH_TEXT_DATA_MAX;
   if ((uint8_t)(n + 1u) > len) n = (uint8_t)(len - 1u);
+  if ((uint16_t)(mb_bench_ring_count + n) > MB_BENCH_RING_CAP) return;
   for (uint8_t i = 0; i < n; i++) {
-    if (mb_bench_ring_count >= MB_BENCH_RING_CAP) break;
     mb_bench_ring[mb_bench_ring_head] = payload[1 + i];
     mb_bench_ring_head = (uint16_t)((mb_bench_ring_head + 1u) % MB_BENCH_RING_CAP);
     mb_bench_ring_count++;
@@ -224,14 +266,11 @@ static void mb_handle_bench_text(char, const uint8_t* payload, uint8_t len) {
 
 void mb_bench_text_drain() {
   if (mb_bench_ring_count == 0u) return;
-#ifdef ENABLE_USB_CONTROL
-  if (Serial.available() > 0) return;
-#endif
   int avail = Serial.availableForWrite();
   if (avail <= 0) return;
 
   uint16_t n = mb_bench_ring_count;
-  if (n > 64u) n = 64u;
+  if (n > 256u) n = 256u;
   if ((uint16_t)avail < n) n = (uint16_t)avail;
 
   uint16_t first = (uint16_t)(MB_BENCH_RING_CAP - mb_bench_ring_tail);
@@ -295,7 +334,7 @@ void init_serial() {
   Serial1.setTX(0);
   Serial1.begin(31250);
 
-  Serial2.setFIFOSize(512);
+  Serial2.setFIFOSize(2048);
   Serial2.setPollingMode(false);
   Serial2.setRX(21);
   Serial2.setTX(20);
@@ -317,14 +356,14 @@ void init_serial() {
 // host re-enumerates after flash/soft reset (avoids missing /dev/ttyACM* on Linux).
 void init_usb() {
   USBDevice.setManufacturerDescriptor("FELA         ");
-  USBDevice.setProductDescriptor("DCO3-MONO   ");
+  USBDevice.setProductDescriptor("DCO4-REBORN ");
 
   if (!TinyUSBDevice.isInitialized()) {
     TinyUSBDevice.begin(0);
   }
 
   Serial.begin(2000000);
-  usb_midi.setStringDescriptor("DCO3-MONO MIDI");
+  usb_midi.setStringDescriptor("DCO4-REBORN MIDI");
   MIDI_USB.begin(MIDI_CHANNEL_OMNI);
 
   if (TinyUSBDevice.mounted()) {
