@@ -106,6 +106,7 @@ static inline const char *bench_pitch_interp_mode_name() {
   X(voice_task,        1, BENCH_CYC, BENCH_T_MAIN, BENCH_loop1_period,  "voice_task TOTAL")    \
   /* --- Core 1: inside voice_task --- */                                                     \
   X(vt_pitchbend,      1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "pitch bend")          \
+  /* removed: vt_iter_setup and vt_voice_iter temporary probes */ \
   X(vt_osc_detune,     1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "OSC2/3 detune")       \
   X(vt_portamento,     1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "portamento")          \
   X(vt_adsr_mod,       1, BENCH_CYC, BENCH_T_MAIN, BENCH_voice_task,    "ADSR modifier")       \
@@ -526,8 +527,8 @@ static inline void bench_add_raw(uint8_t id, uint32_t d) {
   } while (0)
 // volatile start: force a real store/load so back-to-back probes cannot CSE timestamps.
 // Do NOT wrap in do/while — voice_task declares locals inside a probe and uses them after END.
-#define BENCH_BEGIN(id) volatile uint32_t bench_t_##id = bench_stage_begin(BENCH_##id)
-#define BENCH_END(id)   bench_stage_end(BENCH_##id, bench_t_##id)
+#define BENCH_BEGIN(id) asm volatile("" ::: "memory"); volatile uint32_t bench_t_##id = bench_stage_begin(BENCH_##id); asm volatile("" ::: "memory")
+#define BENCH_END(id)   asm volatile("" ::: "memory"); bench_stage_end(BENCH_##id, bench_t_##id); asm volatile("" ::: "memory")
 #ifdef RUNNING_AVERAGE_FINE
 #define BENCH_FBEGIN(id) BENCH_BEGIN(id)
 #define BENCH_FEND(id)   BENCH_END(id)

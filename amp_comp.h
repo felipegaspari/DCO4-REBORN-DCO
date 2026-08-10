@@ -7,24 +7,30 @@
 #include <string.h>
 #include "hardware/sync.h"
 
+// Hint to force large tables into RAM. By default globals go to .data (RAM),
+// but make the intent explicit for large float tables we must not XIP.
+#ifndef SRAM_DATA
+#define SRAM_DATA __attribute__((section(".sram")))
+#endif
+
 // Common table dimensions and shared data
 static constexpr int     ampCompTableSize = 22;
 static constexpr int32_t AMP_COMP_MAX_HZ  = 7000;
 
-int32_t freq_to_amp_comp_array[chanLevelVoiceDataSize * NUM_OSCILLATORS];
+SRAM_DATA int32_t freq_to_amp_comp_array[chanLevelVoiceDataSize * NUM_OSCILLATORS];
 
 // Per-oscillator plateau metadata:
 //  - plateauStartIndex: first table index with freq < AMP_COMP_MAX_HZ and amp == DIV_COUNTER.
 //  - plateauStartFreqQ: corresponding frequency in fixed-point Q(FREQ_FRAC_BITS) (fixed engine).
 //  - plateauStartFreqHz: corresponding frequency in Hz (float engine).
-int16_t plateauStartIndex[NUM_OSCILLATORS];
-int32_t plateauStartFreqQ[NUM_OSCILLATORS];
-float   plateauStartFreqHz[NUM_OSCILLATORS];
+SRAM_DATA int16_t plateauStartIndex[NUM_OSCILLATORS];
+SRAM_DATA int32_t plateauStartFreqQ[NUM_OSCILLATORS];
+SRAM_DATA float   plateauStartFreqHz[NUM_OSCILLATORS];
 
 // Calibration levels (PWM counts) — shared by float and fixed precompute.
 // (Historically float used uint16_t and fixed used int32_t; unified so both engines
 // can coexist for method A/B and benches under USE_FLOAT_AMP_COMP.)
-int32_t ampCompArray[NUM_OSCILLATORS][ampCompTableSize + 1];
+SRAM_DATA int32_t ampCompArray[NUM_OSCILLATORS][ampCompTableSize + 1];
 
 // ----- Fixed-point (Q8) amp-comp data -----
 // Always compiled: used as the live path when !USE_FLOAT_AMP_COMP, and also built
@@ -35,40 +41,40 @@ static constexpr int     FREQ_FRAC_BITS    = 8;
 static constexpr int32_t AMP_COMP_SENTINEL_FREQ_Q = 50000000; // sentinel marker from FS data (Q8)
 static constexpr int32_t AMP_COMP_MAX_HZ_Q = (int32_t)(AMP_COMP_MAX_HZ << FREQ_FRAC_BITS);
 
-int32_t  ampCompFrequencyArray[NUM_OSCILLATORS][ampCompTableSize + 1]; // Q8 Hz
+SRAM_DATA int32_t  ampCompFrequencyArray[NUM_OSCILLATORS][ampCompTableSize + 1]; // Q8 Hz
 
 // Per-window normalized quadratic in t = (x - x0) / (x2 - x0), where x,x0,x2 are integer Hz.
 // Runtime uses 32-bit fixed-point t (Q(T_FRAC)) and precomputed integer coefficients.
 static constexpr int     T_FRAC           = 12;
-int32_t  xBaseWIN   [NUM_OSCILLATORS][ampCompTableSize - 1];
-int32_t  dxWIN      [NUM_OSCILLATORS][ampCompTableSize - 1];
+SRAM_DATA int32_t  xBaseWIN   [NUM_OSCILLATORS][ampCompTableSize - 1];
+SRAM_DATA int32_t  dxWIN      [NUM_OSCILLATORS][ampCompTableSize - 1];
 // Use Q28 reciprocal to avoid underflow on very large dx while keeping shifts small
-uint32_t invDxWIN_q28[NUM_OSCILLATORS][ampCompTableSize - 1];
-int64_t  aQWIN      [NUM_OSCILLATORS][ampCompTableSize - 1]; // Q(T_FRAC)
-int64_t  bQWIN      [NUM_OSCILLATORS][ampCompTableSize - 1]; // Q(T_FRAC)
-uint16_t cQWIN      [NUM_OSCILLATORS][ampCompTableSize - 1];
-int32_t  aQWIN_fast [NUM_OSCILLATORS][ampCompTableSize - 1];
-int32_t  bQWIN_fast [NUM_OSCILLATORS][ampCompTableSize - 1];
+SRAM_DATA uint32_t invDxWIN_q28[NUM_OSCILLATORS][ampCompTableSize - 1];
+SRAM_DATA int64_t  aQWIN      [NUM_OSCILLATORS][ampCompTableSize - 1]; // Q(T_FRAC)
+SRAM_DATA int64_t  bQWIN      [NUM_OSCILLATORS][ampCompTableSize - 1]; // Q(T_FRAC)
+SRAM_DATA uint16_t cQWIN      [NUM_OSCILLATORS][ampCompTableSize - 1];
+SRAM_DATA int32_t  aQWIN_fast [NUM_OSCILLATORS][ampCompTableSize - 1];
+SRAM_DATA int32_t  bQWIN_fast [NUM_OSCILLATORS][ampCompTableSize - 1];
 // Set in precomputeCoefficients: |a|*4096 and |b|*4096 fit signed 32-bit MULS.
-bool amp_quad_muls_i32 = false;
+SRAM_DATA bool amp_quad_muls_i32 = false;
 
 // Last quadratic window per osc for FIXED / FLOAT_QUAD find (-1 = cold).
-int16_t  ampWinCache[NUM_OSCILLATORS];
+SRAM_DATA int16_t  ampWinCache[NUM_OSCILLATORS];
 
 // High-precision float coefficients (Hz-domain): y = a*x^2 + b*x + c
 // Used by both fixed-point (for reference) and float amp-comp paths.
-float    aCoeff[NUM_OSCILLATORS][ampCompTableSize - 1];
-float    bCoeff[NUM_OSCILLATORS][ampCompTableSize - 1];
-float    cCoeff[NUM_OSCILLATORS][ampCompTableSize - 1];
+SRAM_DATA float    aCoeff[NUM_OSCILLATORS][ampCompTableSize - 1];
+SRAM_DATA float    bCoeff[NUM_OSCILLATORS][ampCompTableSize - 1];
+SRAM_DATA float    cCoeff[NUM_OSCILLATORS][ampCompTableSize - 1];
 
 // Float-domain frequency breakpoints (Hz) used by the float amp-comp path.
 #ifdef USE_FLOAT_AMP_COMP
-float    ampCompFrequencyHz[NUM_OSCILLATORS][ampCompTableSize + 1];
+SRAM_DATA float    ampCompFrequencyHz[NUM_OSCILLATORS][ampCompTableSize + 1];
 // Dense LUT: index = integer Hz, value = RANGE PWM.
 // ~14 KB/osc → ~112 KB at 8 oscs; omit the table (FLOAT_QUAD stays live).
 #if NUM_OSCILLATORS < 8
 #define USE_AMP_COMP_LUT 1
-uint16_t ampCompLut[NUM_OSCILLATORS][AMP_COMP_MAX_HZ + 1];
+SRAM_DATA uint16_t ampCompLut[NUM_OSCILLATORS][AMP_COMP_MAX_HZ + 1];
 #endif
 #endif
 

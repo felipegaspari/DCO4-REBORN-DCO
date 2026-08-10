@@ -389,6 +389,7 @@ void __not_in_flash_func(voice_task_fixed_point)() {
 
   for (int i = 0; i < NUM_VOICES; i++) {
 
+    
 #if DCO_DEBUG_REPORT
     float dbg_freq_base_Hz = 0.0f;
     float dbg_freq_after_mod_Hz = 0.0f;
@@ -407,6 +408,8 @@ void __not_in_flash_func(voice_task_fixed_point)() {
     const bool pitchTargetChanged = note1 != lastNote1[i] || note2 != lastNote2[i];
     lastNote1[i] = note1;
     lastNote2[i] = note2;
+
+    
 
     BENCH_BEGIN(vt_osc_detune);
     static constexpr int32_t DETUNE_SCALE_Q24 = (int32_t)(0.0002f * (float)(1 << 24) + 0.5f);
@@ -720,7 +723,7 @@ void __not_in_flash_func(voice_task_fixed_point)() {
       if (pulseOn) {
         const int16_t local_LFO2Level = LFO2Level;
         const int16_t local_LFO2toPW = LFO2toPW;
-        BENCH_FBEGIN(vt_pwm_calc);
+        BENCH_BEGIN(vt_pwm_calc);
         int32_t adsr1_delta =
           ((int32_t)ADSR1Level_q15[i] * ADSR1toPWM_scale) >> 15;
         int32_t lfo2_delta =
@@ -731,7 +734,7 @@ void __not_in_flash_func(voice_task_fixed_point)() {
         if (pw_calc < 0) pw_calc = 0;
         if (pw_calc > (int32_t)DIV_COUNTER_PW - 1) pw_calc = (int32_t)DIV_COUNTER_PW - 1;
         PW_PWM[i] = (uint16_t)pw_calc;
-        BENCH_FEND(vt_pwm_calc);
+        BENCH_END(vt_pwm_calc);
 
         BENCH_BEGIN(vt_pw_update);
         voice_write_pw(i, get_PW_level_interpolated(PW_PWM[i], i));
@@ -747,6 +750,8 @@ void __not_in_flash_func(voice_task_fixed_point)() {
   for (int k = 0; k < NUM_VOICES; k++) {
     note_on_flag_flag[k] = false;
   }
+
+    
 
   last_portamento_time = portaTime;
   last_portamento_mode = portaMode;
@@ -817,6 +822,8 @@ void __not_in_flash_func(voice_task_float)() {
       const bool pitchTargetChanged = note1 != lastNote1[i] || note2 != lastNote2[i];
       lastNote1[i] = note1;
       lastNote2[i] = note2;
+
+      
 
       BENCH_BEGIN(vt_osc_detune);
       float detuneSteps = (float)((int)256 - OSC2DetuneVal);
@@ -1151,6 +1158,8 @@ void __not_in_flash_func(voice_task_float)() {
     for (int k = 0; k < NUM_VOICES; k++) {
       note_on_flag_flag[k] = false;
     }
+
+    
 
   last_portamento_time = portaTime;
   last_portamento_mode = portaMode;

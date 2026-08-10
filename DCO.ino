@@ -149,13 +149,13 @@
 #define RUNNING_AVERAGE_PERIOD
 // #define BENCH_PATH_STATS
 #ifndef BENCH_STAGE_STRIDE
-#define BENCH_STAGE_STRIDE 9
+#define BENCH_STAGE_STRIDE 1
 #endif
 #ifndef BENCH_USE_SYSTICK
 #define BENCH_USE_SYSTICK 1
 #endif
 #ifndef BENCH_PERIOD_MAX_US
-#define BENCH_PERIOD_MAX_US 20000
+#define BENCH_PERIOD_MAX_US 5000
 #endif
 // ENABLE_MEM_DIAG: SRAM/heap dump (cmd 13) + loop/loop1 polls. Default on.
 // Comment out for a zero-cost match to pre-mem_diag period-only dumps.
@@ -202,7 +202,7 @@
 // switch (e.g. DG411: IN low = on). PIO still uses logical 1 = assert / discharge;
 // GPIO OUTOVER+INOVER invert the pad so soft sync jmp_pin and sub-osc wait keep
 // working. Leave commented for active-high / direct FET discharge. See PIO_OSCILLATORS.md.
-#define ENABLE_PIO_RESET_INVERT
+// #define ENABLE_PIO_RESET_INVERT
 
 
 
@@ -330,7 +330,7 @@ void setup1() {
 }
 
 // Core 0 forever loop: MIDI every iter; Serial2 + USB CDC on 1 ms; ~50 µs LFO1 + LFO2 + drift.
-void __not_in_flash_func(loop)() {
+void (loop)() {
   BENCH_PERIOD(loop0_period);
   BENCH_SAMPLE_TICK();
 
@@ -400,7 +400,7 @@ void __not_in_flash_func(loop)() {
 }
 
 // Core 1 forever loop: soft timers; auto/manual calibration OR ADSR + voice_task_main.
-void __not_in_flash_func(loop1)() {
+void (loop1)() {
   BENCH_PERIOD(loop1_period);
   BENCH_SAMPLE_TICK();
 

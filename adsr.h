@@ -13,8 +13,9 @@
 #endif
 // RP2040: keep FLOAT=0 (no FPU; soft-float index would be slower).
 // Each getWave() uses its own micros(); EnvVCF2 is sampled (reserved for later).
-#ifndef ADSR_BEZIER_USE_FLOAT
-#define ADSR_BEZIER_USE_FLOAT 0
+
+#if defined(PICO_RP2350)
+#define ADSR_BEZIER_USE_FLOAT 1
 #endif
 
 #ifndef ADSR_BEZIER_USE_MICROS
