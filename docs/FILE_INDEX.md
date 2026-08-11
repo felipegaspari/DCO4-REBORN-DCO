@@ -2,6 +2,13 @@
 
 Purpose of **every file**, and for each source function: **what it does**, **who calls it**, and **when**.
 
+> `params_def.h`, `param_router.h`, `serial_input_protocol.h`,
+> `serial_param_protocol.h`, `serial_frame.h` and `serial_parser.h` are no longer
+> files in this folder. They come from the shared
+> [`DCO-PROTOCOL`](../../DCO-PROTOCOL/README.md) library, symlinked in as
+> `_build_libs/DCO-PROTOCOL`. Their entries below still describe the code this
+> board compiles; edit them in the library, once, for every board.
+
 - Deep narrative: [`REFERENCE_AI.md`](REFERENCE_AI.md)
 - Build flags catalog: [`BUILD_FLAGS.md`](BUILD_FLAGS.md)
 - Preset store / cal dump protocol: [`PRESET_STORE.md`](PRESET_STORE.md)
