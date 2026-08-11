@@ -238,7 +238,8 @@ static constexpr uint16_t kFakeAmpPwmRefWrap = 10000;
 static constexpr uint32_t kFakeUnreachableFreqX100 = 20000000u;
 
 // Truncate/create a LittleFS file and write a full bank in one shot.
-static void write_fs_bank(const char* name, const uint8_t* data, size_t size) {
+// Non-static: also used by the bulk-restore path in preset_store.ino.
+void write_fs_bank(const char* name, const uint8_t* data, size_t size) {
   File f = LittleFS.open(name, "w");
   if (!f) {
     return;

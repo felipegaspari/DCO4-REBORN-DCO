@@ -149,7 +149,7 @@
 #define RUNNING_AVERAGE_PERIOD
 // #define BENCH_PATH_STATS
 #ifndef BENCH_STAGE_STRIDE
-#define BENCH_STAGE_STRIDE 9
+#define BENCH_STAGE_STRIDE 1
 #endif
 #ifndef BENCH_USE_SYSTICK
 #define BENCH_USE_SYSTICK 1
@@ -231,6 +231,7 @@
 #include "cv_out.h"
 
 #include "FS.h"
+#include "preset_store.h"
 
 #include "noteList.h"
 
@@ -357,13 +358,17 @@ void __not_in_flash_func(loop)() {
 
   {
     BENCH_BEGIN(loop0_serial);
-    if (timer1msFlag || Serial2.available() > 0) {
-      serial_panel_task();
+    if (timer1msFlag) {
+      if (Serial2.available() > 0) {
+        serial_panel_task();
+      }
     }
     if (timer1msFlag) {
 #ifdef ENABLE_USB_CONTROL
       serial_usb_task();
 #endif
+      // One-shot recall of the last saved/loaded preset once both cores are up.
+      preset_store_boot_task();
     }
     BENCH_END(loop0_serial);
   }
@@ -446,17 +451,22 @@ void __not_in_flash_func(loop1)() {
 
     pio_defer_service();
 
-    if (timer99microsFlag2 == 1) {
+    if (timer5msFlag2 == 1) {
+      ADSR_set_parameters();
+    }
+
+    if (timer50microsFlag2 == 1) {
       {
         BENCH_BEGIN(loop1_adsr);
         ADSR_update();
         BENCH_END(loop1_adsr);
       }
-      {
+    }
+
+    if (timer99microsFlag2 == 1) {
         BENCH_BEGIN(loop1_cv_outs);
         update_CV_outs();
         BENCH_END(loop1_cv_outs);
-      }
     }
 
     {

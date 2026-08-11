@@ -52,55 +52,58 @@ void init_ADSR() {
 // Each noteOn/noteOff/getWave reads micros()/millis() itself — do not share one
 // timestamp across edges + getWave (unsigned delta underflow skips A/R).
 void __not_in_flash_func(ADSR_update)() {
-#ifdef ENABLE_MB_MOD_STREAM
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
-    noteStart[i] = 0;
-    noteEnd[i] = 0;
-  }
-  return;
-#endif
-  for (int i = 0; i < NUM_VOICES; i++) {
-    if (noteEnd[i] == 1) {
-      ADSRVoices[i].adsr1_voice.noteOff();
-      ADSRVoices[i].adsr_vca_voice.noteOff();
-      adsr_vcf_voice.noteOff();
-      adsr_vcf2_voice.noteOff();
-      noteEnd[i] = 0;
-    } else if (noteStart[i] == 1) {
-      // A/D/R (and sustain) stay current via ADSR_set_parameters / init / curve helpers.
-      // Re-set* here used to cost ~9x 64-bit divides per note and spiked ADSR_update max.
-      // noteOn() retriggers attack; do not noteOff() first (phantom RELEASE from _notes_pressed==0).
-      ADSRVoices[i].adsr1_voice.noteOn();
-      ADSRVoices[i].adsr_vca_voice.noteOn();
-      adsr_vcf_voice.noteOn();
-      adsr_vcf2_voice.noteOn();
-
+  #ifdef ENABLE_MB_MOD_STREAM
+    for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
       noteStart[i] = 0;
+      noteEnd[i] = 0;
     }
-#if ADSR_BEZIER_NATIVE_Q15
-    // getWave returns Q15; do not call levelDac() here (divide; u12 mirrors unused).
-    ADSR1Level_q15[i] = (int16_t)ADSRVoices[i].adsr1_voice.getWave();
-    ADSR_VCA_Level_q15[i] = (int16_t)ADSRVoices[i].adsr_vca_voice.getWave();
-#else
-    ADSR1Level[i] = ADSRVoices[i].adsr1_voice.getWave();
-    ADSR1Level_q15[i] = ADSRVoices[i].adsr1_voice.levelQ15();
-    ADSR_VCA_Level[i] = ADSRVoices[i].adsr_vca_voice.getWave();
-    ADSR_VCA_Level_q15[i] = ADSRVoices[i].adsr_vca_voice.levelQ15();
-#endif
+    return;
+  #endif
+  
+    // Static phase toggle: flips between 0 and 1 on every function call
+    static uint8_t phase = 0;
+    phase ^= 1; // 0 -> 1 -> 0 -> 1...
+  
+    // Loop starts at 'phase' (0 or 1) and jumps by 2
+    // Pass 0: processes voices 0, 2, ...
+    // Pass 1: processes voices 1, 3, ...
+    for (int i = phase; i < NUM_VOICES; i += 2) {
+      if (noteEnd[i] == 1) {
+        ADSRVoices[i].adsr1_voice.noteOff();
+        ADSRVoices[i].adsr_vca_voice.noteOff();
+        adsr_vcf_voice.noteOff();
+        adsr_vcf2_voice.noteOff();
+        noteEnd[i] = 0;
+      } else if (noteStart[i] == 1) {
+        ADSRVoices[i].adsr1_voice.noteOn();
+        ADSRVoices[i].adsr_vca_voice.noteOn();
+        adsr_vcf_voice.noteOn();
+        adsr_vcf2_voice.noteOn();
+  
+        noteStart[i] = 0;
+      }
+  #if ADSR_BEZIER_NATIVE_Q15
+      ADSR1Level_q15[i] = (int16_t)ADSRVoices[i].adsr1_voice.getWave();
+      ADSR_VCA_Level_q15[i] = (int16_t)ADSRVoices[i].adsr_vca_voice.getWave();
+  #else
+      ADSR1Level[i] = ADSRVoices[i].adsr1_voice.getWave();
+      ADSR1Level_q15[i] = ADSRVoices[i].adsr1_voice.levelQ15();
+      ADSR_VCA_Level[i] = ADSRVoices[i].adsr_vca_voice.getWave();
+      ADSR_VCA_Level_q15[i] = ADSRVoices[i].adsr_vca_voice.levelQ15();
+  #endif
+    }
+  
+    // Shared EnvVCF / EnvVCF2 stay outside the loop (runs every tick)
+  #if ADSR_BEZIER_NATIVE_Q15
+    ADSR_VCF_Level_q15 = (int16_t)adsr_vcf_voice.getWave();
+    ADSR_VCF2_Level_q15 = (int16_t)adsr_vcf2_voice.getWave();
+  #else
+    ADSR_VCF_Level = adsr_vcf_voice.getWave();
+    ADSR_VCF_Level_q15 = adsr_vcf_voice.levelQ15();
+    ADSR_VCF2_Level = adsr_vcf2_voice.getWave();
+    ADSR_VCF2_Level_q15 = adsr_vcf2_voice.levelQ15();
+  #endif
   }
-  // Shared EnvVCF / EnvVCF2: once per tick (not inside the voice loop).
-#if ADSR_BEZIER_NATIVE_Q15
-  ADSR_VCF_Level_q15 = (int16_t)adsr_vcf_voice.getWave();
-  ADSR_VCF2_Level_q15 = (int16_t)adsr_vcf2_voice.getWave();
-#else
-  ADSR_VCF_Level = adsr_vcf_voice.getWave();
-  ADSR_VCF_Level_q15 = adsr_vcf_voice.levelQ15();
-  ADSR_VCF2_Level = adsr_vcf2_voice.getWave();
-  ADSR_VCF2_Level_q15 = adsr_vcf2_voice.levelQ15();
-#endif
-
-  ADSR_set_parameters();
-}
 
 // ~200 Hz: push dirty EnvDCO / EnvVCA / EnvVCF A/D/S/R to all voices.
 inline void ADSR_set_parameters() {

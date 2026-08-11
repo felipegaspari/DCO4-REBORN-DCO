@@ -1,8 +1,10 @@
 #ifndef __SERIAL_H__
 #define __SERIAL_H__
 
+// DCO accepts the 36-byte 'B' bulk-restore chunk (preset_store.h), so the inner
+// payload cap must be raised before serial_frame.h locks its default of 8.
 #ifndef SERIAL_INNER_MAX_PAYLOAD
-#define SERIAL_INNER_MAX_PAYLOAD 16
+#define SERIAL_INNER_MAX_PAYLOAD 36
 #endif
 
 #include "serial_param_protocol.h"
@@ -32,6 +34,12 @@ void serial_echo_persistable_param16(uint8_t id, int16_t value);
 void serial_send_adsr_vca_block_to_mb();
 void serial_send_adsr_vcf_block_to_mb();
 void serial_send_filter_block_to_mb();
+
+// 'L' [slot] out on Serial2 at the end of every successful preset_store_load()
+// (boot recall, MIDI PC, USB/dco_control, Input-triggered). The Mainboard relays
+// it to Input so the Screen's preset display reflects the DCO's actual current
+// slot even for loads Input didn't itself trigger.
+void serial_send_preset_loaded_to_mb(uint8_t slot);
 
 void serial_send_note_on(uint8_t voice, uint8_t velocity, uint8_t note, uint8_t flags);
 void serial_send_note_off(uint8_t voice);

@@ -4,6 +4,7 @@ Purpose of **every file**, and for each source function: **what it does**, **who
 
 - Deep narrative: [`REFERENCE_AI.md`](REFERENCE_AI.md)
 - Build flags catalog: [`BUILD_FLAGS.md`](BUILD_FLAGS.md)
+- Preset store / cal dump protocol: [`PRESET_STORE.md`](PRESET_STORE.md)
 - Engine float/fixed math: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
 - Hot-path profiling: [`BENCHMARKING.md`](BENCHMARKING.md)
 - SRAM / heap / stack: [`MEMORY.md`](MEMORY.md)
@@ -714,6 +715,35 @@ Constants / buffers; declares fake-calibration helpers under `ENABLE_FS_CALIBRAT
   - **Called from:** `setup1()` with `false` (before `init_FS`); `apply_param_debug_command` case **30** with `true`.
   - **When:** Boot if file missing; on-demand force-overwrite.
 
+### `preset_store.h`
+
+256-slot MCU preset store constants + record layout (598 B, magic/version/name/bitmap/params/blocks/CRC32), chunked LittleFS layout (`pb00`…`pb63`, 4 records/file), bulk-restore targets, `preset_param_is_persistable()`, `preset_shadow_capture()` (inline hook for `update_parameters`), `preset_store_boot_task()`, `preset_store_send_directory_to_mb()` prototype. Ported from DCO3-MONOSYNTH; same wire/record format. These slots are the instrument's only preset storage — Input caches names in RAM only. Full doc: [`PRESET_STORE.md`](PRESET_STORE.md).
+
+### `preset_store.ino`
+
+**Functions**
+- `preset_store_save(slot)` — Snapshot shadow + ADSR/filter globals into a record; in-place chunk write; update `pstLast`.
+  - **Called from:** `apply_param_preset_save()` (ParamId 170).
+  - **When:** Host/user save.
+- `preset_store_load(slot)` — Read + CRC-check record; replay bitmap-set params via `update_parameters()`; write block globals; mirror EnvVCA/EnvVCF/filter to Mainboard; `serial_send_preset_loaded_to_mb()` (`'L'`) at the end.
+  - **Called from:** `apply_param_preset_load()` (171); `handleProgramChange()`; `preset_store_boot_recall()`.
+  - **When:** Host/user load; MIDI PC; boot.
+- `preset_store_send_directory_to_mb()` — Emit all 256 slots as `'O'` frames (`[slot][name:16]`, blank = unused/invalid magic) on Serial2; opens each of the 64 chunk files once. No-op if Serial2 TX is not writable. Mainboard relays the frames to Input.
+  - **Called from:** `input_handle_preset_dir_request()` (`Serial.ino`).
+  - **When:** `'N'` on Serial2 (Input boot / save-select entered).
+- `preset_store_dump(sel)` — `[pdir]` directory (sel −1) or `[dump]` hex of one record.
+  - **Called from:** `apply_param_preset_dump()` (172).
+  - **When:** Host pull (`tools/dco_control`).
+- `preset_store_cal_dump(sel)` — `[dump]` one/all calibration files (clamped bank sizes).
+  - **Called from:** `apply_param_cal_dump()` (173).
+  - **When:** Host cal backup.
+- `preset_bulk_chunk()` / `preset_bulk_commit()` — Stage `'B'` 32-byte chunks; `'C'` verifies size+CRC32 then persists (preset record or cal bank via `write_fs_bank()` + `init_FS()`).
+  - **Called from:** `input_handle_bulk_chunk/commit()` (`Serial.ino`).
+  - **When:** Host push/restore.
+- `preset_store_boot_recall()` — Load `pstLast` slot once.
+  - **Called from:** `preset_store_boot_task()` from `loop()`.
+  - **When:** ~1.5 s after boot, skipped during calibration.
+
 ### `irq_tuner.h` / `irq_tuner.ino`
 
 Experimental; bodies commented. **No active function definitions.**
@@ -755,9 +785,9 @@ MIDI CC control surface: the `MIDI_CC_LINEAR` / `MIDI_CC_EXP_TIME` curves, the `
 - `midi_cc_apply()` — Dispatch: a `CC_LOCAL_*` target writes ADSR/filter block globals here (`cv_bake_adsr2_to_vcf_scale` / `cv_bake_lfo2_to_vcf_scale` for the matching depth CC). VCA/VCF time CCs also TX `'a'`/`'b'` to Mainboard; filter CCs TX `'d'`. PW (`PARAM_PW_VALUE`) and EnvVCA→VCA (`PARAM_ADSR1_TO_VCA`) and every other mapped ParamId go to `update_parameters()` plus `serial_echo_persistable_param16()`.
   - **Called from:** `midi_cc_handle()`.
   - **When:** MIDI callback.
-- `handleProgramChange()` — Stub / empty as implemented.
-  - **Called from:** MIDI library.
-  - **When:** MIDI callback.
+- `handleProgramChange()` — Recall `midiPresetBank * 128 + program` via `preset_store_load()`, ignoring anything past `PRESET_NUM_SLOTS`. Bank Select (CC 0 / CC 32) is what reaches slots 128–255.
+  - **Called from:** MIDI library (both `MIDI_USB` and `MIDI_SERIAL`).
+  - **When:** MIDI Program Change. See [`PRESET_STORE.md`](PRESET_STORE.md).
 - `handlePitchBend()` — Sets `midi_pitch_bend`.
   - **Called from:** MIDI library.
   - **When:** MIDI callback.
@@ -781,37 +811,58 @@ Prototype. **No function definitions.**
 ### `Serial.ino`
 
 **Functions**
-- `init_serial()` — Serial1 MIDI baud (RX 1 / TX 0 @ 31250, IRQ/`setPollingMode(false)`), Serial2 2.5M Input link against the Input's `Serial1` (RX 21 from Input TX GP0, TX 20 into Input RX GP1); builds the O(1) command LUT.
+- `init_serial()` — Serial1 MIDI baud (RX 1 / TX 0 @ 31250, IRQ/`setPollingMode(false)`), Serial2 2.5M Mainboard link (RX 21 / TX 20); builds the two O(1) command LUTs: `mainboardSerialLut` from `mainboardSerialCommands[]` (Serial2) and `inputSerialLut` from `inputSerialCommands[]` (USB CDC bench).
   - **Called from:** `setup()`.
   - **When:** Boot Core0.
 - `input_handle_adsr1()` / `input_handle_adsr2()` / `input_handle_adsr3()` — `'a'`/`'b'`/`'c'` LE → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times. USB `'a'`/`'b'` also mirror to Mainboard Serial2; `'c'` stays local.
+  - **Called from:** both parser LUTs — panel-origin blocks arrive on Serial2 (the Mainboard applies them *and* forwards them so the preset record is not built from stale values).
+  - **When:** Serial2 / USB CDC RX.
+- `input_handle_filter_block()` — `'d'` LE → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_bake_adsr2_to_vcf_scale()` + `cv_bake_lfo2_to_vcf_scale()`. USB ingress also mirrors `'d'` to Mainboard.
+  - **Called from:** both parser LUTs.
+  - **When:** Serial2 / USB CDC RX.
+- `input_handle_param16()` — `'p'` → `update_parameters` (id + i16 LE); USB ingress also `serial_echo_persistable_param16`. Serial2 `'p'` goes to `mb_handle_param16()` instead.
   - **Called from:** USB parser LUT (`inputSerialLut`).
   - **When:** USB CDC RX.
-- `input_handle_filter_block()` — `'d'` LE → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_bake_adsr2_to_vcf_scale()` + `cv_bake_lfo2_to_vcf_scale()`. USB ingress also mirrors `'d'` to Mainboard.
-  - **Called from:** parser LUT.
-  - **When:** USB CDC RX.
-- `input_handle_param16()` — `'p'` → `update_parameters` (id + i16 LE); USB ingress also `serial_echo_persistable_param16`.
-  - **Called from:** parser LUT.
-  - **When:** Serial2 / USB CDC RX.
-- `input_handle_preset_name()` — `'q'` → `presetName[]` (8 chars).
-  - **Called from:** parser LUT.
-  - **When:** Serial RX.
-- `serial_panel_task()` — Non-blocking parser pump (`serial_parser_drain`). Sets ingress `PARAM_SRC_INPUT` (no `'p'` echo). `__not_in_flash_func`.
+- `input_handle_preset_name()` — `'q'` → `presetName[]` (16 chars). Panel-origin names arrive on Serial2, relayed by the Mainboard; the record is written from this copy.
+  - **Called from:** both parser LUTs.
+  - **When:** Serial2 / USB CDC RX, before a `PARAM_PRESET_SAVE`.
+- `input_handle_bulk_chunk()` / `input_handle_bulk_commit()` — `'B'`/`'C'` → `preset_bulk_chunk()` / `preset_bulk_commit()`.
+  - **Called from:** USB parser LUT (`inputSerialLut`).
+  - **When:** USB CDC RX (host restore).
+- `input_handle_preset_dir_request()` — `'N'` → `preset_store_send_directory_to_mb()` (256× `'O'` back out on Serial2). Registered in `mainboardSerialCommands[]` only, so USB cannot trigger it.
+  - **Called from:** Serial2 parser LUT (`mainboardSerialLut`).
+  - **When:** Serial2 RX — Input's request, relayed by the Mainboard (Input boot / save-select entered).
+- `serial_forward_input_block_to_mb()` — Re-emit an `'a'`–`'d'` block on Serial2, but only when ingress is `PARAM_SRC_USB`, so a Mainboard-origin block is never echoed back.
+  - **Called from:** `input_handle_adsr1/2()`, `input_handle_filter_block()`.
+  - **When:** USB CDC block edit.
+- `mb_handle_param16()` — Serial2 `'p'` → `update_parameters()`, no echo (loop prevention).
+  - **Called from:** Serial2 parser LUT.
+  - **When:** Serial2 RX.
+- `mb_handle_mod_stream()` — `'m'` → `LFO1Level` / `LFO2Level` / `ADSR1Level_q15[]` / `matrix_pitch_mod_q24`; fills the pitch mailboxes only under `ENABLE_MB_MOD_STREAM`.
+  - **Called from:** Serial2 parser LUT.
+  - **When:** Serial2 RX, Mainboard mod stream.
+- `mb_handle_bench_text()` — `'t'` ASCII chunk → 2048-byte ring (drops the frame if it would overflow).
+  - **Called from:** Serial2 parser LUT.
+  - **When:** Serial2 RX, Mainboard bench text.
+- `mb_bench_text_drain()` — Copy up to 256 buffered bytes to USB CDC when `Serial` has room.
+  - **Called from:** `loop()`.
+  - **When:** Core0, whenever the ring is non-empty.
+- `serial_panel_task()` — Non-blocking parser pump for Serial2 (`serial_parser_drain` on `mainboardSerialLut`). Sets ingress `PARAM_SRC_INPUT` (no `'p'` echo). `__not_in_flash_func`.
   - **Called from:** `loop()` when `timer1msFlag`.
   - **When:** Realtime Core0, ~1 ms.
 - `init_usb()` — TinyUSB CDC+MIDI descriptors, `Serial.begin`, re-enumerate.
   - **Called from:** `setup()`.
   - **When:** Boot Core0.
-- `serial_usb_task()` — Same pump for USB CDC: second `SerialParserContext`, same LUT. Sets ingress `PARAM_SRC_USB` so persistable `'p'` and analog `'a'`/`'b'`/`'d'` mirror to Mainboard. Guarded by `ENABLE_USB_CONTROL`; returns if `!Serial`. `__not_in_flash_func`. See [`tools/dco_control`](../tools/dco_control/README.md).
+- `serial_usb_task()` — Same pump for USB CDC: second `SerialParserContext`, `inputSerialLut`. Sets ingress `PARAM_SRC_USB` so persistable `'p'` and analog `'a'`/`'b'`/`'d'` mirror to Mainboard. Guarded by `ENABLE_USB_CONTROL`; returns if `!Serial`. `__not_in_flash_func`. See [`tools/dco_control`](../tools/dco_control/README.md).
   - **Called from:** `loop()` when `timer1msFlag`.
   - **When:** Realtime Core0, ~1 ms, only when `ENABLE_USB_CONTROL` is defined and CDC is open.
-- `serialSendParam32()` — Slim `'x'` TX via `serial_frame_write` (id + u32 LE, 5 B) out Serial2 TX 20 into Input `Serial1` RX GP1 (gap 154, cal 155; Input relays 154 to Screen). Drops if `availableForWrite() < 1`.
+- `serialSendParam32()` — Slim `'x'` TX via `serial_frame_write` (id + u32 LE, 5 B) out Serial2 TX 20 to the Mainboard (gap 154, cal 155; Mainboard relays to Input, Input relays 154 to Screen). Drops if `availableForWrite() < 1`.
   - **Called from:** `apply_param_manual_calibration_flag()`; `DCO_calibration_debug()`.
   - **When:** Manual-cal param / live gap report.
-- `serialSendParam16()` — Slim `'p'` TX (id + i16 LE, 3 B) out Serial2 TX 20 into Input RX GP1. Drops if `availableForWrite() < 1`.
+- `serialSendParam16()` — Slim `'p'` TX (id + i16 LE, 3 B) out Serial2 TX 20 to the Mainboard. Drops if `availableForWrite() < 1` unless `force`.
   - **Called from:** `serial_echo_persistable_param16()`.
   - **When:** USB/`dco_control` or MIDI persistable ParamId apply.
-- `serial_echo_persistable_param16()` — If id is LittleFS-persistable, `serialSendParam16` (wire i16, not Q24). Skips cal/debug/UI and `'a'`–`'d'`.
+- `serial_echo_persistable_param16()` — If id is persistable (`preset_param_is_persistable()`), `serialSendParam16` (wire i16, not Q24) so the panel display follows a USB/MIDI edit. Skips cal/debug/UI and `'a'`–`'d'`.
   - **Called from:** `input_handle_param16()` when ingress is USB; `midi_cc_apply()` ParamId path.
   - **When:** USB/MIDI apply of a persistable id.
 - `serial_send_filter_block_to_mb()` — Slim `'d'` of current `CUTOFF`/`RESONANCE`/`ADSR2toVCF`/`LFO2toVCF` on Serial2.
@@ -820,18 +871,21 @@ Prototype. **No function definitions.**
 - `serial_send_adsr_vca_block_to_mb()` / `serial_send_adsr_vcf_block_to_mb()` — Slim `'a'`/`'b'` of current EnvVCA/EnvVCF times on Serial2.
   - **Called from:** `midi_cc_apply()` VCA/VCF time CCs.
   - **When:** MIDI envelope-time CCs.
+- `serial_send_preset_loaded_to_mb(slot)` — `'L'` `[slot]` on Serial2; the Mainboard relays it to Input so the panel/Screen show the DCO's current slot. Drops if Serial2 TX is not writable.
+  - **Called from:** `preset_store_load()`.
+  - **When:** End of every successful load (boot recall, MIDI PC, USB/`dco_control`, panel).
 
 ### `serial_protocol.h`
 
-Compatibility stub that includes `serial_input_protocol.h`. Mainboard `'n'`/`'o'`/`'s'` retired. **No function definitions.**
+Mainboard ↔ DCO command set on top of `serial_input_protocol.h`: `'n'`/`'o'` note edges, `'e'` expression, `'m'` mod stream (16 B), `'t'` bench ASCII chunk (16 B), plus `'p'`/`'x'` and the `'a'`/`'b'`/`'d'` analog mirror lengths in `serial_protocol_payload_len()`. **No other function definitions.**
 
 ### `serial_input_protocol.h`
 
-Command bytes + payload sizes + `serial_input_payload_len()`. `'p'` is Input→DCO apply and DCO→Input persistable mirror. **No other function definitions.**
+Command bytes + payload sizes + `serial_input_payload_len()`. **Command values and payload lengths are shared across both projects; the header itself is copied and trimmed per board** — this copy (byte-identical to `DCO3-MONOSYNTH/DCO/` and to `MAINBOARD-CONTROLLER/`) carries only what the DCO parses or sends. `'p'` is inbound apply and outbound persistable mirror; `'q'` is 16 chars; `'B'`/`'C'` are host bulk restore; `'N'` (1 pad byte) / `'O'` (17 B) / `'L'` (1 B) are the preset directory protocol. `'O'`/`'L'` are TX-only here, so they have no `serial_input_payload_len()` row (Input's copy defines them inbound). Never change a value in one copy only. **No other function definitions.**
 
 ### `serial_frame.h`
 
-Inner pack/unpack + buffer COBS encode/decode + `serial_frame_stuff` / `unstuff` / `write()`. Default `SERIAL_FRAMING_RAW` (on-wire = inner). `#define SERIAL_FRAMING_COBS` in `DCO.ino` wraps `COBS(inner)+0x00`. `#error` if both flags are forced. `SERIAL_INNER_MAX_PAYLOAD` overridable (`#ifndef`, default 8; Input/Screen set 17). `SERIAL_FRAME_DELIMITER` `0x00` never a command. Codec has no Stream type — UART today, SPI later.
+Inner pack/unpack + buffer COBS encode/decode + `serial_frame_stuff` / `unstuff` / `write()`. Default `SERIAL_FRAMING_RAW` (on-wire = inner). `#define SERIAL_FRAMING_COBS` in `DCO.ino` wraps `COBS(inner)+0x00`. `#error` if both flags are forced. `SERIAL_INNER_MAX_PAYLOAD` overridable (`#ifndef`, default 8; `Serial.h` sets **36** on the DCO for `'B'`, Input/Screen set 17). `SERIAL_FRAME_DELIMITER` `0x00` never a command. Codec has no Stream type — UART today, SPI later.
 
 **Functions**
 - `serial_cobs_encode()` / `serial_cobs_decode()` — Buffer COBS; decode src has no trailing `0x00`.
@@ -873,7 +927,7 @@ Non-blocking inner-frame parser. RAW: cmd LUT + fixed payload. COBS (`SERIAL_FRA
 
 ### `params_def.h`
 
-`enum ParamId` only. **No function definitions.**
+`enum ParamId` only. **Canonical superset, byte-identical across all seven live board copies of both projects** (DCO / Input / Screen on DCO3-MONOSYNTH; DCO / Input / Mainboard / Screen here); master copy is `DCO3-MONOSYNTH/DCO/params_def.h` — edit there and copy out, never renumber an existing id. Any given board routes only a subset; the `VOICE-AUX` scaffolds carry older forks. **No function definitions.**
 
 ### `param_router.h`
 

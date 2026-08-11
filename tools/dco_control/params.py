@@ -6,16 +6,24 @@ DCO/params.ino.
 
 Everything that is not a 1 ms ADSR/filter block goes out as a 4-byte 'p' frame
 (id + int16 LE). ADSR times and the filter block stay packed ('a'–'d').
+
+This table is the superset for both synths (see models.py). Call
+apply_model(models.active()) once at startup: it drops params the model's
+firmware doesn't route (Param.models), marks GUI-hidden ones (Param.hidden)
+and applies the model's cosmetic label/choice/note overrides.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 
+import models
 import protocol
 
 # Tab names, in display order.
 GROUP_OSC = "Oscillators"
+GROUP_SUB = "Sub-osc"
 GROUP_ENV = "Envelopes"
 GROUP_FILTER = "Filter"
 GROUP_PWM = "PWM"
@@ -28,6 +36,7 @@ GROUP_DIAG = "Diagnostics"
 
 GROUP_ORDER = [
     GROUP_OSC,
+    GROUP_SUB,
     GROUP_ENV,
     GROUP_FILTER,
     GROUP_PWM,
@@ -59,8 +68,8 @@ _MOD_SOURCES = (
 
 _MOD_DESTS = (
     ("Off / empty", 255),
-    ("0 OSC A level", 0),
-    ("1 OSC B level", 1),
+    ("0 OSC1 level", 0),
+    ("1 OSC2 level", 1),
     ("2 OSC3 level", 2),
     ("3 Sub level", 3),
     ("4 VCF1 reso", 4),
@@ -69,6 +78,41 @@ _MOD_DESTS = (
     ("7 VCF cutoff", 7),
     ("8 Dist Mix", 8),
     ("9 Pitch (±1 oct @ ±1023)", 9),
+    ("10 Sub phase (sub 2)", 10),
+    ("11 Sub pulse width (sub 2)", 11),
+)
+
+# --- Sub-oscillators (ENABLE_SUBOSC_ENGINE2, RP2350 only) -------------------
+# Two subs on pio2, plus the boolean combiner on SM3 that is the section's actual output. None
+# of these get a MIDI CC: every non-reserved controller is already taken (gen_midi_map.py
+# reports 0 free), and for the two that want continuous control the mod matrix has SUB_PHASE
+# and SUB_PW destinations, which reach them at control-frame rate instead of MIDI rate.
+_SUB_DIVIDES = (
+    ("Off", 0),
+    ("1 - master rate (phase / PWM only)", 1),
+    ("2 - one octave down", 2),
+    ("3 - octave + fifth down", 3),
+    ("4 - two octaves down", 4),
+    ("5", 5),
+    ("6", 6),
+    ("7", 7),
+    ("8 - three octaves down", 8),
+)
+_SUB_LOGIC_OPS = (
+    ("Off", 0),
+    ("XOR - ring mod", 1),
+    ("AND", 2),
+    ("OR", 3),
+    ("XNOR", 4),
+    ("NAND", 5),
+    ("NOR", 6),
+    ("Sub 1 only", 7),
+    ("Sub 2 only", 8),
+)
+_SUB_MASTERS = (
+    ("OSC1", 0),
+    ("OSC2", 1),
+    ("OSC3", 2),
 )
 
 
@@ -99,7 +143,12 @@ class Param:
     pulse_value: int = 1
     note: str = ""
     cc: int | None = None
-    hidden: bool = False  # keep in PARAMS (MIDI map / presets); skip GUI
+    # None = every model routes this param; otherwise a tuple of model keys.
+    # apply_model() removes params entirely for models not listed here.
+    models: tuple[str, ...] | None = None
+    # Set by apply_model() from the profile: keep in PARAMS (presets / MIDI
+    # map still carry it) but skip the GUI on this model.
+    hidden: bool = False
 
 
 @dataclass(frozen=True)
@@ -186,14 +235,14 @@ PARAMS: list[Param] = [
     Param(13, "Octave shift", GROUP_OSC, "combo",
           choices=tuple((f"{(s - 36) // 12:+d}", s) for s in range(0, 73, 12)),
           default=24, cc=2),
-    Param(14, "OSC B interval (semitones)", GROUP_OSC, "slider", 0, 60, 36, cc=3),
-    Param(33, "OSC3 interval (semitones)", GROUP_OSC, "slider", 0, 60, 36, cc=4, hidden=True),
-    Param(15, "OSC B detune", GROUP_OSC, "slider", 0, 512, 0, cc=5),
-    Param(34, "OSC3 detune", GROUP_OSC, "slider", 0, 512, 0, cc=8, hidden=True),
+    Param(14, "OSC2 interval (semitones)", GROUP_OSC, "slider", 0, 60, 36, cc=3),
+    Param(33, "OSC3 interval (semitones)", GROUP_OSC, "slider", 0, 60, 36, cc=4),
+    Param(15, "OSC2 detune", GROUP_OSC, "slider", 0, 512, 0, cc=5),
+    Param(34, "OSC3 detune", GROUP_OSC, "slider", 0, 512, 0, cc=8),
     Param(31, "Hard sync topology", GROUP_OSC, "combo", default=0,
-          choices=(("0 - all free running", 0), ("1 - OSC B masters OSC A", 1), ("2 - OSC A masters OSC B", 2)),
+          choices=(("0 - all free running", 0), ("1 - OSC2 masters OSC1", 1), ("2 - OSC1 masters OSC2", 2)),
           note="which oscillator's sideset drives which reset pin; not the note-on phase "
-               "reset, which is 'Osc sync / phase align OSC B' below",
+               "reset, which is 'Osc sync / phase align OSC2' below",
           cc=20),
     Param(36, "Soft sync", GROUP_OSC, "combo", default=0,
           choices=(("0 - hard sync (cap only)", 0),
@@ -204,46 +253,94 @@ PARAMS: list[Param] = [
           cc=21),
     Param(37, "Sub-oscillator divide", GROUP_OSC, "combo", default=0,
           choices=(("Off", 0), ("Divide by 2", 2), ("Divide by 4", 4)),
-          note="output on GP8, needs a mixer input on the carrier to be audible", cc=22),
-    Param(17, "Osc sync / phase align OSC B", GROUP_OSC, "combo", default=0,
+          note="the legacy single sub on GP8. On an ENABLE_SUBOSC_ENGINE2 build this sets both "
+               "subs at once, and the Sub-osc tab is the finer-grained version of it", cc=22),
+    Param(17, "Osc sync / phase align OSC2", GROUP_OSC, "combo", default=0,
           choices=_phase_choices(),
           note="Off leaves the oscillators running through note-on; every other setting "
-               "restarts OSC A and OSC B together there, the degree entries delaying OSC B's "
+               "restarts OSC1 and OSC2 together there, the degree entries delaying OSC2's "
                "first flyback (EXACT_Y). Changing this retriggers all notes.",
           cc=23),
     Param(26, "Voice mode", GROUP_OSC, "combo", default=0,
-          choices=(("0 - mono", 0), ("1 - poly", 1), ("2 - stack", 2)), cc=69),
+          choices=(("0 - mono", 0), ("1 - poly", 1), ("2 - stack", 2)),
+          note="Mono (`0`) uses a last-note-priority held-note stack (overlapping keys; "
+               "release falls back and retriggers porta). See [`REFERENCE_AI.md`]"
+               "(REFERENCE_AI.md) (`note_on` / `note_off`).",
+          cc=69),
     Param(27, "Unison detune", GROUP_OSC, "slider", 0, 127, 0, cc=70),
     Param(18, "Portamento time", GROUP_OSC, "slider", 0, 255, 0, cc=71),
     Param(32, "Portamento mode", GROUP_OSC, "combo", default=0,
-          choices=(("0 - fixed time", 0), ("1 - slew rate", 1)), cc=72),
+          choices=(("0 - fixed time (same duration any interval)", 0),
+                   ("1 - slew rate (time scales with interval; knob = time per octave)", 1)),
+          cc=72),
     Param(28, "Analog drift amount", GROUP_OSC, "slider", 0, 127, 0, cc=73),
     Param(29, "Analog drift speed", GROUP_OSC, "slider", 1, 255, 1, cc=74),
     Param(30, "Analog drift spread", GROUP_OSC, "slider", 1, 127, 1, cc=75),
     Param(43, "VCA level", GROUP_OSC, "slider", 0, 128, 128, cc=76),
     Param(21, "Velocity to VCA", GROUP_OSC, "slider", 0, 20, 0, cc=77),
-    Param(22, "OSC A level", GROUP_OSC, "slider", 0, 127, 127, cc=9),
-    Param(23, "OSC B level", GROUP_OSC, "slider", 0, 127, 0, cc=12),
-    Param(38, "OSC3 level", GROUP_OSC, "slider", 0, 127, 0, cc=83, hidden=True),
+    Param(22, "OSC1 level", GROUP_OSC, "slider", 0, 127, 127, cc=9),
+    Param(23, "OSC2 level", GROUP_OSC, "slider", 0, 127, 0, cc=12),
+    Param(38, "OSC3 level", GROUP_OSC, "slider", 0, 127, 0, cc=83),
     Param(24, "Sub level", GROUP_OSC, "slider", 0, 127, 0, cc=13),
-    Param(1, "OSC A Saw enable", GROUP_OSC, "check", default=0,
-          note="DG411 via dual 595; analog mux on Mainboard", cc=16),
-    Param(2, "OSC A Pulse enable", GROUP_OSC, "check", default=0, note="analog Pulse", cc=17),
-    Param(3, "OSC A Tri enable", GROUP_OSC, "check", default=0, cc=18),
-    Param(84, "OSC B Saw enable", GROUP_OSC, "check", default=0, cc=112),
-    Param(85, "OSC B Pulse enable", GROUP_OSC, "check", default=0, cc=113),
-    Param(86, "OSC B Tri enable", GROUP_OSC, "check", default=0, cc=114),
-    Param(87, "OSC3 Saw enable", GROUP_OSC, "check", default=0, cc=115, hidden=True),
-    Param(88, "OSC3 Pulse enable", GROUP_OSC, "check", default=0, cc=116, hidden=True),
-    Param(89, "OSC3 Tri enable", GROUP_OSC, "check", default=0, cc=117, hidden=True),
+    Param(1, "OSC1 Saw enable", GROUP_OSC, "check", default=0,
+          note="DG411 via dual 595; needs ENABLE_WAVE_MUX", cc=16),
+    Param(2, "OSC1 Pulse enable", GROUP_OSC, "check", default=0, note="analog Pulse", cc=17),
+    Param(3, "OSC1 Tri enable", GROUP_OSC, "check", default=0, cc=18),
+    Param(84, "OSC2 Saw enable", GROUP_OSC, "check", default=0, cc=112),
+    Param(85, "OSC2 Pulse enable", GROUP_OSC, "check", default=0, cc=113),
+    Param(86, "OSC2 Tri enable", GROUP_OSC, "check", default=0, cc=114),
+    Param(87, "OSC3 Saw enable", GROUP_OSC, "check", default=0, cc=115),
+    Param(88, "OSC3 Pulse enable", GROUP_OSC, "check", default=0, cc=116),
+    Param(89, "OSC3 Tri enable", GROUP_OSC, "check", default=0, cc=117),
+
+    # --- Sub-oscillators: two subs and their combination (ENABLE_SUBOSC_ENGINE2) ---
+    # A sub counts the flybacks of whichever oscillator it follows, so its frequency is locked to
+    # that oscillator no matter what phase and width do. The combiner on GP10 is what gets mixed:
+    # it can put out either sub on its own as well as any logic combination of the two, so the
+    # carrier needs one mixer input for the whole section.
+    # A build without the engine (RP2040) keeps the single fixed-50% sub: 'Sub 1 divide' then
+    # behaves exactly like 'Sub-oscillator divide' on the Oscillators tab, and everything else on
+    # this tab does nothing.
+    Param(90, "Sub 1 divide", GROUP_SUB, "combo", default=0, choices=_SUB_DIVIDES,
+          note="square on GP8; reaches the mixer through the combiner on GP10",
+          models=("dco3",)),
+    Param(92, "Sub 1 master", GROUP_SUB, "combo", default=0, choices=_SUB_MASTERS,
+          note="which oscillator's reset this sub locks to. Both subs on one master gives "
+               "harmonic pulse patterns from the combiner; different masters gives ring-mod "
+               "beating that tracks the detune between them",
+          models=("dco3",)),
+    Param(93, "Sub 1 phase", GROUP_SUB, "slider", 0, 359, 0,
+          note="rising edge delayed this many degrees of the MASTER period, not the sub "
+               "period - shifting a sub by whole master periods is inaudible",
+          models=("dco3",)),
+    Param(96, "Sub 1 width", GROUP_SUB, "slider", 1, 255, 128,
+          note="duty in 1/256ths of the sub period; 128 is the classic 50% square",
+          models=("dco3",)),
+    Param(91, "Sub 2 divide", GROUP_SUB, "combo", default=0, choices=_SUB_DIVIDES,
+          note="square on GP9", models=("dco3",)),
+    Param(95, "Sub 2 master", GROUP_SUB, "combo", default=1, choices=_SUB_MASTERS,
+          models=("dco3",)),
+    Param(94, "Sub 2 phase", GROUP_SUB, "slider", 0, 359, 0,
+          note="the mod matrix's Sub phase destination lands here, on sub 2 alone: moving both "
+               "subs together leaves the combined output unchanged",
+          models=("dco3",)),
+    Param(97, "Sub 2 width", GROUP_SUB, "slider", 1, 255, 128,
+          note="the Sub pulse width destination lands here for the same reason",
+          models=("dco3",)),
+    Param(99, "Logic combiner", GROUP_SUB, "combo", default=0, choices=_SUB_LOGIC_OPS,
+          note="the section's output, on GP10: a bitwise combination of the two subs (XOR is "
+               "digital ring modulation), or one sub passed straight through. The logic "
+               "operators need both subs at a divide above Off to have edges to work with; "
+               "'Sub-osc engine report' on the Diagnostics tab shows what it is doing",
+          models=("dco3",)),
 
     # --- Envelopes (curves and routing; times live in the a/b/c blocks) ---
     Param(222, "ADSR1 to VCA", GROUP_ENV, "slider", 0, 512, 512, cc=48),
     Param(126, "EnvDCO (ADSR3) enabled", GROUP_ENV, "check", default=1, cc=24),
     Param(10, "ADSR3 to osc select", GROUP_ENV, "combo", default=0,
-          choices=(("0 - OSC A", 0), ("1 - OSC B", 1), ("2 - OSC A+B", 2), ("3 - OSC3", 3), ("4 - all", 4)),
+          choices=(("0 - OSC1", 0), ("1 - OSC2", 1), ("2 - OSC1+2", 2), ("3 - OSC3", 3), ("4 - all", 4)),
           cc=25),
-    Param(47, "ADSR3 to OSC A detune", GROUP_ENV, "slider", -511, 511, 0, cc=26),
+    Param(47, "ADSR3 to OSC1 detune", GROUP_ENV, "slider", -511, 511, 0, cc=26),
     Param(223, "EnvDCO pitch centered", GROUP_ENV, "check", default=0,
           note="off = unipolar env×depth; on = (env−16384)×2 so mid sustain ≈ note, ±2 oct @ full CW. PW stays unipolar."),
     Param(48, "ADSR1 attack curve", GROUP_ENV, "combo", default=0,
@@ -288,14 +385,18 @@ PARAMS: list[Param] = [
     Param(41, "LFO1 speed", GROUP_LFO, "slider", 0, 4095, 0, cc=62),
     Param(42, "LFO2 speed", GROUP_LFO, "slider", 0, 4095, 0, cc=63),
     Param(40, "LFO1 to DCO", GROUP_LFO, "slider", 0, 511, 0, cc=65),
-    Param(216, "LFO1 to OSC A extra", GROUP_LFO, "slider", 0, 255, 0, cc=14),
-    Param(217, "LFO1 to OSC B extra", GROUP_LFO, "slider", 0, 255, 0, cc=15),
-    Param(218, "LFO1 to OSC3 extra", GROUP_LFO, "slider", 0, 255, 0, cc=19, hidden=True),
+    Param(216, "LFO1 to OSC1 extra", GROUP_LFO, "slider", 0, 255, 0, cc=14),
+    Param(217, "LFO1 to OSC2 extra", GROUP_LFO, "slider", 0, 255, 0, cc=15),
+    Param(218, "LFO1 to OSC3 extra", GROUP_LFO, "slider", 0, 255, 0, cc=19),
     Param(44, "LFO1 to VCA", GROUP_LFO, "slider", 0, 1023, 0, cc=66),
-    Param(16, "LFO2 to OSC B detune", GROUP_LFO, "slider", 0, 255, 0, cc=67),
-    Param(35, "LFO2 to OSC3 detune", GROUP_LFO, "slider", 0, 255, 0, cc=68, hidden=True),
-    Param(219, "LFO2 to OSC B coarse", GROUP_LFO, "slider", 0, 511, 0, cc=119),
-    Param(220, "LFO2 to OSC3 coarse", GROUP_LFO, "slider", 0, 511, 0, cc=120, hidden=True),
+    Param(16, "LFO2 to OSC2 detune", GROUP_LFO, "slider", 0, 255, 0, cc=67),
+    Param(35, "LFO2 to OSC3 detune", GROUP_LFO, "slider", 0, 255, 0, cc=68),
+    Param(219, "LFO2 to OSC2 coarse", GROUP_LFO, "slider", 0, 511, 0, cc=119),
+    # No CC: 120 is the All Sound Off channel-mode message, so a DAW panic button would have
+    # slammed this to a value. Nothing else is free (gen_midi_map.py reports 0 remaining), and
+    # the mod matrix reaches osc pitch anyway, so it stays panel-only rather than displacing
+    # another assignment.
+    Param(220, "LFO2 to OSC3 coarse", GROUP_LFO, "slider", 0, 511, 0),
 
     # --- Mod matrix (ParamIds 60–83; see DCO/docs/MOD_MATRIX.md) ---
     # CCs skip reserved 98–101.
@@ -385,6 +486,7 @@ BLOCKS: list[Block] = [
 # pushes a fresh divider every frame for a held note.
 DEBUG_COMMANDS = (
     ("PIO topology report", 1),
+    ("Sub-osc engine report", 4),
     ("Period probe, clk_div 2000", 2),
     ("Period probe, clk_div 20000", 3),
     ("Dump RAM (heap/stack)", 13),
@@ -402,8 +504,9 @@ BENCH_COMMANDS = (
     ("Toggle ~1 Hz dump", 12),
 )
 
-# Mainboard profiler (PARAM_DEBUG_COMMAND 160). DCO forwards 40–42 over Serial2;
-# STM32 dumps ASCII back as slim 't' chunks → Board output. Needs MB RUNNING_AVERAGE.
+# Mainboard profiler (PARAM_DEBUG_COMMAND 160), DCO4-REBORN only (has_mainboard).
+# DCO forwards 40-42 over Serial2; the STM32 dumps ASCII back as slim 't' chunks
+# into the Board output pane. Needs RUNNING_AVERAGE on the Mainboard.
 BENCH_MB_COMMANDS = (
     ("Dump Mainboard once", 40),
     ("Reset Mainboard profiler", 41),
@@ -459,3 +562,44 @@ CHARACTER_JITTER_HI = 128
 CHARACTER_JITTER_DEFAULT = 0
 
 DEBUG_PARAM_ID = 160
+
+# Mod-matrix destination values that only exist with the sub-osc engine
+# (models.ModelProfile.has_sub_engine); stripped from dest combos otherwise.
+_SUB_ONLY_MOD_DEST_VALUES = {10, 11}
+_MOD_DEST_PIDS = {61, 64, 67, 70, 73, 76, 79, 82}
+
+
+def apply_model(profile: models.ModelProfile) -> None:
+    """Bake a model profile into PARAMS / GROUP_ORDER. Call once, before the GUI.
+
+    Drops params the model's firmware doesn't route, marks GUI-hidden ones and
+    rewrites labels/choices/notes with the model's wording. Tabs left with no
+    params (Sub-osc on DCO4) fall out of GROUP_ORDER.
+    """
+    rebuilt: list[Param] = []
+    for p in PARAMS:
+        if p.models is not None and profile.key not in p.models:
+            continue
+        changes: dict = {}
+        if p.pid in profile.label_overrides:
+            changes["label"] = profile.label_overrides[p.pid]
+        if p.pid in profile.choice_overrides:
+            changes["choices"] = profile.choice_overrides[p.pid]
+        if p.pid in profile.note_overrides:
+            changes["note"] = profile.note_overrides[p.pid]
+        if not profile.has_sub_engine and p.pid in _MOD_DEST_PIDS:
+            changes["choices"] = tuple(
+                c for c in p.choices if c[1] not in _SUB_ONLY_MOD_DEST_VALUES)
+        if p.pid in profile.hidden_pids:
+            changes["hidden"] = True
+        rebuilt.append(dataclasses.replace(p, **changes) if changes else p)
+    PARAMS[:] = rebuilt
+
+    populated = {p.group for p in PARAMS} | {b.group for b in BLOCKS}
+    GROUP_ORDER[:] = [g for g in GROUP_ORDER if g in populated]
+
+
+def visible_params(group: str | None = None) -> list[Param]:
+    """PARAMS minus the model-hidden ones, optionally filtered to one tab."""
+    return [p for p in PARAMS
+            if not p.hidden and (group is None or p.group == group)]

@@ -6,6 +6,7 @@ It explains what each file does and how the main subsystems (voices, modulation,
 Related docs:
 - Flat file + function + call-site inventory: [`FILE_INDEX.md`](FILE_INDEX.md) (same `docs/` folder)
 - System topology (other boards): [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md)
+- Preset store / directory protocol: [`PRESET_STORE.md`](PRESET_STORE.md)
 - Complete compile-time flag catalog: [`BUILD_FLAGS.md`](BUILD_FLAGS.md)
 - Float vs fixed engine math (depth): [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
 - Hot-path profiling: [`BENCHMARKING.md`](BENCHMARKING.md)
@@ -261,6 +262,13 @@ Related docs:
   - `update_FS_PWCenter()` / `update_FS_PW_High_Limit()` / `update_FS_PW_Low_Limit()`:
     - Update PW centre and limit values for a given voice in their corresponding files.
 
+- **`preset_store.h` / `preset_store.ino`** — full reference: [`PRESET_STORE.md`](PRESET_STORE.md).
+  - **256-slot patch store**: 598-byte records packed 4 per LittleFS chunk file (`pb00`…`pb63`), CRC32-validated, plus `pstLast` for boot recall. Needs `flash=4194304_524288`.
+  - Save captures the persistable-`'p'` shadow (`presetParamShadow[]` + set bitmap, filled by `preset_shadow_capture()` from `update_parameters()`) and the four block payloads read straight from their globals.
+  - Host side: `'p'` 170–173 (save / load / dump / cal dump), `'B'`/`'C'` bulk restore, structured CDC answer text (`[pdir]` / `[dump]` / `[preset]` / `[bulk]`).
+  - **This board is the preset authority for the whole instrument.** The Input board has no filesystem — it keeps a RAM-only 256-entry name cache. `preset_store_send_directory_to_mb()` answers Input's `'N'` request with 256 `'O'` frames (`[slot][name:16]`), and `serial_send_preset_loaded_to_mb()` sends `'L'` `[slot]` at the end of every `preset_store_load()` so the panel tracks the DCO's actual current slot no matter who triggered the load. Both directions pass through the Mainboard relay.
+  - Recall paths: MIDI Program Change (+ Bank Select CC 0/32), `PARAM_PRESET_LOAD`, and `preset_store_boot_task()` (~1.5 s after boot).
+
 ---
 
 ## 7. MIDI, Serial Protocols and Parameter Updates
@@ -290,24 +298,30 @@ Related docs:
 - **`Serial.h` / `Serial.ino`**  
   - Configures UARTs:
     - `Serial1`: MIDI DIN input — RX **1** / TX **0** @ 31.25 kbps.
-    - `Serial2`: high‑speed link to the Input board — RX **21** / TX **20** @ ~2.5 Mbps. This is the DCO's only peer link; the Screen is reached by Input relaying gap 154. It pairs with the Input's `Serial1`: RX 21 is driven by the Input's TX (GP0), and TX 20 drives the Input's RX (GP1). The Input talks to the Screen on its `Serial2` TX (GP4); that port's RX (GP5) is unwired.
+    - `Serial2`: high‑speed link to the **STM32 Mainboard** — RX **21** / TX **20** @ ~2.5 Mbps. This is the DCO's only peer link; the panel and the Screen are reached through the Mainboard relay (Mainboard `Serial8` ↔ Input, Input `Serial1` → Screen). There is no direct DCO ↔ Input wire on this instrument.
     - `Serial`: USB CDC debug console.
-  - Implements a **non‑blocking inner-frame parser** for Serial2 / USB (`serial_parser.h` + `serial_frame.h`), speaking the slim panel protocol (`serial_input_protocol.h`):
+  - Implements a **non‑blocking inner-frame parser** for Serial2 / USB (`serial_parser.h` + `serial_frame.h`), speaking the slim panel protocol (`serial_input_protocol.h`). Two `SerialCommandDef[]` tables: `mainboardSerialCommands[]` for Serial2 (Mainboard-origin plus the relayed panel frames) and `inputSerialCommands[]` for the USB CDC bench link.
     - Commands (LE, no finish byte; `0x00` reserved as COBS delimiter):
       - `'a'` / `'b'` / `'c'` – 4×16‑bit ADSR blocks → EnvVCA / EnvVCF / EnvDCO (`ADSR1_*`) times.
       - `'d'` – filter block → `CUTOFF`, `RESONANCE`, `ADSR2toVCF`, `LFO2toVCF`, then `cv_bake_adsr2_to_vcf_scale()` + `cv_bake_lfo2_to_vcf_scale()`. Depth bake / peak math: [`CV_MOD_SCALES.md`](CV_MOD_SCALES.md).
-      - `'p'` – ParamId + int16 LE → `update_parameters()` (includes PW 210, EnvVCA→VCA 222, EnvDCO pitch mode 223). USB/`dco_control` and MIDI also echo persistable `'p'` back to Input (LittleFS RAM); panel Serial2 ingress never echoes (loop prevention).
-      - `'q'` – 8‑char preset name → `presetName[]`.
-    - O(1) command LUT; 500 µs timeout only when mid-frame and the stream is idle; drain budget 64.
+      - `'p'` – ParamId + int16 LE → `update_parameters()` (includes PW 210, EnvVCA→VCA 222, EnvDCO pitch mode 223). USB/`dco_control` and MIDI also echo persistable `'p'` towards the panel so its display follows; Serial2 ingress never echoes (loop prevention).
+      - `'q'` – 16‑char preset name → `presetName[]`, staged for the next save.
+      - `'B'` / `'C'` – bulk restore chunk (36 B payload) / commit (8 B) for presets and cal tables ([`PRESET_STORE.md`](PRESET_STORE.md)); USB LUT only.
+      - `'N'` – Serial2 only: Input's directory request, relayed by the Mainboard (1 unused pad byte — a true 0-byte payload cannot dispatch in this parser). Answered with 256 `'O'` frames (`[slot][name:16]`) from `preset_store_send_directory_to_mb()`.
+      - `'O'` / `'L'` – DCO → Mainboard → Input only: one directory entry, and `[slot]` sent once at the end of every successful preset load.
+    - O(1) command LUT; 500 µs timeout only when mid-frame and the stream is idle; drain budget 64. `SERIAL_INNER_MAX_PAYLOAD` is raised to 36 in `Serial.h` for `'B'`.
+    - A new command byte also needs a row in the Mainboard's relay tables (`inputSerial8Commands[]` / `mainSerial2Commands[]` in [`../../MAINBOARD-CONTROLLER/Serial.ino`](../../MAINBOARD-CONTROLLER/Serial.ino)), otherwise it is dropped in transit without an error.
     - On-wire default is RAW (= inner). `#define SERIAL_FRAMING_COBS` wraps the same inner payloads as `COBS(inner)+0x00`; host: `dco_control --cobs` / `DCO_SERIAL_COBS=1`. Must match Input/Screen. Buffer codec in `serial_frame.h` is reusable for SPI later.
   - Outgoing helpers:
-    - `serialSendParam32()` – slim `'x'` via `serial_frame_write` (gap 154, cal offsets 155) out on Serial2 TX 20, received by the Input on its `Serial1`. Payload 5 = `[id][u32 LE]`. Drops if `availableForWrite() < 1`.
-    - `serialSendParam16()` / `serial_echo_persistable_param16()` – slim `'p'` `[id][i16 LE]` for LittleFS-persistable USB/MIDI applies (wire value, not Q24). Input stores locals only (ADSR3→PWM wire − 512).
+    - `serialSendParam32()` – slim `'x'` via `serial_frame_write` (gap 154, cal offsets 155) out on Serial2 TX 20; the Mainboard relays it to Input, which relays 154 to the Screen. Payload 5 = `[id][u32 LE]`. Drops if `availableForWrite() < 1`.
+    - `serialSendParam16()` / `serial_echo_persistable_param16()` – slim `'p'` `[id][i16 LE]` for persistable USB/MIDI applies (wire value, not Q24), so the panel display follows an edit it did not make.
+    - `serial_send_adsr_vca_block_to_mb()` / `serial_send_adsr_vcf_block_to_mb()` / `serial_send_filter_block_to_mb()` – push the current block globals as `'a'`/`'b'`/`'d'` so the Mainboard's analog VCA/VCF CVs follow a MIDI CC edit or a preset recall.
+    - `serial_send_preset_loaded_to_mb()` – `'L'` `[slot]` after every successful load; see [`PRESET_STORE.md`](PRESET_STORE.md).
   - `serial_panel_task()` / `serial_usb_task()` are the parser pumps, called from `loop()` on `timer1msFlag`. USB/DIN MIDI `.read()` still runs every iteration (`turnThruOff`).
   - Shared headers: `serial_input_protocol.h`, `serial_frame.h`, `serial_param_protocol.h`, `serial_parser.h`. How-to: [`README_serial_and_params.md`](README_serial_and_params.md).
 
 - **`params_def.h` / `param_router.h` / `params.ino`**  
-  - Canonical `ParamId` enum and table‑driven router.
+  - `ParamId` enum and table‑driven router. `params_def.h` is the **canonical superset**, byte-identical on every board of both projects (master copy `DCO3-MONOSYNTH/DCO/params_def.h`): edit it there, copy it out, never renumber an existing id. Each board routes only the subset it owns.
   - Central **parameter apply** (`init_param_router()` + O(1) `update_parameters(uint16_t, int16_t)`) for UI/MIDI‑driven changes:
     - Oscillator configuration (wave on/off, intervals, OSC2 detune, sync modes).
     - LFO settings (waveforms, speeds, routing depths, drift spread/speed).
@@ -381,7 +395,7 @@ Related docs:
 - `*.h` – Declarations, constants, global state and struct/class definitions.  
 - `*.ino` – Implementation files with function bodies and logic.  
 - Engine / IO / ADSR / LFO flags – catalog [`BUILD_FLAGS.md`](BUILD_FLAGS.md); math depth [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) (`DCO.ino` pitch ids / board defaults / overrides).  
-- Shared serial/param headers – keep `ParamId` numbers stable across boards; see [`README_serial_and_params.md`](README_serial_and_params.md).
+- Shared serial/param headers – `params_def.h` is copied byte-for-byte between boards, not forked; `serial_input_protocol.h` shares its command values and lengths but each copy is trimmed to that board's commands. Keep `ParamId` numbers stable. See [`README_serial_and_params.md`](README_serial_and_params.md).
 
 ---
 

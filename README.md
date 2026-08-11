@@ -19,18 +19,25 @@ Firmware for the **DCO voice board** of DCO4-REBORN: **4 MIDI voices × 2 oscill
 
 ## Mainboard peer (classic PCB)
 
-Serial1 is DIN MIDI. Serial2 GP20/21 is the **STM32 Mainboard** (not Input). TX `'n'`/`'o'`/`'e'`/`'x'`/`'p'`; RX slim `'p'` + `'m'` (LFO1/2 Q15, EnvDCO Q15×4, matrix pitch Q24). `ENABLE_MB_MOD_STREAM` (default) disables local LFO1/2 + EnvDCO clocks; pitch drift + Character + depth bakes stay here. Leave `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` off — analog lives on Mainboard. Docs: [`docs/MAINBOARD_REINTEGRATION.md`](docs/MAINBOARD_REINTEGRATION.md), [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md).
+Serial1 is DIN MIDI. Serial2 GP20/21 is the **STM32 Mainboard** (not Input). TX `'n'`/`'o'`/`'e'`/`'x'`/`'p'`/`'O'`/`'L'`; RX slim `'p'` + `'m'` (LFO1/2 Q15, EnvDCO Q15×4, matrix pitch Q24) plus the panel frames the Mainboard relays (`'a'`–`'d'`, `'q'`, `'N'`). `ENABLE_MB_MOD_STREAM` (default) disables local LFO1/2 + EnvDCO clocks; pitch drift + Character + depth bakes stay here. Leave `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` off — analog lives on Mainboard. Docs: [`docs/MAINBOARD_REINTEGRATION.md`](docs/MAINBOARD_REINTEGRATION.md), [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md).
+
+There is no direct DCO ↔ Input link on this instrument, and the DCO holds the only preset storage: 256 LittleFS slots that the front panel reads through the `'N'`/`'O'`/`'L'` protocol. See [`docs/PRESET_STORE.md`](docs/PRESET_STORE.md).
 
 ## Build
 
 ```bash
 arduino-cli compile \
-  --fqbn rp2040:rp2040:rpipico2:usbstack=tinyusb \
+  --fqbn rp2040:rp2040:rpipico2:usbstack=tinyusb,flash=4194304_524288 \
   --libraries ./_build_libs \
   .
 ```
 
 Main sketch: `DCO.ino`.
+
+`flash=4194304_524288` (4 MB flash, **512 KB LittleFS**) is required for the 256-slot
+MCU preset store and calibration files; without it, preset save / `init_FS()` fail at
+runtime. Changing the FS size reformats the filesystem — back up calibration and
+presets with `tools/dco_control` first. See [`docs/PRESET_STORE.md`](docs/PRESET_STORE.md).
 
 ### Libraries (`_build_libs`)
 
@@ -61,6 +68,7 @@ Ensure `ADSR_Bezier` is on branch **`Q15`** (and `mo-lfo` on **`q15`**). To try 
 
 See `docs/` — especially:
 
+- [`docs/PRESET_STORE.md`](docs/PRESET_STORE.md) — 256-slot LittleFS preset store, host dump/restore, and the `'N'`/`'O'`/`'L'` front-panel directory protocol
 - [`docs/BUILD_FLAGS.md`](docs/BUILD_FLAGS.md) — complete compile-time flag catalog (`DCO.ino` + headers + vendored libs)
 - [`docs/ENGINE_OPTIONS.md`](docs/ENGINE_OPTIONS.md) — float vs fixed voice/amp/CV math depth
 - [`docs/BENCHMARKING.md`](docs/BENCHMARKING.md) — hot-path CPU profiler

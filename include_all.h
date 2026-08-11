@@ -25,6 +25,7 @@
 #include "cv_out.h"
 
 #include "FS.h"
+#include "preset_store.h"
 
 #include "noteList.h"
 #include "amp_comp.h"

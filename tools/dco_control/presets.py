@@ -1,7 +1,9 @@
-"""128-slot program bank for the DCO bench controller.
+"""256-slot program bank for the DCO bench controller.
 
-Stores patch parameters only (no calibration, no pulse/command params). The bank is a
-single JSON file next to this module so it travels with the tool.
+Stores patch parameters only (no calibration, no pulse/command params). The bank
+is one JSON file per synth model (presets/bank_dco3.json / bank_dco4.json) next
+to this module so it travels with the tool; a pre-model-aware presets/bank.json
+is adopted by the first model that runs without its own file.
 """
 
 from __future__ import annotations
@@ -10,11 +12,17 @@ import json
 from pathlib import Path
 from typing import Any
 
+import models
 import params
 
-NUM_SLOTS = 128
+NUM_SLOTS = 256
 BANK_VERSION = 1
-BANK_PATH = Path(__file__).resolve().parent / "presets" / "bank.json"
+PRESETS_DIR = Path(__file__).resolve().parent / "presets"
+LEGACY_BANK_PATH = PRESETS_DIR / "bank.json"
+
+
+def bank_path() -> Path:
+    return PRESETS_DIR / models.active().bank_filename
 
 
 def patch_params() -> list[params.Param]:
@@ -119,7 +127,17 @@ def _normalize_slot(slot: dict) -> dict[str, Any]:
 
 
 def load_bank(path: Path | None = None) -> dict[str, Any]:
-    path = path or BANK_PATH
+    path = path or bank_path()
+    if not path.is_file() and LEGACY_BANK_PATH.is_file():
+        # One-time adoption of the pre-model-aware bank.json: it was written by
+        # this tool copy for whichever synth this project is, i.e. this model.
+        try:
+            data = json.loads(LEGACY_BANK_PATH.read_text(encoding="utf-8"))
+            bank = normalize_bank(data)
+            save_bank(bank, path)
+            return bank
+        except (OSError, json.JSONDecodeError):
+            pass
     if not path.is_file():
         bank = empty_bank()
         save_bank(bank, path)
@@ -134,7 +152,7 @@ def load_bank(path: Path | None = None) -> dict[str, Any]:
 
 
 def save_bank(bank: dict[str, Any], path: Path | None = None) -> None:
-    path = path or BANK_PATH
+    path = path or bank_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     normalized = normalize_bank(bank)
     path.write_text(

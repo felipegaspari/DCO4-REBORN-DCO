@@ -7,7 +7,11 @@ drift apart. Three outputs:
 
   ../../midi_cc_map.h              the MidiCcEntry table, included by DCO/midi_cc.h
   ../../docs/MIDI_CC_MAP.md        the implementation chart
-  ../panels/dco3_panel.json        the Open Stage Control session
+  ../panels/<model>_panel.json     the Open Stage Control session
+
+The synth model (models.py) is read from the firmware this tool copy sits in —
+the USBDevice.setProductDescriptor() string in ../../Serial.ino — so each
+project's copy targets its own board; --model overrides.
 
 Usage:
   python3 gen_midi_map.py           write the three files
@@ -29,10 +33,12 @@ from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 
+import models
 import params
 import protocol
 
-# Controllers left alone: 0/32 bank select, 1 mod wheel, 6/38 data entry, 7 volume,
+# Controllers left alone: 0/32 bank select (implemented in midi.ino: nonzero = bank 1
+# for Program Change → slots 128..255), 1 mod wheel, 6/38 data entry, 7 volume,
 # 10 pan, 11 expression, 42 pitch-bend range (the DCO's own historical use), 64 sustain,
 # 98-101 NRPN/RPN, and 120-127 channel mode. Keeping 98-101 free also leaves room for a
 # later NRPN upgrade without moving any assignment made here.
@@ -40,6 +46,7 @@ RESERVED_CC = {0, 1, 6, 7, 10, 11, 32, 38, 42, 64, 98, 99, 100, 101,
                120, 121, 122, 123, 124, 125, 126, 127}
 
 MIDI_CHANNEL = 1
+# Open Stage Control target; per model, set by main() (midi:dco3 / midi:dco4).
 MIDI_TARGET = "midi:dco3"
 
 # A session without a version is treated as pre-0.49.12 and run through every legacy
@@ -77,7 +84,26 @@ DCO_DIR = HERE.parents[1]
 
 MAP_HEADER = DCO_DIR / "midi_cc_map.h"
 CHART = DCO_DIR / "docs" / "MIDI_CC_MAP.md"
-PANEL = DCO_DIR / "tools" / "panels" / "dco3_panel.json"
+
+
+def panel_path() -> Path:
+    return DCO_DIR / "tools" / "panels" / models.active().panel_filename
+
+
+def detect_firmware_model() -> str | None:
+    """Read the USB product descriptor from ../../Serial.ino and match a profile."""
+    try:
+        source = (DCO_DIR / "Serial.ino").read_text()
+    except OSError:
+        return None
+    m = re.search(r'setProductDescriptor\("([^"]+)"\)', source)
+    if not m:
+        return None
+    product = m.group(1).strip().lower()
+    for profile in models.PROFILES.values():
+        if product.startswith(profile.usb_product_prefix.lower()):
+            return profile.key
+    return None
 
 GENERATED_BY = "tools/dco_control/gen_midi_map.py from tools/dco_control/params.py"
 
@@ -331,12 +357,27 @@ def emit_chart(entries: list[Entry]) -> str:
         for e in menus:
             values = ", ".join(f"{label} = {value}" for label, value in e.choices)
             out.append(f"- **CC {e.cc}, {e.label}**: {values}")
+            if e.note:
+                out.append(f"  - {e.note}")
             if e.unreachable:
                 missing = ", ".join(f"{label} ({value})" for label, value in e.unreachable)
                 out.append(f"  - out of 7-bit reach, use the serial bench app instead: {missing}")
 
     skipped = [p for p in params.PARAMS if p.cc is None]
     out += ["", "## Deliberately not mapped", ""]
+    if models.active().has_sub_engine:
+        out += [
+            "Every non-reserved 7-bit controller is already assigned (0 free). Sub-oscillator "
+            "ParamIds 90–99 and LFO2→OSC3 coarse therefore stay panel/serial only; continuous "
+            "sub shape still reaches the board through mod-matrix destinations 10/11 "
+            "(`MOD_DEST_SUB_PHASE` / `MOD_DEST_SUB_PW`, which land on sub 2).",
+            "",
+        ]
+    else:
+        out += [
+            "These parameters stay panel/serial only:",
+            "",
+        ]
     for p in skipped:
         out.append(f"- **{p.label}** (parameter {p.pid})")
     out += [
@@ -347,8 +388,11 @@ def emit_chart(entries: list[Entry]) -> str:
         "",
         "Reserved controllers left untouched: "
         + ", ".join(str(c) for c in sorted(RESERVED_CC))
-        + ". CC 42 keeps its historical meaning here, pitch-bend range in semitones. "
-        "98-101 stay free so a later NRPN upgrade needs no reshuffling.",
+        + ". CC 0 / CC 32 are Bank Select: nonzero latches bank 1 so the next Program "
+        "Change recalls slots 128..255 (`midi.ino`). CC 42 keeps its historical meaning "
+        "here, pitch-bend range in semitones. 98-101 stay free so a later NRPN upgrade "
+        "needs no reshuffling. CC 120 (All Sound Off) is reserved and is why LFO2→OSC3 "
+        "coarse has no assignment.",
         "",
     ]
     return "\n".join(out)
@@ -524,7 +568,19 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true",
                         help="validate and report drift without writing anything")
+    parser.add_argument("--model", choices=sorted(models.PROFILES),
+                        help="synth model (default: read from ../../Serial.ino)")
     args = parser.parse_args(argv)
+
+    global MIDI_TARGET
+    model = args.model or detect_firmware_model()
+    if model is None:
+        print("error: cannot tell which synth this firmware is; pass --model",
+              file=sys.stderr)
+        return 1
+    profile = models.set_active(model)
+    params.apply_model(profile)
+    MIDI_TARGET = profile.midi_target
 
     enum_by_id, routed = read_param_ids()
     entries = build_entries(enum_by_id)
@@ -537,7 +593,7 @@ def main(argv: list[str]) -> int:
     outputs = {
         MAP_HEADER: emit_map_header(entries),
         CHART: emit_chart(entries),
-        PANEL: emit_panel(entries),
+        panel_path(): emit_panel(entries),
     }
 
     stale = []

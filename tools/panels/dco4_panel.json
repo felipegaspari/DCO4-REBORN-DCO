@@ -37,7 +37,7 @@
                   1,
                   2
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 24,
                 "expand": true,
                 "html": "Octave shift",
@@ -56,7 +56,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc3_osc2_interval_semitones",
+            "id": "cell_cc3_osc_b_interval_semitones",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -65,16 +65,16 @@
             "widgets": [
               {
                 "type": "knob",
-                "id": "cc3_osc2_interval_semitones",
+                "id": "cc3_osc_b_interval_semitones",
                 "address": "/control",
                 "preArgs": [
                   1,
                   3
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 76,
                 "expand": true,
-                "html": "OSC2 interval (semitones)",
+                "html": "OSC B interval (semitones)",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "range": {
                   "min": 0,
@@ -86,8 +86,8 @@
               },
               {
                 "type": "text",
-                "id": "val_cc3_osc2_interval_semitones",
-                "value": "#{ Math.floor((60 * Math.round(@{cc3_osc2_interval_semitones}) + 63) / 127) }",
+                "id": "val_cc3_osc_b_interval_semitones",
+                "value": "#{ Math.floor((60 * Math.round(@{cc3_osc_b_interval_semitones}) + 63) / 127) }",
                 "height": 20,
                 "css": "font-size: 95%; opacity: 0.65;"
               }
@@ -110,7 +110,7 @@
                   1,
                   4
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 76,
                 "expand": true,
                 "html": "OSC3 interval (semitones)",
@@ -134,7 +134,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc5_osc2_detune",
+            "id": "cell_cc5_osc_b_detune",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -143,16 +143,16 @@
             "widgets": [
               {
                 "type": "knob",
-                "id": "cc5_osc2_detune",
+                "id": "cc5_osc_b_detune",
                 "address": "/control",
                 "preArgs": [
                   1,
                   5
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
-                "html": "OSC2 detune",
+                "html": "OSC B detune",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "range": {
                   "min": 0,
@@ -164,8 +164,8 @@
               },
               {
                 "type": "text",
-                "id": "val_cc5_osc2_detune",
-                "value": "#{ Math.floor((512 * Math.round(@{cc5_osc2_detune}) + 63) / 127) }",
+                "id": "val_cc5_osc_b_detune",
+                "value": "#{ Math.floor((512 * Math.round(@{cc5_osc_b_detune}) + 63) / 127) }",
                 "height": 20,
                 "css": "font-size: 95%; opacity: 0.65;"
               }
@@ -188,7 +188,7 @@
                   1,
                   8
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "OSC3 detune",
@@ -227,15 +227,15 @@
                   1,
                   20
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Hard sync topology",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
                   "0 - all free running ": 0,
-                  "1 - OSC2 masters OSC1 ": 1,
-                  "2 - OSC1 masters OSC2 ": 2
+                  "1 - OSC B masters OSC A ": 1,
+                  "2 - OSC A masters OSC B ": 2
                 }
               }
             ]
@@ -257,7 +257,7 @@
                   1,
                   21
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Soft sync",
@@ -288,7 +288,7 @@
                   1,
                   22
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Sub-oscillator divide",
@@ -303,7 +303,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc23_osc_sync_phase_align_osc2",
+            "id": "cell_cc23_osc_sync_phase_align_osc_b",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -312,16 +312,16 @@
             "widgets": [
               {
                 "type": "menu",
-                "id": "cc23_osc_sync_phase_align_osc2",
+                "id": "cc23_osc_sync_phase_align_osc_b",
                 "address": "/control",
                 "preArgs": [
                   1,
                   23
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
-                "html": "Osc sync / phase align OSC2",
+                "html": "Osc sync / phase align OSC B",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
                   "Off - free running (no note-on sync) ": 0,
@@ -360,7 +360,7 @@
                   1,
                   69
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Voice mode",
@@ -390,7 +390,7 @@
                   1,
                   70
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Unison detune",
@@ -429,7 +429,7 @@
                   1,
                   71
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Portamento time",
@@ -468,14 +468,14 @@
                   1,
                   72
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Portamento mode",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
-                  "0 - fixed time ": 0,
-                  "1 - slew rate ": 1
+                  "0 - fixed time (same duration any interval) ": 0,
+                  "1 - slew rate (time scales with interval; knob = time per octave) ": 1
                 }
               }
             ]
@@ -497,7 +497,7 @@
                   1,
                   73
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Analog drift amount",
@@ -536,7 +536,7 @@
                   1,
                   74
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Analog drift speed",
@@ -575,7 +575,7 @@
                   1,
                   75
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Analog drift spread",
@@ -614,7 +614,7 @@
                   1,
                   76
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "VCA level",
@@ -653,7 +653,7 @@
                   1,
                   77
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Velocity to VCA",
@@ -677,7 +677,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc9_osc1_level",
+            "id": "cell_cc9_osc_a_level",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -686,16 +686,16 @@
             "widgets": [
               {
                 "type": "knob",
-                "id": "cc9_osc1_level",
+                "id": "cc9_osc_a_level",
                 "address": "/control",
                 "preArgs": [
                   1,
                   9
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
-                "html": "OSC1 level",
+                "html": "OSC A level",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "range": {
                   "min": 0,
@@ -707,8 +707,8 @@
               },
               {
                 "type": "text",
-                "id": "val_cc9_osc1_level",
-                "value": "#{ Math.floor((127 * Math.round(@{cc9_osc1_level}) + 63) / 127) }",
+                "id": "val_cc9_osc_a_level",
+                "value": "#{ Math.floor((127 * Math.round(@{cc9_osc_a_level}) + 63) / 127) }",
                 "height": 20,
                 "css": "font-size: 95%; opacity: 0.65;"
               }
@@ -716,7 +716,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc12_osc2_level",
+            "id": "cell_cc12_osc_b_level",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -725,16 +725,16 @@
             "widgets": [
               {
                 "type": "knob",
-                "id": "cc12_osc2_level",
+                "id": "cc12_osc_b_level",
                 "address": "/control",
                 "preArgs": [
                   1,
                   12
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
-                "html": "OSC2 level",
+                "html": "OSC B level",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "range": {
                   "min": 0,
@@ -746,8 +746,8 @@
               },
               {
                 "type": "text",
-                "id": "val_cc12_osc2_level",
-                "value": "#{ Math.floor((127 * Math.round(@{cc12_osc2_level}) + 63) / 127) }",
+                "id": "val_cc12_osc_b_level",
+                "value": "#{ Math.floor((127 * Math.round(@{cc12_osc_b_level}) + 63) / 127) }",
                 "height": 20,
                 "css": "font-size: 95%; opacity: 0.65;"
               }
@@ -770,7 +770,7 @@
                   1,
                   83
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "OSC3 level",
@@ -809,7 +809,7 @@
                   1,
                   13
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Sub level",
@@ -833,7 +833,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc16_osc1_saw_enable",
+            "id": "cell_cc16_osc_a_saw_enable",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -842,16 +842,16 @@
             "widgets": [
               {
                 "type": "switch",
-                "id": "cc16_osc1_saw_enable",
+                "id": "cc16_osc_a_saw_enable",
                 "address": "/control",
                 "preArgs": [
                   1,
                   16
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
-                "html": "OSC1 Saw enable",
+                "html": "OSC A Saw enable",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
                   "Off ": 0,
@@ -862,7 +862,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc17_osc1_pulse_enable",
+            "id": "cell_cc17_osc_a_pulse_enable",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -871,16 +871,16 @@
             "widgets": [
               {
                 "type": "switch",
-                "id": "cc17_osc1_pulse_enable",
+                "id": "cc17_osc_a_pulse_enable",
                 "address": "/control",
                 "preArgs": [
                   1,
                   17
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
-                "html": "OSC1 Pulse enable",
+                "html": "OSC A Pulse enable",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
                   "Off ": 0,
@@ -891,7 +891,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc18_osc1_tri_enable",
+            "id": "cell_cc18_osc_a_tri_enable",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -900,16 +900,16 @@
             "widgets": [
               {
                 "type": "switch",
-                "id": "cc18_osc1_tri_enable",
+                "id": "cc18_osc_a_tri_enable",
                 "address": "/control",
                 "preArgs": [
                   1,
                   18
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
-                "html": "OSC1 Tri enable",
+                "html": "OSC A Tri enable",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
                   "Off ": 0,
@@ -920,7 +920,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc112_osc2_saw_enable",
+            "id": "cell_cc112_osc_b_saw_enable",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -929,16 +929,16 @@
             "widgets": [
               {
                 "type": "switch",
-                "id": "cc112_osc2_saw_enable",
+                "id": "cc112_osc_b_saw_enable",
                 "address": "/control",
                 "preArgs": [
                   1,
                   112
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
-                "html": "OSC2 Saw enable",
+                "html": "OSC B Saw enable",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
                   "Off ": 0,
@@ -949,7 +949,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc113_osc2_pulse_enable",
+            "id": "cell_cc113_osc_b_pulse_enable",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -958,16 +958,16 @@
             "widgets": [
               {
                 "type": "switch",
-                "id": "cc113_osc2_pulse_enable",
+                "id": "cc113_osc_b_pulse_enable",
                 "address": "/control",
                 "preArgs": [
                   1,
                   113
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
-                "html": "OSC2 Pulse enable",
+                "html": "OSC B Pulse enable",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
                   "Off ": 0,
@@ -978,7 +978,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc114_osc2_tri_enable",
+            "id": "cell_cc114_osc_b_tri_enable",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -987,16 +987,16 @@
             "widgets": [
               {
                 "type": "switch",
-                "id": "cc114_osc2_tri_enable",
+                "id": "cc114_osc_b_tri_enable",
                 "address": "/control",
                 "preArgs": [
                   1,
                   114
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
-                "html": "OSC2 Tri enable",
+                "html": "OSC B Tri enable",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
                   "Off ": 0,
@@ -1022,7 +1022,7 @@
                   1,
                   115
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "OSC3 Saw enable",
@@ -1051,7 +1051,7 @@
                   1,
                   116
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "OSC3 Pulse enable",
@@ -1080,7 +1080,7 @@
                   1,
                   117
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "OSC3 Tri enable",
@@ -1107,6 +1107,45 @@
         "widgets": [
           {
             "type": "panel",
+            "id": "cell_cc48_adsr1_to_vca",
+            "layout": "vertical",
+            "scroll": false,
+            "innerPadding": false,
+            "padding": 4,
+            "css": "grid-row: span 5;",
+            "widgets": [
+              {
+                "type": "knob",
+                "id": "cc48_adsr1_to_vca",
+                "address": "/control",
+                "preArgs": [
+                  1,
+                  48
+                ],
+                "target": "midi:dco4",
+                "default": 127,
+                "expand": true,
+                "html": "ADSR1 to VCA",
+                "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
+                "range": {
+                  "min": 0,
+                  "max": 127
+                },
+                "decimals": 0,
+                "doubleTap": true,
+                "pips": false
+              },
+              {
+                "type": "text",
+                "id": "val_cc48_adsr1_to_vca",
+                "value": "#{ Math.floor((512 * Math.round(@{cc48_adsr1_to_vca}) + 63) / 127) }",
+                "height": 20,
+                "css": "font-size: 95%; opacity: 0.65;"
+              }
+            ]
+          },
+          {
+            "type": "panel",
             "id": "cell_cc24_envdco_adsr3_enabled",
             "layout": "vertical",
             "scroll": false,
@@ -1122,7 +1161,7 @@
                   1,
                   24
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "EnvDCO (ADSR3) enabled",
@@ -1151,15 +1190,15 @@
                   1,
                   25
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "ADSR3 to osc select",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
-                  "0 - OSC1 ": 0,
-                  "1 - OSC2 ": 1,
-                  "2 - OSC1+2 ": 2,
+                  "0 - OSC A ": 0,
+                  "1 - OSC B ": 1,
+                  "2 - OSC A+B ": 2,
                   "3 - OSC3 ": 3,
                   "4 - all ": 4
                 }
@@ -1168,7 +1207,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc26_adsr3_to_osc1_detune",
+            "id": "cell_cc26_adsr3_to_osc_a_detune",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -1177,16 +1216,16 @@
             "widgets": [
               {
                 "type": "knob",
-                "id": "cc26_adsr3_to_osc1_detune",
+                "id": "cc26_adsr3_to_osc_a_detune",
                 "address": "/control",
                 "preArgs": [
                   1,
                   26
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 64,
                 "expand": true,
-                "html": "ADSR3 to OSC1 detune",
+                "html": "ADSR3 to OSC A detune",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "range": {
                   "min": 0,
@@ -1199,8 +1238,8 @@
               },
               {
                 "type": "text",
-                "id": "val_cc26_adsr3_to_osc1_detune",
-                "value": "#{ -511 + Math.floor((1022 * Math.round(@{cc26_adsr3_to_osc1_detune}) + 63) / 127) }",
+                "id": "val_cc26_adsr3_to_osc_a_detune",
+                "value": "#{ -511 + Math.floor((1022 * Math.round(@{cc26_adsr3_to_osc_a_detune}) + 63) / 127) }",
                 "height": 20,
                 "css": "font-size: 95%; opacity: 0.65;"
               }
@@ -1216,32 +1255,28 @@
             "css": "grid-row: span 5;",
             "widgets": [
               {
-                "type": "knob",
+                "type": "menu",
                 "id": "cc27_adsr1_attack_curve",
                 "address": "/control",
                 "preArgs": [
                   1,
                   27
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "ADSR1 attack curve",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
-                "range": {
-                  "min": 0,
-                  "max": 127
-                },
-                "decimals": 0,
-                "doubleTap": true,
-                "pips": false
-              },
-              {
-                "type": "text",
-                "id": "val_cc27_adsr1_attack_curve",
-                "value": "#{ Math.floor((7 * Math.round(@{cc27_adsr1_attack_curve}) + 63) / 127) }",
-                "height": 20,
-                "css": "font-size: 95%; opacity: 0.65;"
+                "values": {
+                  "0 - EXP ": 0,
+                  "1 - SOFT ": 1,
+                  "2 - STEEP ": 2,
+                  "3 - CONCAVE ": 3,
+                  "4 - FAST S ": 4,
+                  "5 - SLOW THEN LIN ": 5,
+                  "6 - ALMOST LIN ": 6,
+                  "7 - LINEAR ": 7
+                }
               }
             ]
           },
@@ -1255,32 +1290,28 @@
             "css": "grid-row: span 5;",
             "widgets": [
               {
-                "type": "knob",
+                "type": "menu",
                 "id": "cc28_adsr1_decay_curve",
                 "address": "/control",
                 "preArgs": [
                   1,
                   28
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "ADSR1 decay curve",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
-                "range": {
-                  "min": 0,
-                  "max": 127
-                },
-                "decimals": 0,
-                "doubleTap": true,
-                "pips": false
-              },
-              {
-                "type": "text",
-                "id": "val_cc28_adsr1_decay_curve",
-                "value": "#{ Math.floor((7 * Math.round(@{cc28_adsr1_decay_curve}) + 63) / 127) }",
-                "height": 20,
-                "css": "font-size: 95%; opacity: 0.65;"
+                "values": {
+                  "0 - EXP ": 0,
+                  "1 - SOFT ": 1,
+                  "2 - STEEP ": 2,
+                  "3 - CONVEX ": 3,
+                  "4 - FAST START S ": 4,
+                  "5 - SLOW THEN LIN ": 5,
+                  "6 - FAST THEN LIN ": 6,
+                  "7 - ALMOST LIN ": 7
+                }
               }
             ]
           },
@@ -1294,32 +1325,28 @@
             "css": "grid-row: span 5;",
             "widgets": [
               {
-                "type": "knob",
+                "type": "menu",
                 "id": "cc29_adsr2_attack_curve",
                 "address": "/control",
                 "preArgs": [
                   1,
                   29
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "ADSR2 attack curve",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
-                "range": {
-                  "min": 0,
-                  "max": 127
-                },
-                "decimals": 0,
-                "doubleTap": true,
-                "pips": false
-              },
-              {
-                "type": "text",
-                "id": "val_cc29_adsr2_attack_curve",
-                "value": "#{ Math.floor((7 * Math.round(@{cc29_adsr2_attack_curve}) + 63) / 127) }",
-                "height": 20,
-                "css": "font-size: 95%; opacity: 0.65;"
+                "values": {
+                  "0 - EXP ": 0,
+                  "1 - SOFT ": 1,
+                  "2 - STEEP ": 2,
+                  "3 - CONCAVE ": 3,
+                  "4 - FAST S ": 4,
+                  "5 - SLOW THEN LIN ": 5,
+                  "6 - ALMOST LIN ": 6,
+                  "7 - LINEAR ": 7
+                }
               }
             ]
           },
@@ -1333,32 +1360,28 @@
             "css": "grid-row: span 5;",
             "widgets": [
               {
-                "type": "knob",
+                "type": "menu",
                 "id": "cc30_adsr2_decay_curve",
                 "address": "/control",
                 "preArgs": [
                   1,
                   30
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "ADSR2 decay curve",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
-                "range": {
-                  "min": 0,
-                  "max": 127
-                },
-                "decimals": 0,
-                "doubleTap": true,
-                "pips": false
-              },
-              {
-                "type": "text",
-                "id": "val_cc30_adsr2_decay_curve",
-                "value": "#{ Math.floor((7 * Math.round(@{cc30_adsr2_decay_curve}) + 63) / 127) }",
-                "height": 20,
-                "css": "font-size: 95%; opacity: 0.65;"
+                "values": {
+                  "0 - EXP ": 0,
+                  "1 - SOFT ": 1,
+                  "2 - STEEP ": 2,
+                  "3 - CONVEX ": 3,
+                  "4 - FAST START S ": 4,
+                  "5 - SLOW THEN LIN ": 5,
+                  "6 - FAST THEN LIN ": 6,
+                  "7 - ALMOST LIN ": 7
+                }
               }
             ]
           },
@@ -1379,7 +1402,7 @@
                   1,
                   31
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "VCA ADSR restart",
@@ -1408,7 +1431,7 @@
                   1,
                   33
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "VCF ADSR restart",
@@ -1444,7 +1467,7 @@
                   1,
                   34
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Attack",
@@ -1483,7 +1506,7 @@
                   1,
                   35
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 37,
                 "expand": true,
                 "html": "Decay",
@@ -1522,7 +1545,7 @@
                   1,
                   36
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Sustain",
@@ -1561,7 +1584,7 @@
                   1,
                   37
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 19,
                 "expand": true,
                 "html": "Release",
@@ -1607,7 +1630,7 @@
                   1,
                   39
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Attack",
@@ -1646,7 +1669,7 @@
                   1,
                   40
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 37,
                 "expand": true,
                 "html": "Decay",
@@ -1685,7 +1708,7 @@
                   1,
                   41
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Sustain",
@@ -1724,7 +1747,7 @@
                   1,
                   43
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 19,
                 "expand": true,
                 "html": "Release",
@@ -1770,7 +1793,7 @@
                   1,
                   44
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Attack",
@@ -1809,7 +1832,7 @@
                   1,
                   45
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 37,
                 "expand": true,
                 "html": "Decay",
@@ -1848,7 +1871,7 @@
                   1,
                   46
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Sustain",
@@ -1887,7 +1910,7 @@
                   1,
                   47
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 19,
                 "expand": true,
                 "html": "Release",
@@ -1904,52 +1927,6 @@
                 "type": "text",
                 "id": "val_cc47_release",
                 "value": "#{ Math.floor((Math.pow(50, (Math.floor((4095 * Math.round(@{cc47_release}) + 63) / 127)) / 4095) - 1) * (25000 / 49)) }",
-                "height": 20,
-                "css": "font-size: 95%; opacity: 0.65;"
-              }
-            ]
-          },
-          {
-            "type": "text",
-            "id": "head_envvca_to_vca_amount",
-            "value": "ENVVCA TO VCA AMOUNT",
-            "align": "left bottom",
-            "css": "grid-column: 1 / -1; font-weight: bold; font-size: 90%; opacity: 0.55;"
-          },
-          {
-            "type": "panel",
-            "id": "cell_cc48_adsr1_to_vca",
-            "layout": "vertical",
-            "scroll": false,
-            "innerPadding": false,
-            "padding": 4,
-            "css": "grid-row: span 5;",
-            "widgets": [
-              {
-                "type": "knob",
-                "id": "cc48_adsr1_to_vca",
-                "address": "/control",
-                "preArgs": [
-                  1,
-                  48
-                ],
-                "target": "midi:dco3",
-                "default": 127,
-                "expand": true,
-                "html": "ADSR1 to VCA",
-                "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
-                "range": {
-                  "min": 0,
-                  "max": 127
-                },
-                "decimals": 0,
-                "doubleTap": true,
-                "pips": false
-              },
-              {
-                "type": "text",
-                "id": "val_cc48_adsr1_to_vca",
-                "value": "#{ Math.floor((512 * Math.round(@{cc48_adsr1_to_vca}) + 63) / 127) }",
                 "height": 20,
                 "css": "font-size: 95%; opacity: 0.65;"
               }
@@ -1985,7 +1962,7 @@
                   1,
                   49
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 64,
                 "expand": true,
                 "html": "VCF keytrack",
@@ -2025,7 +2002,7 @@
                   1,
                   50
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Velocity to VCF",
@@ -2064,7 +2041,7 @@
                   1,
                   51
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Resonance amp compensation",
@@ -2093,7 +2070,7 @@
                   1,
                   118
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Filter mode",
@@ -2124,7 +2101,7 @@
                   1,
                   81
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Distortion drive",
@@ -2163,7 +2140,7 @@
                   1,
                   82
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Distortion mix",
@@ -2209,7 +2186,7 @@
                   1,
                   52
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Cutoff",
@@ -2248,7 +2225,7 @@
                   1,
                   53
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Resonance",
@@ -2287,7 +2264,7 @@
                   1,
                   54
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "EnvVCF to cutoff",
@@ -2326,7 +2303,7 @@
                   1,
                   55
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "LFO2 to cutoff",
@@ -2363,6 +2340,45 @@
         "widgets": [
           {
             "type": "panel",
+            "id": "cell_cc59_pulse_width",
+            "layout": "vertical",
+            "scroll": false,
+            "innerPadding": false,
+            "padding": 4,
+            "css": "grid-row: span 5;",
+            "widgets": [
+              {
+                "type": "knob",
+                "id": "cc59_pulse_width",
+                "address": "/control",
+                "preArgs": [
+                  1,
+                  59
+                ],
+                "target": "midi:dco4",
+                "default": 64,
+                "expand": true,
+                "html": "Pulse width",
+                "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
+                "range": {
+                  "min": 0,
+                  "max": 127
+                },
+                "decimals": 0,
+                "doubleTap": true,
+                "pips": false
+              },
+              {
+                "type": "text",
+                "id": "val_cc59_pulse_width",
+                "value": "#{ Math.floor((4095 * Math.round(@{cc59_pulse_width}) + 63) / 127) }",
+                "height": 20,
+                "css": "font-size: 95%; opacity: 0.65;"
+              }
+            ]
+          },
+          {
+            "type": "panel",
             "id": "cell_cc56_lfo2_to_pw",
             "layout": "vertical",
             "scroll": false,
@@ -2378,7 +2394,7 @@
                   1,
                   56
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "LFO2 to PW",
@@ -2417,7 +2433,7 @@
                   1,
                   57
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 64,
                 "expand": true,
                 "html": "ADSR3 to PWM",
@@ -2456,7 +2472,7 @@
                   1,
                   58
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "PWM pots manual",
@@ -2465,52 +2481,6 @@
                   "Off ": 0,
                   "On ": 127
                 }
-              }
-            ]
-          },
-          {
-            "type": "text",
-            "id": "head_pulse_width",
-            "value": "PULSE WIDTH",
-            "align": "left bottom",
-            "css": "grid-column: 1 / -1; font-weight: bold; font-size: 90%; opacity: 0.55;"
-          },
-          {
-            "type": "panel",
-            "id": "cell_cc59_pw",
-            "layout": "vertical",
-            "scroll": false,
-            "innerPadding": false,
-            "padding": 4,
-            "css": "grid-row: span 5;",
-            "widgets": [
-              {
-                "type": "knob",
-                "id": "cc59_pw",
-                "address": "/control",
-                "preArgs": [
-                  1,
-                  59
-                ],
-                "target": "midi:dco3",
-                "default": 64,
-                "expand": true,
-                "html": "PW",
-                "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
-                "range": {
-                  "min": 0,
-                  "max": 127
-                },
-                "decimals": 0,
-                "doubleTap": true,
-                "pips": false
-              },
-              {
-                "type": "text",
-                "id": "val_cc59_pw",
-                "value": "#{ Math.floor((4095 * Math.round(@{cc59_pw}) + 63) / 127) }",
-                "height": 20,
-                "css": "font-size: 95%; opacity: 0.65;"
               }
             ]
           }
@@ -2544,7 +2514,7 @@
                   1,
                   60
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 1,
                 "expand": true,
                 "html": "LFO1 waveform",
@@ -2576,7 +2546,7 @@
                   1,
                   61
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 1,
                 "expand": true,
                 "html": "LFO2 waveform",
@@ -2608,7 +2578,7 @@
                   1,
                   62
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "LFO1 speed",
@@ -2647,7 +2617,7 @@
                   1,
                   63
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "LFO2 speed",
@@ -2686,7 +2656,7 @@
                   1,
                   65
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "LFO1 to DCO",
@@ -2710,7 +2680,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc14_lfo1_to_osc1_extra",
+            "id": "cell_cc14_lfo1_to_osc_a_extra",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -2719,16 +2689,16 @@
             "widgets": [
               {
                 "type": "knob",
-                "id": "cc14_lfo1_to_osc1_extra",
+                "id": "cc14_lfo1_to_osc_a_extra",
                 "address": "/control",
                 "preArgs": [
                   1,
                   14
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
-                "html": "LFO1 to OSC1 extra",
+                "html": "LFO1 to OSC A extra",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "range": {
                   "min": 0,
@@ -2740,8 +2710,8 @@
               },
               {
                 "type": "text",
-                "id": "val_cc14_lfo1_to_osc1_extra",
-                "value": "#{ Math.floor((255 * Math.round(@{cc14_lfo1_to_osc1_extra}) + 63) / 127) }",
+                "id": "val_cc14_lfo1_to_osc_a_extra",
+                "value": "#{ Math.floor((255 * Math.round(@{cc14_lfo1_to_osc_a_extra}) + 63) / 127) }",
                 "height": 20,
                 "css": "font-size: 95%; opacity: 0.65;"
               }
@@ -2749,7 +2719,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc15_lfo1_to_osc2_extra",
+            "id": "cell_cc15_lfo1_to_osc_b_extra",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -2758,16 +2728,16 @@
             "widgets": [
               {
                 "type": "knob",
-                "id": "cc15_lfo1_to_osc2_extra",
+                "id": "cc15_lfo1_to_osc_b_extra",
                 "address": "/control",
                 "preArgs": [
                   1,
                   15
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
-                "html": "LFO1 to OSC2 extra",
+                "html": "LFO1 to OSC B extra",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "range": {
                   "min": 0,
@@ -2779,8 +2749,8 @@
               },
               {
                 "type": "text",
-                "id": "val_cc15_lfo1_to_osc2_extra",
-                "value": "#{ Math.floor((255 * Math.round(@{cc15_lfo1_to_osc2_extra}) + 63) / 127) }",
+                "id": "val_cc15_lfo1_to_osc_b_extra",
+                "value": "#{ Math.floor((255 * Math.round(@{cc15_lfo1_to_osc_b_extra}) + 63) / 127) }",
                 "height": 20,
                 "css": "font-size: 95%; opacity: 0.65;"
               }
@@ -2803,7 +2773,7 @@
                   1,
                   19
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "LFO1 to OSC3 extra",
@@ -2842,7 +2812,7 @@
                   1,
                   66
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "LFO1 to VCA",
@@ -2866,7 +2836,7 @@
           },
           {
             "type": "panel",
-            "id": "cell_cc67_lfo2_to_osc2_detune",
+            "id": "cell_cc67_lfo2_to_osc_b_detune",
             "layout": "vertical",
             "scroll": false,
             "innerPadding": false,
@@ -2875,16 +2845,16 @@
             "widgets": [
               {
                 "type": "knob",
-                "id": "cc67_lfo2_to_osc2_detune",
+                "id": "cc67_lfo2_to_osc_b_detune",
                 "address": "/control",
                 "preArgs": [
                   1,
                   67
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
-                "html": "LFO2 to OSC2 detune",
+                "html": "LFO2 to OSC B detune",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "range": {
                   "min": 0,
@@ -2896,8 +2866,8 @@
               },
               {
                 "type": "text",
-                "id": "val_cc67_lfo2_to_osc2_detune",
-                "value": "#{ Math.floor((255 * Math.round(@{cc67_lfo2_to_osc2_detune}) + 63) / 127) }",
+                "id": "val_cc67_lfo2_to_osc_b_detune",
+                "value": "#{ Math.floor((255 * Math.round(@{cc67_lfo2_to_osc_b_detune}) + 63) / 127) }",
                 "height": 20,
                 "css": "font-size: 95%; opacity: 0.65;"
               }
@@ -2920,7 +2890,7 @@
                   1,
                   68
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "LFO2 to OSC3 detune",
@@ -2937,6 +2907,45 @@
                 "type": "text",
                 "id": "val_cc68_lfo2_to_osc3_detune",
                 "value": "#{ Math.floor((255 * Math.round(@{cc68_lfo2_to_osc3_detune}) + 63) / 127) }",
+                "height": 20,
+                "css": "font-size: 95%; opacity: 0.65;"
+              }
+            ]
+          },
+          {
+            "type": "panel",
+            "id": "cell_cc119_lfo2_to_osc_b_coarse",
+            "layout": "vertical",
+            "scroll": false,
+            "innerPadding": false,
+            "padding": 4,
+            "css": "grid-row: span 5;",
+            "widgets": [
+              {
+                "type": "knob",
+                "id": "cc119_lfo2_to_osc_b_coarse",
+                "address": "/control",
+                "preArgs": [
+                  1,
+                  119
+                ],
+                "target": "midi:dco4",
+                "default": 0,
+                "expand": true,
+                "html": "LFO2 to OSC B coarse",
+                "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
+                "range": {
+                  "min": 0,
+                  "max": 127
+                },
+                "decimals": 0,
+                "doubleTap": true,
+                "pips": false
+              },
+              {
+                "type": "text",
+                "id": "val_cc119_lfo2_to_osc_b_coarse",
+                "value": "#{ Math.floor((511 * Math.round(@{cc119_lfo2_to_osc_b_coarse}) + 63) / 127) }",
                 "height": 20,
                 "css": "font-size: 95%; opacity: 0.65;"
               }
@@ -2972,7 +2981,7 @@
                   1,
                   84
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 0 source",
@@ -3015,7 +3024,7 @@
                   1,
                   85
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 0 dest",
@@ -3030,7 +3039,7 @@
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
                   "8 Dist Mix ": 8,
-                  "9 Pitch ": 9
+                  "9 Pitch (\u00b11 oct @ \u00b11023) ": 9
                 }
               }
             ]
@@ -3052,7 +3061,7 @@
                   1,
                   86
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 64,
                 "expand": true,
                 "html": "Mod slot 0 depth",
@@ -3092,7 +3101,7 @@
                   1,
                   87
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 1 source",
@@ -3135,7 +3144,7 @@
                   1,
                   88
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 1 dest",
@@ -3150,7 +3159,7 @@
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
                   "8 Dist Mix ": 8,
-                  "9 Pitch ": 9
+                  "9 Pitch (\u00b11 oct @ \u00b11023) ": 9
                 }
               }
             ]
@@ -3172,7 +3181,7 @@
                   1,
                   89
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 64,
                 "expand": true,
                 "html": "Mod slot 1 depth",
@@ -3212,7 +3221,7 @@
                   1,
                   90
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 2 source",
@@ -3255,7 +3264,7 @@
                   1,
                   91
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 2 dest",
@@ -3270,7 +3279,7 @@
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
                   "8 Dist Mix ": 8,
-                  "9 Pitch ": 9
+                  "9 Pitch (\u00b11 oct @ \u00b11023) ": 9
                 }
               }
             ]
@@ -3292,7 +3301,7 @@
                   1,
                   92
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 64,
                 "expand": true,
                 "html": "Mod slot 2 depth",
@@ -3332,7 +3341,7 @@
                   1,
                   93
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 3 source",
@@ -3375,7 +3384,7 @@
                   1,
                   94
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 3 dest",
@@ -3390,7 +3399,7 @@
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
                   "8 Dist Mix ": 8,
-                  "9 Pitch ": 9
+                  "9 Pitch (\u00b11 oct @ \u00b11023) ": 9
                 }
               }
             ]
@@ -3412,7 +3421,7 @@
                   1,
                   95
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 64,
                 "expand": true,
                 "html": "Mod slot 3 depth",
@@ -3452,7 +3461,7 @@
                   1,
                   96
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 4 source",
@@ -3495,7 +3504,7 @@
                   1,
                   97
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 4 dest",
@@ -3510,7 +3519,7 @@
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
                   "8 Dist Mix ": 8,
-                  "9 Pitch ": 9
+                  "9 Pitch (\u00b11 oct @ \u00b11023) ": 9
                 }
               }
             ]
@@ -3532,7 +3541,7 @@
                   1,
                   102
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 64,
                 "expand": true,
                 "html": "Mod slot 4 depth",
@@ -3572,7 +3581,7 @@
                   1,
                   103
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 5 source",
@@ -3615,7 +3624,7 @@
                   1,
                   104
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 5 dest",
@@ -3630,7 +3639,7 @@
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
                   "8 Dist Mix ": 8,
-                  "9 Pitch ": 9
+                  "9 Pitch (\u00b11 oct @ \u00b11023) ": 9
                 }
               }
             ]
@@ -3652,7 +3661,7 @@
                   1,
                   105
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 64,
                 "expand": true,
                 "html": "Mod slot 5 depth",
@@ -3692,7 +3701,7 @@
                   1,
                   106
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 6 source",
@@ -3735,7 +3744,7 @@
                   1,
                   107
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 6 dest",
@@ -3750,7 +3759,7 @@
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
                   "8 Dist Mix ": 8,
-                  "9 Pitch ": 9
+                  "9 Pitch (\u00b11 oct @ \u00b11023) ": 9
                 }
               }
             ]
@@ -3772,7 +3781,7 @@
                   1,
                   108
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 64,
                 "expand": true,
                 "html": "Mod slot 6 depth",
@@ -3812,7 +3821,7 @@
                   1,
                   109
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 7 source",
@@ -3855,7 +3864,7 @@
                   1,
                   110
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 127,
                 "expand": true,
                 "html": "Mod slot 7 dest",
@@ -3870,7 +3879,7 @@
                   "6 Dist Drive ": 6,
                   "7 VCF cutoff ": 7,
                   "8 Dist Mix ": 8,
-                  "9 Pitch ": 9
+                  "9 Pitch (\u00b11 oct @ \u00b11023) ": 9
                 }
               }
             ]
@@ -3892,7 +3901,7 @@
                   1,
                   111
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 64,
                 "expand": true,
                 "html": "Mod slot 7 depth",
@@ -3945,7 +3954,7 @@
                   1,
                   78
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Manual calibration mode",
@@ -3974,7 +3983,7 @@
                   1,
                   79
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 0,
                 "expand": true,
                 "html": "Manual cal stage (osc)",
@@ -4013,7 +4022,7 @@
                   1,
                   80
                 ],
-                "target": "midi:dco3",
+                "target": "midi:dco4",
                 "default": 64,
                 "expand": true,
                 "html": "Manual cal offset",

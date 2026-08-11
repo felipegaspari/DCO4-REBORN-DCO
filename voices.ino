@@ -6,16 +6,16 @@
 // Enable/disable detailed DCO debug report (including OSC1 frequency stages)
 #define DCO_DEBUG_REPORT 0
 
-static void amp_chan_levels_fixed(int64_t freq_q24_A, int64_t freq_q24_B,
+static inline void amp_chan_levels_fixed(int64_t freq_q24_A, int64_t freq_q24_B,
                                   uint8_t oscA, uint8_t oscB,
                                   uint16_t *outA, uint16_t *outB);
 
-static inline void voice_write_pw(uint8_t voice, uint16_t level) {
+static inline __attribute__((always_inline)) void voice_write_pw(uint8_t voice, uint16_t level) {
   if (PW_PINS[voice] == PW_PIN_UNASSIGNED) return;
   pwm_set_chan_level(PW_PWM_SLICES[voice], pwm_gpio_to_channel(PW_PINS[voice]), level);
 }
 
-static inline void voice_write_range_pair(uint8_t dcoA, uint8_t dcoB,
+static inline __attribute__((always_inline)) void voice_write_range_pair(uint8_t dcoA, uint8_t dcoB,
                                           uint16_t chanA, uint16_t chanB) {
   if (char_amp_scale_q15) {
     const int32_t amp_j = character_amp_delta();
@@ -1311,14 +1311,12 @@ static void __not_in_flash_func(amp_chan_levels_fixed)(int64_t freq_q24_A, int64
  * Find: per-osc ampWinCache → walk → full scan (same as FLOAT_QUAD).
  */
 uint16_t __not_in_flash_func(get_chan_level_lookup_fast)(int32_t x, uint8_t voiceN) {
-  const int32_t* freqRow   = ampCompFrequencyArray[voiceN];
-  const int32_t* ampRow    = ampCompArray[voiceN];
-  const int32_t* xBaseRow  = xBaseWIN[voiceN];
-  const int32_t* spanRow   = dxWIN[voiceN];
-  const uint32_t* invRow_q28 = invDxWIN_q28[voiceN];
-  const int32_t* aRow      = aQWIN_fast[voiceN];
-  const int32_t* bRow      = bQWIN_fast[voiceN];
-  const uint16_t* cRow     = cQWIN[voiceN];
+  // 1. These arrays were not merged into the struct, so they stay the same
+  const int32_t* freqRow = ampCompFrequencyArray[voiceN];
+  const int32_t* ampRow  = ampCompArray[voiceN];
+  
+  // 2. REFACTORED: Get a single pointer to this voice's struct array
+  const FixedQuadWindow* winRow = fixedWin[voiceN];
 
   if (x <= freqRow[0]) {
     BENCH_PATH_INC(amp_clamp);
@@ -1390,18 +1388,20 @@ uint16_t __not_in_flash_func(get_chan_level_lookup_fast)(int32_t x, uint8_t voic
     ampWinCache[voiceN] = (int16_t)window;
   }
 
-  int32_t dx = x - xBaseRow[window];
-  const int32_t span = spanRow[window];
+  // 3. REFACTORED: Read math variables directly from the cached struct
+  int32_t dx = x - winRow[window].xBase;
+  const int32_t span = winRow[window].dx;
   if (dx < 0) dx = 0;
   if (dx > span) dx = span;
 
-  const uint32_t inv_q28 = invRow_q28[window];
+  const uint32_t inv_q28 = winRow[window].invDx_q28;
   uint32_t t_q = (uint32_t)(((uint64_t)dx * inv_q28) >> (28 - T_FRAC));
 
-  const int32_t a = aRow[window];
-  const int32_t b = bRow[window];
-  const int32_t c = (int32_t)cRow[window];
+  const int32_t a = winRow[window].aQ_fast;
+  const int32_t b = winRow[window].bQ_fast;
+  const int32_t c = (int32_t)winRow[window].cQ;
 
+  // Math execution below remains exactly the same as before
   uint32_t t2 = (uint32_t)(((uint32_t)t_q * t_q) >> T_FRAC);
   int32_t term_a, term_b;
   if (amp_quad_muls_i32) {
@@ -1494,11 +1494,10 @@ uint16_t __not_in_flash_func(get_chan_level_float_quad)(float freqHz, uint8_t vo
     ampWinCache[voiceN] = (int16_t)window;
   }
 
-  float a = aCoeff[voiceN][window];
-  float b = bCoeff[voiceN][window];
-  float c = cCoeff[voiceN][window];
+  // REFACTORED: Access a, b, and c directly from the floatCoeffs struct
+  const FloatQuadCoeffs& coeff = floatCoeffs[voiceN][window];
 
-  float interpolatedValue = (a * freqHz + b) * freqHz + c;
+  float interpolatedValue = (coeff.a * freqHz + coeff.b) * freqHz + coeff.c;
   return (uint16_t)round(interpolatedValue);
 }
 

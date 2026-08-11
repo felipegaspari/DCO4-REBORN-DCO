@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Bench controller for DCO4-REBORN (4x2 voice board).
+"""Bench controller for the DCO board.
 
-Drives the DCO parameter surface over USB CDC (ENABLE_USB_CONTROL). Notes go through
-USB MIDI (DCO4-REBORN), not this tool. DCO Serial2 is the STM32 Mainboard; Input
-talks slim LE to Mainboard, not to this CDC port.
+Drives the DCO's whole parameter surface over its USB serial port, so the board can be
+tested with no Input board and no Screen attached. Notes are not handled here: the DCO
+already enumerates as a USB MIDI device, so play it from a MIDI keyboard or VMPK.
 
-USB 'a'/'b'/'d' update DCO locals and are mirrored on Serial2 to Mainboard analog
-VCA/VCF CVs when the STM32 link is up. Pitch, PW, LFO, and EnvDCO still respond here.
-
-Requires ENABLE_USB_CONTROL. Match SERIAL_FRAMING_COBS with --cobs or DCO_SERIAL_COBS=1.
+Requires the firmware to be built with ENABLE_USB_CONTROL (see DCO/DCO.ino).
+Match SERIAL_FRAMING_COBS with --cobs or DCO_SERIAL_COBS=1.
 
     python3 app.py [--port /dev/ttyACM0] [--theme dark|light] [--cobs]
 """
@@ -21,8 +19,11 @@ import queue
 import sys
 import threading
 import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
+import fileformats
+import mcu_link
+import models
 import params
 import presets
 import protocol
@@ -39,16 +40,35 @@ SEND_INTERVAL_MS = 20
 
 PARAM_BY_PID = {p.pid: p for p in params.PARAMS}
 
-# Oscillators tab layout (see _build_osc_tab).
-OSC_PITCH_PIDS = (13, 14, 15)
+# Oscillators tab layout (see _build_osc_tab). Pids a model hides (Param.hidden)
+# are skipped at build time, so these tuples stay the superset.
+OSC_PITCH_PIDS = (13, 14, 33, 15, 34)
 OSC_SYNC_PIDS = (31, 36, 37, 17)
 OSC_VOICE_PIDS = (26, 27, 18, 32, 28, 29, 30, 43, 21)
-OSC_LEVEL_PIDS = (22, 23, 24)
-OSC_WAVE_MATRIX = (
-    ("OSC A", (1, 2, 3)),
-    ("OSC B", (84, 85, 86)),
-)
+OSC_LEVEL_PIDS = (22, 23, 38, 24)
+OSC_WAVE_MATRIX = [
+    ("OSC1", (1, 2, 3)),
+    ("OSC2", (84, 85, 86)),
+    ("OSC3", (87, 88, 89)),
+]
 OSC_WAVE_COLS = ("Saw", "Pulse", "Tri")
+
+
+def apply_active_model() -> None:
+    """Bake the active model profile into params and this module's tables.
+
+    Must run before App() is constructed (main() does it after --model /
+    auto-detection picks the profile).
+    """
+    params.apply_model(models.active())
+    PARAM_BY_PID.clear()
+    PARAM_BY_PID.update({p.pid: p for p in params.PARAMS})
+    names = models.active().osc_row_names
+    OSC_WAVE_MATRIX[:] = [
+        (names[i], pids)
+        for i, (_label, pids) in enumerate(OSC_WAVE_MATRIX)
+        if not all(PARAM_BY_PID[pid].hidden for pid in pids)
+    ]
 
 # Reflow Oscillators tab: stack Pitch|Sync over Voice below this width (px).
 OSC_SPLIT_STACK_WIDTH = 720
@@ -69,6 +89,16 @@ ENV_CURVE_COLUMNS = (
 ENV_ADSR_VFADER_MIN = 80
 ENV_ADSR_VFADER_MAX = 280
 ENV_ADSR_VIEWPORT_FRAC = 0.35
+
+JSON_FILETYPES = (("JSON files", "*.json"), ("All files", "*"))
+
+# Manual calibration param ids (DCO/params_def.h), used to wire live offset
+# recall and dirty-edit tracking on the Calibration tab (see _wire_manual_cal_recall).
+PID_RUN_AUTOTUNE = 150
+PID_MANUAL_CAL_MODE = 151
+PID_MANUAL_CAL_STAGE = 152
+PID_MANUAL_CAL_OFFSET = 153
+PID_MANUAL_CAL_STORE = 156
 
 
 def _bind_scale_jump(scale: ttk.Scale, on_change) -> None:
@@ -169,6 +199,13 @@ class App:
         protocol.use_cobs = cobs
         self.root = root
         self.link = Link()
+        # MCU preset/cal transfers ride the same CDC stream; the board's structured
+        # text answers ([dump]/[pdir]/...) are parsed out of the log feed.
+        self.mcu = mcu_link.McuLink(
+            lambda frame: self.link.send(protocol.stuff(frame)), self.log)
+        self._mcu_linebuf = ""
+        self.mcu_dir: dict[int, str] = {}  # slot -> name from the last [pdir] listing
+        self._browser: PresetBrowser | None = None
         self.pending: dict[str, bytes] = {}  # dedup key -> most recent frame
         self.param_vars: dict[int, tk.Variable] = {}
         self.block_vars: dict[str, dict[str, tk.Variable]] = {}
@@ -185,11 +222,21 @@ class App:
         self.bank = presets.empty_bank()
         self._clean_fp = ""
         self._preset_loading = False
+        # Manual calibration offset recall: seeded once from the board's stored
+        # ManualOffset table, then cached locally so switching oscillator stage
+        # never overwrites an unsaved edit with a stale re-dump (see
+        # _wire_manual_cal_recall / docs/PRESET_STORE.md).
+        self._manual_cal_live: list[int] | None = None
+        self._manual_cal_baseline: list[int] | None = None
+        self._manual_cal_dirty: set[int] = set()
+        self._manual_cal_syncing = False
+        self._manual_cal_indicator: ttk.Label | None = None
+        self._pulse_buttons: dict[int, ttk.Button] = {}
         self._tab_canvases: list[tk.Canvas] = []
         self._wheel_canvas: tk.Canvas | None = None
         self.notebook: ttk.Notebook | None = None
 
-        root.title("DCO bench controller")
+        root.title(f"DCO bench controller — {models.active().display_name}")
         # Wide enough that the toolbar's right-hand side is never squeezed out by pack().
         root.geometry("1140x960")
         root.minsize(900, 600)
@@ -275,6 +322,17 @@ class App:
         ttk.Button(bar, text="Save", command=self._preset_save).pack(side="left", padx=(6, 0))
         ttk.Button(bar, text="Save as…", command=self._preset_save_as).pack(side="left", padx=(6, 0))
         ttk.Button(bar, text="Init", command=self._preset_init).pack(side="left", padx=(6, 0))
+        ttk.Button(bar, text="Browse…", command=self._open_browser).pack(side="left", padx=(10, 0))
+
+        file_btn = ttk.Menubutton(bar, text="File")
+        file_menu = tk.Menu(file_btn, tearoff=0)
+        file_menu.add_command(label="Export patch…", command=self._export_patch_file)
+        file_menu.add_command(label="Import patch…", command=self._import_patch_file)
+        file_menu.add_separator()
+        file_menu.add_command(label="Export bank…", command=self._export_bank_file)
+        file_menu.add_command(label="Import bank…", command=self._import_bank_file)
+        file_btn.configure(menu=file_menu)
+        file_btn.pack(side="left", padx=(6, 0))
 
     def _init_presets(self) -> None:
         self.bank = presets.load_bank()
@@ -393,11 +451,12 @@ class App:
         self._clean_fp = presets.slot_fingerprint(slot)
         self.preset_dirty_var.set("")
         self.log(f"[preset] saved {index:03d} {name}\n")
+        self._browser_refresh()
 
     def _preset_save_as(self) -> None:
         current_index = self._preset_slot_index()
         dest = simpledialog.askinteger(
-            "Save as…", "Slot (0–127):",
+            "Save as…", "Slot (0–255):",
             initialvalue=current_index, minvalue=0, maxvalue=presets.NUM_SLOTS - 1,
             parent=self.root,
         )
@@ -433,6 +492,193 @@ class App:
         self.log("[preset] Init defaults in UI -- Save to store in this slot\n")
         self._push_if_connected()
 
+    # --- preset browser / files -------------------------------------------
+
+    def _open_browser(self) -> None:
+        if self._browser is not None and self._browser.winfo_exists():
+            self._browser.lift()
+            self._browser.focus_set()
+            return
+        self._browser = PresetBrowser(self)
+
+    def _browser_refresh(self) -> None:
+        if self._browser is not None and self._browser.winfo_exists():
+            self._browser.refresh()
+
+    def apply_slot_to_ui(self, slot: dict, *, send: bool) -> None:
+        """Load a slot dict (from a file or the MCU) into the live controls."""
+        self._preset_loading = True
+        try:
+            presets.apply(self.param_vars, self.block_vars, slot)
+            self.preset_name_var.set(slot["name"])
+        finally:
+            self._preset_loading = False
+        self._sync_readouts()
+        self._refresh_dirty()
+        if send:
+            self._push_if_connected()
+
+    def _export_patch_file(self) -> None:
+        slot = self._current_ui_slot()
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title="Export patch", defaultextension=".json",
+            initialfile=f"{slot['name'] or 'patch'}.json", filetypes=JSON_FILETYPES)
+        if not path:
+            return
+        try:
+            fileformats.save_patch_file(path, slot)
+        except OSError as exc:
+            self.log(f"[ui] patch export failed: {exc}\n")
+            return
+        self.log(f"[ui] exported patch \"{slot['name']}\" to {path}\n")
+
+    def _import_patch_file(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self.root, title="Import patch", filetypes=JSON_FILETYPES)
+        if not path:
+            return
+        try:
+            slot = fileformats.load_patch_file(path)
+        except (OSError, ValueError) as exc:
+            self.log(f"[ui] patch import failed: {exc}\n")
+            return
+        self.apply_slot_to_ui(slot, send=True)
+        self.log(f"[ui] imported patch \"{slot['name']}\" -- Save to keep it in a slot\n")
+
+    def _export_bank_file(self) -> None:
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title="Export bank", defaultextension=".json",
+            initialfile="dco_bank.json", filetypes=JSON_FILETYPES)
+        if not path:
+            return
+        try:
+            fileformats.save_bank_file(path, self.bank)
+        except OSError as exc:
+            self.log(f"[ui] bank export failed: {exc}\n")
+            return
+        self.log(f"[ui] exported bank to {path}\n")
+
+    def _import_bank_file(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self.root, title="Import bank", filetypes=JSON_FILETYPES)
+        if not path:
+            return
+        try:
+            bank = fileformats.load_bank_file(path)
+        except (OSError, ValueError) as exc:
+            self.log(f"[ui] bank import failed: {exc}\n")
+            return
+        if not messagebox.askyesno(
+            "Import bank",
+            "Replace the whole local bank with this file? The current bank.json "
+            "is overwritten.",
+            parent=self.root,
+        ):
+            return
+        self.bank = bank
+        presets.save_bank(self.bank)
+        self._preset_recall(int(self.bank["current"]), send=True, persist_current=False)
+        self._browser_refresh()
+        self.log(f"[ui] imported bank from {path}\n")
+
+    # --- MCU sync / calibration backup -------------------------------------
+
+    def _mcu_ready(self) -> bool:
+        if not self.link.is_open:
+            self.log("[mcu] not connected\n")
+            return False
+        if self.mcu.busy:
+            self.log("[mcu] transfer in progress -- wait for it to finish\n")
+            return False
+        return True
+
+    def _cal_dump_to_file(self) -> None:
+        """Pull all five calibration tables off the board, then ask where to save."""
+        if not self._mcu_ready():
+            return
+        names = list(mcu_link.cal_tables())
+        results: dict[str, bytes] = {}
+
+        def step(k: int) -> None:
+            if k >= len(names):
+                self._cal_dump_finish(results, names)
+                return
+            name = names[k]
+
+            def done(ok, payload, name=name, k=k):
+                if ok:
+                    results[name] = payload
+                else:
+                    self.log(f"[mcu] cal dump {name}: {payload}\n")
+                step(k + 1)
+
+            self.mcu.dump_cal_table(name, done)
+
+        self.log("[mcu] dumping calibration tables...\n")
+        step(0)
+
+    def _cal_dump_finish(self, results: dict[str, bytes], names: list[str]) -> None:
+        if not results:
+            self.log("[mcu] calibration dump failed -- nothing to save\n")
+            return
+        missing = [n for n in names if n not in results]
+        if missing:
+            self.log(f"[mcu] missing tables (saved anyway): {', '.join(missing)}\n")
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title="Save calibration dump", defaultextension=".json",
+            initialfile="dco_calibration.json", filetypes=JSON_FILETYPES)
+        if not path:
+            return
+        try:
+            fileformats.save_cal_file(path, results)
+        except OSError as exc:
+            self.log(f"[mcu] calibration save failed: {exc}\n")
+            return
+        self.log(f"[mcu] calibration ({len(results)} tables) saved to {path}\n")
+
+    def _cal_load_from_file(self) -> None:
+        """Push calibration tables from a <model>-cal file into the board's LittleFS."""
+        if not self._mcu_ready():
+            return
+        path = filedialog.askopenfilename(
+            parent=self.root, title="Load calibration file", filetypes=JSON_FILETYPES)
+        if not path:
+            return
+        try:
+            tables = fileformats.load_cal_file(path)
+        except (OSError, ValueError) as exc:
+            self.log(f"[mcu] calibration file rejected: {exc}\n")
+            return
+        if not tables:
+            self.log("[mcu] calibration file has no tables\n")
+            return
+        if not messagebox.askyesno(
+            "Load calibration",
+            f"Overwrite the board's calibration with {len(tables)} table(s) from this "
+            "file? This rewrites LittleFS and reloads the tables live.",
+            parent=self.root,
+        ):
+            return
+        names = list(tables)
+        state = {"fail": 0}
+
+        def step(k: int) -> None:
+            if k >= len(names):
+                ok_n = len(names) - state["fail"]
+                self.log(f"[mcu] calibration load done: {ok_n} ok, {state['fail']} failed\n")
+                return
+            name = names[k]
+
+            def done(ok, payload, name=name, k=k):
+                if not ok:
+                    state["fail"] += 1
+                    self.log(f"[mcu] cal load {name}: {payload}\n")
+                step(k + 1)
+
+            self.mcu.push_cal_table(name, tables[name], done)
+
+        step(0)
+
     def _toggle_theme(self) -> None:
         self.mode = "light" if self.mode == "dark" else "dark"
         # ttk resolves styles at draw time, so this restyles the live widget tree in place.
@@ -464,6 +710,8 @@ class App:
 
     def _toggle_connect(self) -> None:
         if self.link.is_open:
+            self.mcu.cancel_all()
+            self._mcu_linebuf = ""
             self.link.close()
             self.connect_btn.config(text="Connect")
             self.status_var.set("not connected")
@@ -483,7 +731,8 @@ class App:
         self.status_var.set(f"connected to {device}")
         self._set_status_dot(True)
         self.log(f"[link] connected to {device} -- pushing UI state\n")
-        self.log(f"[link] framing={'COBS' if protocol.use_cobs else 'RAW'}\n")
+        self.log(f"[link] framing={'COBS' if protocol.use_cobs else 'RAW'} "
+                 f"model={models.active().key}\n")
         n = self.send_all()
         self.log(f"[link] pushed UI state ({n} frames)\n")
 
@@ -514,7 +763,7 @@ class App:
                 self._build_env_tab(inner)
             elif group == params.GROUP_CHARACTER:
                 row = 0
-                for param in [p for p in params.PARAMS if p.group == group and not p.hidden]:
+                for param in [p for p in params.PARAMS if p.group == group]:
                     row = self._add_param(inner, param, row)
                 row = self._add_character_jitter_sliders(inner, row)
                 inner.columnconfigure(1, weight=1)
@@ -522,8 +771,10 @@ class App:
                 row = 0
                 for block in [b for b in params.BLOCKS if b.group == group]:
                     row = self._add_block(inner, block, row)
-                for param in [p for p in params.PARAMS if p.group == group and not p.hidden]:
+                for param in [p for p in params.PARAMS if p.group == group]:
                     row = self._add_param(inner, param, row)
+                row = self._add_manual_cal_indicator(inner, row)
+                self._wire_manual_cal_recall()
                 row = self._add_pio_pulse_slider(inner, row)
                 panel = self._add_diag_panel(
                     inner, row=row, column=0, title="Dev tables",
@@ -537,12 +788,13 @@ class App:
                     btn.grid(row=i, column=0, sticky="w", pady=1)
                 panel._diag_note_label.grid(  # type: ignore[attr-defined]
                     row=len(panel._diag_buttons), column=0, sticky="w", pady=(4, 0))  # type: ignore[attr-defined]
+                self._add_cal_backup_panel(inner, row + 1)
                 inner.columnconfigure(1, weight=1)
             else:
                 row = 0
                 for block in [b for b in params.BLOCKS if b.group == group]:
                     row = self._add_block(inner, block, row)
-                for param in [p for p in params.PARAMS if p.group == group and not p.hidden]:
+                for param in [p for p in params.PARAMS if p.group == group]:
                     row = self._add_param(inner, param, row)
                 inner.columnconfigure(1, weight=1)
 
@@ -720,7 +972,7 @@ class App:
 
         row = 1
         for p in params.PARAMS:
-            if p.group == params.GROUP_ENV and not p.hidden and p.pid not in ENV_CURVE_RESTART_PIDS:
+            if p.group == params.GROUP_ENV and p.pid not in ENV_CURVE_RESTART_PIDS:
                 row = self._add_param(parent, p, row)
 
         parent.bind("<Configure>", self._env_fader_reflow, add="+")
@@ -856,9 +1108,12 @@ class App:
         self._osc_levels_frame = frame
         self._osc_level_cells = []
         for pid in pids:
+            p = PARAM_BY_PID[pid]
+            if p.hidden:
+                continue
             cell = ttk.Frame(frame)
             self._osc_level_cells.append(cell)
-            self._add_osc_level_cell(cell, PARAM_BY_PID[pid])
+            self._add_osc_level_cell(cell, p)
         return row + 1
 
     def _add_osc_level_cell(self, cell: ttk.Frame, p: params.Param) -> None:
@@ -888,7 +1143,8 @@ class App:
         for r, (osc_label, pids) in enumerate(OSC_WAVE_MATRIX, start=1):
             ttk.Label(frame, text=osc_label).grid(row=r, column=0, sticky="e", padx=(0, 12))
             for c, pid in enumerate(pids, start=1):
-                self._wire_check(frame, PARAM_BY_PID[pid], row=r, column=c)
+                if not PARAM_BY_PID[pid].hidden:
+                    self._wire_check(frame, PARAM_BY_PID[pid], row=r, column=c)
 
     def _wire_check(self, parent: ttk.Frame, p: params.Param, *, row: int, column: int) -> None:
         var = tk.IntVar(value=p.default)
@@ -972,6 +1228,8 @@ class App:
         return row
 
     def _add_param(self, parent: ttk.Frame, p: params.Param, row: int) -> int:
+        if p.hidden:
+            return row  # model keeps the param (presets/MIDI) but not the GUI
         row_pad = 8
         label = ttk.Label(parent, text=f"{p.label}  [{p.pid}]")
         label.grid(row=row, column=0, sticky="w", pady=row_pad, padx=(0, 10))
@@ -1015,11 +1273,15 @@ class App:
 
         elif p.kind == "pulse":
             def on_pulse(pid=p.pid, value=p.pulse_value, label=p.label):
+                if not self._confirm_pulse(pid):
+                    return
                 self.send_now(protocol.param16(pid, value))
                 self.log(f"[send] {label} (param {pid} = {value})\n")
+                self._on_pulse_sent(pid)
 
-            ttk.Button(parent, text="Send", command=on_pulse).grid(
-                row=row, column=1, sticky="w", pady=row_pad)
+            btn = ttk.Button(parent, text="Send", command=on_pulse)
+            btn.grid(row=row, column=1, sticky="w", pady=row_pad)
+            self._pulse_buttons[p.pid] = btn
 
         return row + 1
 
@@ -1052,6 +1314,161 @@ class App:
             ttk.Label(frame, text=block.note, wraplength=700, style="Muted.TLabel").grid(
                 row=len(block.fields), column=0, columnspan=3, sticky="w", pady=(6, 0))
         return row + 1
+
+    # --- manual calibration offset recall ---------------------------------
+
+    def _add_manual_cal_indicator(self, parent: ttk.Frame, row: int) -> int:
+        """Calibration tab: shows recall/dirty status for the manual offset sliders."""
+        label = ttk.Label(parent, text="", style="Muted.TLabel", wraplength=700)
+        label.grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        self._manual_cal_indicator = label
+        self._update_manual_cal_indicator()
+        return row + 1
+
+    def _update_manual_cal_indicator(self) -> None:
+        if self._manual_cal_indicator is None:
+            return
+        if self._manual_cal_live is None:
+            text = ("Manual cal offsets: not read from the board yet -- enable "
+                    "Manual calibration mode to recall the stored values.")
+        elif self._manual_cal_dirty:
+            oscs = ", ".join(str(i) for i in sorted(self._manual_cal_dirty))
+            text = (f"Manual cal offsets: unsaved changes for oscillator(s) {oscs} -- "
+                    "press Store manual cal offsets before running autotune, or they "
+                    "will be discarded.")
+        else:
+            text = "Manual cal offsets: matches what's stored on the board."
+        self._manual_cal_indicator.config(text=text)
+
+    def _wire_manual_cal_recall(self) -> None:
+        """Hook the manual-cal mode/stage/offset vars so the offset slider always
+        reflects the real per-oscillator value instead of whatever it last showed."""
+        self.param_vars[PID_MANUAL_CAL_MODE].trace_add("write", self._manual_cal_on_mode_changed)
+        self.param_vars[PID_MANUAL_CAL_STAGE].trace_add("write", self._manual_cal_on_stage_changed)
+        self.param_vars[PID_MANUAL_CAL_OFFSET].trace_add("write", self._manual_cal_on_offset_changed)
+
+    def _manual_cal_on_mode_changed(self, *_args) -> None:
+        if self._manual_cal_syncing or self._preset_loading:
+            return
+        if ivar(self.param_vars[PID_MANUAL_CAL_MODE]) == 0:
+            return
+        if self._manual_cal_live is not None and self._manual_cal_dirty:
+            # Unsaved edits pending -- don't clobber them with a stale flash re-dump.
+            self._manual_cal_sync_offset_slider()
+            return
+        self._manual_cal_refresh_from_board()
+
+    def _manual_cal_refresh_from_board(self) -> None:
+        """Recall the board's stored ManualOffset table via the existing cal-dump path."""
+        if not self._mcu_ready():
+            self.log("[mcu] can't recall manual cal offsets -- not connected\n")
+            return
+
+        def done(ok, payload):
+            if not ok:
+                self.log(f"[mcu] manual cal recall failed: {payload}\n")
+                return
+            try:
+                values = fileformats.decode_cal_table("ManualOffset", payload)
+            except ValueError as exc:
+                self.log(f"[mcu] manual cal recall: {exc}\n")
+                return
+            self._manual_cal_live = list(values)
+            self._manual_cal_baseline = list(values)
+            self._manual_cal_dirty.clear()
+            self._manual_cal_syncing = True
+            try:
+                self.param_vars[PID_MANUAL_CAL_STAGE].set(0)
+            finally:
+                self._manual_cal_syncing = False
+            self._manual_cal_sync_offset_slider()
+            self._update_manual_cal_indicator()
+            self.log(f"[mcu] manual cal offsets recalled: {values}\n")
+
+        self.mcu.dump_cal_table("ManualOffset", done)
+
+    def _manual_cal_sync_offset_slider(self) -> None:
+        """Show the cached offset for whichever oscillator stage is selected."""
+        if self._manual_cal_live is None:
+            return
+        stage = max(0, min(len(self._manual_cal_live) - 1,
+                            ivar(self.param_vars[PID_MANUAL_CAL_STAGE])))
+        self._manual_cal_syncing = True
+        try:
+            self.param_vars[PID_MANUAL_CAL_OFFSET].set(self._manual_cal_live[stage])
+        finally:
+            self._manual_cal_syncing = False
+        self._sync_readouts()
+
+    def _manual_cal_on_stage_changed(self, *_args) -> None:
+        if self._manual_cal_syncing or self._manual_cal_live is None:
+            return
+        self._manual_cal_sync_offset_slider()
+
+    def _manual_cal_on_offset_changed(self, *_args) -> None:
+        if self._manual_cal_syncing or self._manual_cal_live is None:
+            return
+        stage = max(0, min(len(self._manual_cal_live) - 1,
+                            ivar(self.param_vars[PID_MANUAL_CAL_STAGE])))
+        value = ivar(self.param_vars[PID_MANUAL_CAL_OFFSET])
+        self._manual_cal_live[stage] = value
+        baseline = self._manual_cal_baseline[stage] if self._manual_cal_baseline else 0
+        if value != baseline:
+            self._manual_cal_dirty.add(stage)
+        else:
+            self._manual_cal_dirty.discard(stage)
+        self._update_manual_cal_indicator()
+
+    def _manual_cal_on_stored(self) -> None:
+        if self._manual_cal_live is not None:
+            self._manual_cal_baseline = list(self._manual_cal_live)
+        self._manual_cal_dirty.clear()
+        self._update_manual_cal_indicator()
+
+    def _confirm_pulse(self, pid: int) -> bool:
+        """Gate a pulse Send: warn before Run autotune discards unsaved manual offsets."""
+        if pid != PID_RUN_AUTOTUNE or not self._manual_cal_dirty:
+            return True
+        oscs = ", ".join(str(i) for i in sorted(self._manual_cal_dirty))
+        choice = messagebox.askyesnocancel(
+            "Unsaved manual calibration offsets",
+            f"Oscillator(s) {oscs} have unsaved manual calibration offsets.\n\n"
+            "Auto calibration reloads the board's filesystem when it finishes, "
+            "which discards any manual offset edit that wasn't stored.\n\n"
+            "Yes: store them now, then run autotune.\n"
+            "No: run autotune anyway and discard the unsaved edits.\n"
+            "Cancel: don't run autotune.",
+            parent=self.root,
+        )
+        if choice is None:
+            return False
+        if choice:
+            store = PARAM_BY_PID[PID_MANUAL_CAL_STORE]
+            self.send_now(protocol.param16(PID_MANUAL_CAL_STORE, store.pulse_value))
+            self.log(f"[send] {store.label} (param {PID_MANUAL_CAL_STORE} = {store.pulse_value})\n")
+            self._manual_cal_on_stored()
+        return True
+
+    def _on_pulse_sent(self, pid: int) -> None:
+        """Hook for after-send bookkeeping. Most pulses don't need this."""
+        if pid == PID_MANUAL_CAL_STORE:
+            self._manual_cal_on_stored()
+
+    def _add_cal_backup_panel(self, parent: ttk.Frame, row: int) -> None:
+        """Calibration tab: dump/restore the board's five LittleFS cal tables."""
+        frame = ttk.LabelFrame(parent, text="Calibration backup", padding=8)
+        frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=4)
+        ttk.Button(frame, text="Dump board → file…",
+                   command=self._cal_dump_to_file).grid(row=0, column=0, sticky="w")
+        ttk.Button(frame, text="Load file → board…",
+                   command=self._cal_load_from_file).grid(row=0, column=1, sticky="w", padx=(6, 0))
+        ttk.Label(
+            frame,
+            text=f"Amp-comp, PW and manual-offset tables as a {fileformats.cal_format()} JSON file. "
+                 "Loading overwrites the board's LittleFS calibration and reloads "
+                 "it live (needs a connected board).",
+            wraplength=700, style="Muted.TLabel",
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
     def _add_diag_panel(self, parent: ttk.Frame, *, row: int, column: int, title: str,
                         commands: tuple[tuple[str, int], ...], note: str) -> ttk.LabelFrame:
@@ -1098,8 +1515,8 @@ class App:
         self._diag_grid = parent
         self._diag_reflow_width = -1
 
-        panel_specs = (
-            ("Diagnostics", params.DEBUG_COMMANDS,
+        panel_specs = [
+            ("Diagnostics", models.filter_debug_commands(params.DEBUG_COMMANDS),
              "Output appears in the log below. Period probes only hold while no note "
              "is playing. Dump RAM (13) prints heap + per-core stack (needs ENABLE_MEM_DIAG). "
              "14/15 disable/enable mem_diag loop polls (A/B vs profiler). "
@@ -1127,12 +1544,13 @@ class App:
              "Fixed: Q24 helpers. Float: native Hz for GOLD/FLOAT; Hz→Q24 then helper for integer. "
              "Accuracy vs GOLD_REF. Live float honors CLKDIV_MODE via clkdiv_live_hz.",
              2, 0),
-            ("Mainboard profiler", params.BENCH_MB_COMMANDS,
-             "Opcodes 40 / 41 / 42 go to the STM32 Mainboard (DCO forwards PARAM_DEBUG_COMMAND). "
-             "Needs RUNNING_AVERAGE on Mainboard (default on). Dump waits ≥1 s then rides "
-             "Serial2 't' chunks back to this Board pane. Do not reuse DCO 10 / 11 / 12.",
-             2, 1),
-        )
+        ]
+        if models.active().has_mainboard:
+            panel_specs.append(
+                ("Mainboard profiler", params.BENCH_MB_COMMANDS,
+                 "DCO forwards 40–42 to the STM32 Mainboard over Serial2; its ASCII "
+                 "dump comes back as text chunks into the Board output pane. Needs "
+                 "RUNNING_AVERAGE in the Mainboard firmware.", 2, 1))
         self._diag_panels = []
         for title, commands, note, grid_row, grid_col in panel_specs:
             frame = self._add_diag_panel(
@@ -1223,11 +1641,12 @@ class App:
         self.log_text.tag_configure("link", foreground=p["accent"])
         self.log_text.tag_configure("send", foreground=p["muted"])
         self.log_text.tag_configure("ui", foreground=p["muted"])
+        self.log_text.tag_configure("mcu", foreground=p["accent"])
 
     def log(self, text: str) -> None:
         # Tag our own lines so they read as commentary, leaving board output plain.
         tag = ""
-        for name in ("link", "send", "ui"):
+        for name in ("link", "send", "ui", "mcu"):
             if text.startswith(f"[{name}]"):
                 tag = name
                 break
@@ -1240,15 +1659,28 @@ class App:
     def _drain_log(self) -> None:
         try:
             while True:
-                self.log(self.link.rx.get_nowait())
+                chunk = self.link.rx.get_nowait()
+                self.log(chunk)
+                self._mcu_feed(chunk)
         except queue.Empty:
             pass
+        self.mcu.tick()
         if self.dot_on and not self.link.is_open:
             # A failed write closes the link from the reader thread's side.
             self._set_status_dot(False)
             self.status_var.set("not connected")
             self.connect_btn.config(text="Connect")
+            self.mcu.cancel_all()
         self.root.after(50, self._drain_log)
+
+    def _mcu_feed(self, chunk: str) -> None:
+        """Reassemble the RX stream into lines for the MCU protocol parser."""
+        self._mcu_linebuf += chunk
+        while "\n" in self._mcu_linebuf:
+            line, self._mcu_linebuf = self._mcu_linebuf.split("\n", 1)
+            self.mcu.feed_line(line)
+        if len(self._mcu_linebuf) > 4096:  # runaway line; nothing we parse is this long
+            self._mcu_linebuf = ""
 
     # --- sending ---------------------------------------------------------
 
@@ -1351,9 +1783,474 @@ class App:
         self.root.destroy()
 
 
+class PresetBrowser(tk.Toplevel):
+    """256-slot bank browser: local slot management, patch files, MCU sync.
+
+    The MCU column shows the board's own preset names from the last directory
+    fetch ([pdir]); it is empty until "Refresh board list" is pressed. All board
+    operations run through app.mcu one at a time and report to the log pane.
+    """
+
+    def __init__(self, app: App) -> None:
+        super().__init__(app.root)
+        self.app = app
+        self.title("Preset browser")
+        self.geometry("780x680")
+        self.minsize(600, 440)
+
+        body = ttk.Frame(self, padding=8)
+        body.pack(fill="both", expand=True)
+
+        columns = ("slot", "name", "mcu")
+        self.tree = ttk.Treeview(body, columns=columns, show="headings",
+                                 selectmode="browse")
+        self.tree.heading("slot", text="Slot")
+        self.tree.heading("name", text="Local name")
+        self.tree.heading("mcu", text="Board name")
+        self.tree.column("slot", width=60, anchor="e", stretch=False)
+        self.tree.column("name", width=300)
+        self.tree.column("mcu", width=240)
+        bar = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=bar.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        bar.grid(row=0, column=1, sticky="ns")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        self.tree.bind("<Double-1>", lambda _e: self._local_load())
+
+        local = ttk.LabelFrame(body, text="Local bank", padding=6)
+        local.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        for text, cmd in (
+            ("Load", self._local_load),
+            ("Save into", self._local_save_into),
+            ("Rename…", self._local_rename),
+            ("Copy to…", self._local_copy_to),
+            ("Move to…", self._local_move_to),
+            ("Delete", self._local_delete),
+            ("Export slot…", self._file_export),
+            ("Import into slot…", self._file_import),
+        ):
+            ttk.Button(local, text=text, command=cmd).pack(side="left", padx=(0, 6))
+
+        mcu = ttk.LabelFrame(body, text="Board (MCU)", padding=6)
+        mcu.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        mcu_specs = (
+            ("Refresh board list", self._mcu_refresh_dir),
+            ("Send slot → board", self._mcu_send_slot),
+            ("Fetch slot ← board", self._mcu_fetch_slot),
+            ("Recall slot on board", self._mcu_recall),
+            ("Push all → board", self._mcu_push_all),
+            ("Pull all ← board", self._mcu_pull_all),
+            ("Save board live state → slot", self._mcu_save_live),
+        )
+        for i, (text, cmd) in enumerate(mcu_specs):
+            ttk.Button(mcu, text=text, command=cmd).grid(
+                row=i // 4, column=i % 4, padx=(0, 6), pady=2, sticky="ew")
+
+        self.refresh()
+
+    # --- helpers ----------------------------------------------------------
+
+    def log(self, text: str) -> None:
+        self.app.log(text)
+
+    def _sel(self) -> int | None:
+        sel = self.tree.selection()
+        if not sel:
+            self.log("[ui] select a slot in the browser first\n")
+            return None
+        return int(sel[0])
+
+    def refresh(self) -> None:
+        selected = self.tree.selection()
+        top = self.tree.yview()[0]
+        self.tree.delete(*self.tree.get_children())
+        for i in range(presets.NUM_SLOTS):
+            slot = self.app.bank["slots"][i]
+            name = "" if presets.slot_is_empty(slot) else slot["name"]
+            self.tree.insert("", "end", iid=str(i),
+                             values=(f"{i:03d}", name, self.app.mcu_dir.get(i, "")))
+        if selected:
+            self.tree.selection_set(selected)
+        self.tree.yview_moveto(top)
+
+    def _safe_refresh(self) -> None:
+        """Refresh from an async MCU callback; the window may have been closed."""
+        try:
+            if self.winfo_exists():
+                self.refresh()
+        except tk.TclError:
+            pass
+
+    def _local_slot(self, index: int) -> dict | None:
+        slot = self.app.bank["slots"][index]
+        return None if presets.slot_is_empty(slot) else slot
+
+    def _save_bank(self) -> None:
+        presets.save_bank(self.app.bank)
+        # save_bank normalizes; keep the in-memory copy identical to disk.
+        self.app.bank = presets.load_bank()
+        self.refresh()
+
+    # --- local bank ---------------------------------------------------------
+
+    def _local_load(self) -> None:
+        i = self._sel()
+        if i is None:
+            return
+        self.app._preset_recall(i, send=True, persist_current=True)
+
+    def _local_save_into(self) -> None:
+        i = self._sel()
+        if i is None:
+            return
+        existing = self._local_slot(i)
+        if existing is not None and not messagebox.askyesno(
+            "Save into slot",
+            f"Slot {i:03d} already has “{existing['name']}”. Overwrite?",
+            parent=self,
+        ):
+            return
+        self.app._preset_save(i)
+
+    def _local_rename(self) -> None:
+        i = self._sel()
+        if i is None:
+            return
+        slot = self._local_slot(i)
+        if slot is None:
+            self.log(f"[ui] slot {i:03d} is empty\n")
+            return
+        name = simpledialog.askstring(
+            "Rename preset", "Name:", initialvalue=slot["name"], parent=self)
+        if name is None:
+            return
+        slot["name"] = name.strip()[:48] or "Untitled"
+        if i == int(self.app.bank.get("current", -1)):
+            self.app.preset_name_var.set(slot["name"])
+        self._save_bank()
+        self.log(f"[preset] renamed {i:03d} to {slot['name']}\n")
+
+    def _pick_dest(self, title: str, source: int) -> int | None:
+        dest = simpledialog.askinteger(
+            title, "Destination slot (0–255):", initialvalue=source,
+            minvalue=0, maxvalue=presets.NUM_SLOTS - 1, parent=self)
+        if dest is None or dest == source:
+            return None
+        existing = self._local_slot(dest)
+        if existing is not None and not messagebox.askyesno(
+            title, f"Slot {dest:03d} already has “{existing['name']}”. Overwrite?",
+            parent=self,
+        ):
+            return None
+        return dest
+
+    def _local_copy_to(self) -> None:
+        i = self._sel()
+        if i is None:
+            return
+        slot = self._local_slot(i)
+        if slot is None:
+            self.log(f"[ui] slot {i:03d} is empty\n")
+            return
+        dest = self._pick_dest("Copy to…", i)
+        if dest is None:
+            return
+        self.app.bank["slots"][dest] = presets.normalize_bank({"slots": [slot]})["slots"][0]
+        self._save_bank()
+        self.log(f"[preset] copied {i:03d} to {dest:03d}\n")
+
+    def _local_move_to(self) -> None:
+        i = self._sel()
+        if i is None:
+            return
+        slot = self._local_slot(i)
+        if slot is None:
+            self.log(f"[ui] slot {i:03d} is empty\n")
+            return
+        dest = self._pick_dest("Move to…", i)
+        if dest is None:
+            return
+        self.app.bank["slots"][dest] = slot
+        self.app.bank["slots"][i] = None
+        self._save_bank()
+        self.log(f"[preset] moved {i:03d} to {dest:03d}\n")
+
+    def _local_delete(self) -> None:
+        i = self._sel()
+        if i is None:
+            return
+        slot = self._local_slot(i)
+        if slot is None:
+            return
+        if not messagebox.askyesno(
+            "Delete preset", f"Delete {i:03d} “{slot['name']}” from the local bank?",
+            parent=self,
+        ):
+            return
+        self.app.bank["slots"][i] = None
+        self._save_bank()  # slot 0 re-inits to defaults; others go empty
+        self.log(f"[preset] deleted {i:03d}\n")
+
+    # --- patch files ----------------------------------------------------------
+
+    def _file_export(self) -> None:
+        i = self._sel()
+        if i is None:
+            return
+        slot = self._local_slot(i)
+        if slot is None:
+            self.log(f"[ui] slot {i:03d} is empty\n")
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self, title="Export slot", defaultextension=".json",
+            initialfile=f"{slot['name']}.json", filetypes=JSON_FILETYPES)
+        if not path:
+            return
+        try:
+            fileformats.save_patch_file(path, slot)
+        except OSError as exc:
+            self.log(f"[ui] patch export failed: {exc}\n")
+            return
+        self.log(f"[ui] exported {i:03d} \"{slot['name']}\" to {path}\n")
+
+    def _file_import(self) -> None:
+        i = self._sel()
+        if i is None:
+            return
+        path = filedialog.askopenfilename(
+            parent=self, title="Import patch into slot", filetypes=JSON_FILETYPES)
+        if not path:
+            return
+        try:
+            slot = fileformats.load_patch_file(path)
+        except (OSError, ValueError) as exc:
+            self.log(f"[ui] patch import failed: {exc}\n")
+            return
+        existing = self._local_slot(i)
+        if existing is not None and not messagebox.askyesno(
+            "Import into slot",
+            f"Slot {i:03d} already has “{existing['name']}”. Overwrite with "
+            f"“{slot['name']}”?",
+            parent=self,
+        ):
+            return
+        self.app.bank["slots"][i] = slot
+        self._save_bank()
+        self.log(f"[ui] imported \"{slot['name']}\" into {i:03d}\n")
+
+    # --- board (MCU) sync -------------------------------------------------------
+
+    def _mcu_refresh_dir(self) -> None:
+        app = self.app
+        if not app._mcu_ready():
+            return
+
+        def done(ok, payload):
+            if not ok:
+                self.log(f"[mcu] directory listing failed: {payload}\n")
+                return
+            app.mcu_dir = dict(payload)
+            self.log(f"[mcu] board has {len(payload)} preset(s)\n")
+            self._safe_refresh()
+
+        app.mcu.read_directory(done)
+
+    def _mcu_send_slot(self) -> None:
+        i = self._sel()
+        if i is None:
+            return
+        slot = self._local_slot(i)
+        if slot is None:
+            self.log(f"[ui] slot {i:03d} is empty\n")
+            return
+        app = self.app
+        if not app._mcu_ready():
+            return
+        record = fileformats.slot_to_record(slot)
+
+        def done(ok, payload, i=i, name=slot["name"]):
+            if ok:
+                app.mcu_dir[i] = name[:16]
+                self.log(f"[mcu] slot {i:03d} \"{name}\" written to board\n")
+                self._safe_refresh()
+            else:
+                self.log(f"[mcu] send slot {i:03d} failed: {payload}\n")
+
+        app.mcu.push_preset_record(i, record, done)
+
+    def _mcu_fetch_slot(self) -> None:
+        i = self._sel()
+        if i is None:
+            return
+        app = self.app
+        if not app._mcu_ready():
+            return
+        existing = self._local_slot(i)
+        if existing is not None and not messagebox.askyesno(
+            "Fetch slot",
+            f"Overwrite local slot {i:03d} “{existing['name']}” with the board's "
+            "copy?",
+            parent=self,
+        ):
+            return
+
+        def done(ok, payload, i=i):
+            if not ok:
+                self.log(f"[mcu] fetch slot {i:03d} failed: {payload}\n")
+                return
+            try:
+                slot = fileformats.record_to_slot(payload)
+            except ValueError as exc:
+                self.log(f"[mcu] fetch slot {i:03d}: bad record ({exc})\n")
+                return
+            app.bank["slots"][i] = slot
+            app.mcu_dir[i] = slot["name"][:16]
+            self._save_bank()
+            self.log(f"[mcu] fetched slot {i:03d} \"{slot['name']}\" from board\n")
+
+        app.mcu.dump_preset_slot(i, done)
+
+    def _mcu_recall(self) -> None:
+        i = self._sel()
+        if i is None:
+            return
+        app = self.app
+        if not app._mcu_ready():
+            return
+
+        def done(ok, payload, i=i):
+            if ok:
+                self.log(f"[mcu] board recalled slot {i:03d} (panel UI unchanged -- "
+                         "use Fetch to sync it here)\n")
+            else:
+                self.log(f"[mcu] recall slot {i:03d} failed: {payload}\n")
+
+        app.mcu.recall_slot(i, done)
+
+    def _mcu_save_live(self) -> None:
+        i = self._sel()
+        if i is None:
+            return
+        app = self.app
+        if not app._mcu_ready():
+            return
+        name = simpledialog.askstring(
+            "Save board live state", "Preset name (16 chars reach the board):",
+            initialvalue=app.preset_name_var.get().strip()[:16], parent=self)
+        if name is None:
+            return
+        name = name.strip() or "Untitled"
+
+        def done(ok, payload, i=i, name=name):
+            if ok:
+                app.mcu_dir[i] = name[:16]
+                self.log(f"[mcu] board saved its live state into slot {i:03d}\n")
+                self._safe_refresh()
+            else:
+                self.log(f"[mcu] board save failed: {payload}\n")
+
+        app.mcu.save_live_to_slot(i, name, done)
+
+    def _mcu_push_all(self) -> None:
+        app = self.app
+        if not app._mcu_ready():
+            return
+        entries = [
+            (i, s) for i, s in enumerate(app.bank["slots"])
+            if not presets.slot_is_empty(s)
+        ]
+        if not entries:
+            self.log("[ui] local bank is empty\n")
+            return
+        if not messagebox.askyesno(
+            "Push all",
+            f"Write {len(entries)} local preset(s) into the board's slots? "
+            "Matching board slots are overwritten.",
+            parent=self,
+        ):
+            return
+        state = {"fail": 0}
+
+        def step(k: int) -> None:
+            if k >= len(entries):
+                ok_n = len(entries) - state["fail"]
+                self.log(f"[mcu] push all done: {ok_n} ok, {state['fail']} failed\n")
+                self._safe_refresh()
+                return
+            i, slot = entries[k]
+
+            def done(ok, payload, i=i, name=slot["name"], k=k):
+                if ok:
+                    app.mcu_dir[i] = name[:16]
+                else:
+                    state["fail"] += 1
+                    self.log(f"[mcu] push slot {i:03d} failed: {payload}\n")
+                step(k + 1)
+
+            app.mcu.push_preset_record(i, fileformats.slot_to_record(slot), done)
+
+        self.log(f"[mcu] pushing {len(entries)} preset(s) to the board...\n")
+        step(0)
+
+    def _mcu_pull_all(self) -> None:
+        app = self.app
+        if not app._mcu_ready():
+            return
+
+        def on_dir(ok, payload):
+            if not ok:
+                self.log(f"[mcu] directory listing failed: {payload}\n")
+                return
+            app.mcu_dir = dict(payload)
+            self._safe_refresh()
+            if not payload:
+                self.log("[mcu] board has no presets\n")
+                return
+            if not messagebox.askyesno(
+                "Pull all",
+                f"Copy {len(payload)} preset(s) from the board into the local bank? "
+                "Matching local slots are overwritten.",
+                parent=self,
+            ):
+                return
+            slots = [slot for slot, _name in payload]
+            state = {"fail": 0}
+
+            def step(k: int) -> None:
+                if k >= len(slots):
+                    ok_n = len(slots) - state["fail"]
+                    self._save_bank()
+                    self.log(f"[mcu] pull all done: {ok_n} ok, {state['fail']} failed\n")
+                    return
+                i = slots[k]
+
+                def done(ok, payload, i=i, k=k):
+                    if ok:
+                        try:
+                            app.bank["slots"][i] = fileformats.record_to_slot(payload)
+                        except ValueError as exc:
+                            state["fail"] += 1
+                            self.log(f"[mcu] pull slot {i:03d}: bad record ({exc})\n")
+                    else:
+                        state["fail"] += 1
+                        self.log(f"[mcu] pull slot {i:03d} failed: {payload}\n")
+                    step(k + 1)
+
+                app.mcu.dump_preset_slot(i, done)
+
+            self.log(f"[mcu] pulling {len(slots)} preset(s) from the board...\n")
+            step(0)
+
+        app.mcu.read_directory(on_dir)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="DCO bench controller")
     ap.add_argument("--port", help="serial device, e.g. /dev/ttyACM0 (default: auto-detect)")
+    ap.add_argument("--model", choices=sorted(models.PROFILES),
+                    help="synth model (default: auto-detect from USB, else "
+                         f"DCO_CONTROL_MODEL env, else {models.active().key})")
     ap.add_argument("--theme", choices=theme.MODES, default="dark",
                     help="colour scheme; also switchable from the toolbar (default: dark)")
     ap.add_argument("--cobs", action="store_true",
@@ -1362,6 +2259,12 @@ def main() -> None:
 
     env_cobs = os.environ.get("DCO_SERIAL_COBS", "").strip().lower() in ("1", "true", "yes")
     cobs = args.cobs or env_cobs
+
+    env_model = os.environ.get("DCO_CONTROL_MODEL", "").strip().lower()
+    model = args.model or models.detect() or (env_model if env_model in models.PROFILES else None)
+    if model:
+        models.set_active(model)
+    apply_active_model()
 
     root = tk.Tk()
     App(root, args.port, args.theme, cobs=cobs)

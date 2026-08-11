@@ -3,14 +3,19 @@
 
 #include <stdint.h>
 
-// Central definition of all parameter IDs used across MCUs.
-// Canonical ParamId list for DCO / Mainboard / Input / Screen.
-// Mainboard and Input copy this file. Do not renumber.
+// Canonical definition of every parameter ID used across MCUs, shared verbatim
+// by DCO, Mainboard, Input and Screen in both DCO3-MONOSYNTH and DCO4-REBORN.
+// It is the union of both synths' parameters: a board simply has no handler for
+// the IDs it does not implement (e.g. the sub-oscillator block 90–99 is
+// DCO3-only, and 170–173 are handled by the DCO alone). Keeping one enum means a
+// given number always means the same thing on every wire in both instruments.
 //
 // IMPORTANT:
 //   - Do not change numeric values of existing IDs.
 //   - New parameters should get new, unused numbers.
 //   - The meaning of each ID (name + number) should be stable across MCUs.
+//   - Edit this file in DCO3-MONOSYNTH/DCO and copy it to the other six trees;
+//     `tools/dco_control/gen_midi_map.py --check` diffs against it.
 
 enum ParamId : uint16_t {
   // --- Per-osc analog wave enables (74HC595 → DG411). See docs/WAVE_MUX.md ---
@@ -109,7 +114,7 @@ enum ParamId : uint16_t {
   // PARAM_FX_MIX                 = 56,
 
   // Mod matrix: 8 slots × (source, dest, depth). See docs/MOD_MATRIX.md.
-  // Source 0..15 (0xFF/out-of-range = empty); dest 0..9; depth bipolar int16.
+  // Source 0..15 (0xFF/out-of-range = empty); dest 0..11; depth bipolar int16.
   // Pitch dest (9): ±1023 → ±1 octave (see mod_matrix.h MOD_PITCH_DEPTH_FULL).
   PARAM_MOD_SLOT0_SOURCE         = 60,
   PARAM_MOD_SLOT0_DEST           = 61,
@@ -143,6 +148,35 @@ enum ParamId : uint16_t {
   PARAM_OSC3_SAW_ENABLE          = 87,
   PARAM_OSC3_PULSE_ENABLE        = 88,
   PARAM_OSC3_TRI_ENABLE          = 89,
+
+  // --- Sub-oscillators (ENABLE_SUBOSC_ENGINE2; RP2350 only) ---------------------------
+  // Two subs, and the boolean combination of them is the output that gets mixed. See
+  // docs/PIO_OSCILLATORS.md section 9. On builds without the engine, SUB1_DIVIDE falls back to
+  // the single legacy sub (same as PARAM_SUBOSC_DIVIDE) and the rest are ignored.
+  //
+  // Divide: 0 = off, 1 = master rate (phase / PWM only), 2..8 master periods per sub period.
+  // Odd ratios are legal and give non-octave subharmonics (3 = an octave and a fifth down).
+  PARAM_SUB1_DIVIDE              = 90,
+  PARAM_SUB2_DIVIDE              = 91,
+  // Master: which oscillator's reset the sub locks to, 0..2 = OSC1..OSC3. Both subs on one
+  // master gives harmonic pulse patterns; different masters gives ring-mod beating that tracks
+  // their detune. 92 and 95 were the third sub's divide and phase, which never shipped.
+  PARAM_SUB1_MASTER              = 92,
+  PARAM_SUB2_MASTER              = 95,
+  // Phase: rising-edge delay after the master's reset, 0..359 degrees of the *master* period
+  // (shifting a sub by whole master periods is inaudible, so that is the useful range).
+  PARAM_SUB1_PHASE               = 93,
+  PARAM_SUB2_PHASE               = 94,
+  // Width: duty in 1/256ths of the sub period, 1..255. 128 = the classic 50% square.
+  PARAM_SUB1_WIDTH               = 96,
+  PARAM_SUB2_WIDTH               = 97,
+  // 98 and 100 are reserved: they were the third sub's width and the combiner's pair selector,
+  // and the pair is fixed now that there are exactly two subs on adjacent pads.
+  //
+  // Boolean logic combiner: both subs in, one square out. Digital ring modulation, plus two
+  // pass-throughs so this one pad carries everything the sub section can produce.
+  // 0 = off, 1 = XOR, 2 = AND, 3 = OR, 4 = XNOR, 5 = NAND, 6 = NOR, 7 = sub 1, 8 = sub 2.
+  PARAM_SUB_LOGIC_OP             = 99,
 
   // --- Misc / control / UI flags ------------------------------------
   // Calibration mode selector (screen/UI only for now)
@@ -206,13 +240,19 @@ enum ParamId : uint16_t {
   // 156: explicit "store manual calibration offsets" command.
   PARAM_MANUAL_CALIBRATION_STORE = 156,
 
+  // --- Preset store / dump commands (DCO-local; tools/dco_control) -----
+  // See preset_store.h for the record format and the '[dump]'/'[pdir]'/
+  // '[preset]'/'[bulk]' text protocol on USB CDC.
+  PARAM_PRESET_SAVE              = 170,  // value = slot 0..255: save live state
+  PARAM_PRESET_LOAD              = 171,  // value = slot 0..255: recall slot
+  PARAM_PRESET_DUMP              = 172,  // -1 = directory, 0..255 = slot record hex
+  PARAM_CAL_DUMP                 = 173,  // 0/-1 = all cal tables, 1..5 = one (CAL_DUMP_*)
+
   // 160: bench / debug trigger (DCO-local; dco_control Diagnostics + Calibration + Character).
   // 1 = PIO topology report, 2 = period probe at a low divider,
   // 3 = period probe at a high divider. See DCO/docs/PIO_OSCILLATORS.md section 12.
   // 10 = dump profiler once, 11 = reset profiler, 12 = toggle ~1 Hz dump
   // (RUNNING_AVERAGE builds only). See DCO/docs/BENCHMARKING.md.
-  // 40 = Mainboard dump once, 41 = MB reset, 42 = MB toggle ~1 Hz dump.
-  // DCO forwards 40–42 to Mainboard over Serial2; MB applies locally (no bounce).
   // 13 = SRAM / heap / per-core stack dump (ENABLE_MEM_DIAG; runtime polls on).
   // 14 / 15 = mem_diag loop polls off / on. See MEMORY.md.
   // 20–22 amp-comp method, 24–25 amp benches, 26–27 note retrig, 28–29 pitch benches.

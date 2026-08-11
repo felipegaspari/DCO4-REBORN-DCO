@@ -57,13 +57,13 @@ void __not_in_flash_func(microsTimer)() {
 void __not_in_flash_func(microsTimer2)() {
   const unsigned long now = micros();
 
-  //timer50microsFlag2 = 0;  if (now - timer50micros2 > kTimer50us) { timer50micros2 = now; timer50microsFlag2 = 1; }
-  //timer51microsFlag2 = 0;  if (now - timer51micros2 > kTimer51us) { timer51micros2 = now; timer51microsFlag2 = 1; }
+  timer50microsFlag2 = 0;  if (now - timer50micros2 > kTimer50us) { timer50micros2 = now; timer50microsFlag2 = 1; }
+  timer51microsFlag2 = 0;  if (now - timer51micros2 > kTimer51us) { timer51micros2 = now; timer51microsFlag2 = 1; }
   timer99microsFlag2 = 0;  if (now - timer99micros2 > kTimer99us) { timer99micros2 = now; timer99microsFlag2 = 1; }
   // timer100microsFlag2 = 0;  if (now - timer100micros2 > kTimer100us) { timer100micros2 = now; timer100microsFlag2 = 1; }
   timer1msFlag2 = 0;         if (now - timer1ms2 > kTimer1ms)         { timer1ms2 = now;       timer1msFlag2 = 1; }
   // timer223microsFlag2 = 0;  if (now - timer223micros2 > kTimer223us) { timer223micros2 = now; timer223microsFlag2 = 1; }
-  // timer5msFlag2 = 0;        if (now - timer5ms2 > kTimer5ms)         { timer5ms2 = now;       timer5msFlag2 = 1; }
+  timer5msFlag2 = 0;        if (now - timer5ms2 > kTimer5ms)         { timer5ms2 = now;       timer5msFlag2 = 1; }
   // timer11msFlag2 = 0;       if (now - timer11ms2 > kTimer11ms)       { timer11ms2 = now;      timer11msFlag2 = 1; }
   // timer23msFlag2 = 0;       if (now - timer23ms2 > kTimer23ms)       { timer23ms2 = now;      timer23msFlag2 = 1; }
   // timer31msFlag2 = 0;       if (now - timer31ms2 > kTimer31ms)       { timer31ms2 = now;      timer31msFlag2 = 1; }

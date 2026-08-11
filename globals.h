@@ -255,6 +255,8 @@ int midi_pitch_bend = 8192, last_midi_pitch_bend = 8192;
 uint8_t midi_aftertouch = 0;
 uint8_t midi_mod_wheel = 0;
 uint8_t pitchBendRange = 2;
+// MIDI Bank Select (CC 0 / CC 32): 0 = slots 0..127, 1 = slots 128..255.
+uint8_t midiPresetBank = 0;
 
 // Precompute 1/12 in Q24 for fast multiplier calculation
 static constexpr int32_t RECIP_TWELVE_Q24 = (int32_t)((1.0f / 12.0f) * (float)(1 << 24));

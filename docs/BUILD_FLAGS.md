@@ -150,6 +150,24 @@ Derived: `ADSR_BEZIER_PHASE_SCALE_U64` (`1` when shift > 22).
 | `USE_ADC_STACK_VOICES` | commented | Legacy ADC stack voices (GPIO 28) | unused when commented |
 | `USE_ADC_DETUNE` | commented | Legacy ADC detune (GPIO 27) | unused when commented |
 
+**LittleFS flash partition:** presets (`pb00`…`pb63`, 4 records × 598 B per chunk) plus
+calibration files need a filesystem slice. The default
+`rp2040:rp2040:rpipico2:usbstack=tinyusb` FQBN often allocates **no** FS space.
+Compile/upload with an explicit size that includes one, e.g.:
+
+```bash
+arduino-cli compile \
+  --fqbn rp2040:rp2040:rpipico2:usbstack=tinyusb,flash=4194304_524288 \
+  --libraries ./_build_libs \
+  .
+```
+
+(`4194304_524288` = 4 MB flash, 512 KB LittleFS — sized for a full 256-slot bank at
+4 records/file.) Without that, `init_FS()` / preset save fail at runtime. Changing the
+FS size moves `_FS_start`/`_FS_end` and **reformats the filesystem** — back up
+calibration + presets with `tools/dco_control` first, restore after. Preset
+protocol: [`PRESET_STORE.md`](PRESET_STORE.md).
+
 Comment-only (not a live define): `ENABLE_PIO_MIDI` — PIO2 reserved in comments / [`PINOUT.md`](PINOUT.md); not compiled today.
 
 ### Capacity constants (not feature toggles)

@@ -106,6 +106,8 @@ uint16_t SubLevel = 0;
 
 bool ADSR3Enabled = false;
 
-uint8_t presetName[12] = { 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32 };
+// 16-char preset name, latest 'q' frame (space-padded ASCII).
+uint8_t presetName[16] = { 32, 32, 32, 32, 32, 32, 32, 32,
+                           32, 32, 32, 32, 32, 32, 32, 32 };
 
 #endif

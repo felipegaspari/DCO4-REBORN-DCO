@@ -12,6 +12,7 @@ a 4-byte 'p' frame: cmd + id + int16 LE. No finish byte, no 'w'/'e'/'f'.
 from __future__ import annotations
 
 import struct
+import zlib
 from dataclasses import dataclass
 
 # Command bytes, from DCO/serial_input_protocol.h.
@@ -21,10 +22,28 @@ CMD_ADSR3_BLOCK = b"c"  # EnvDCO times (pitch / PW)
 CMD_FILTER_BLOCK = b"d"
 CMD_PARAM_16 = b"p"
 CMD_PRESET_NAME = b"q"
+CMD_BULK_CHUNK = b"B"   # staged restore chunk (DCO/preset_store.h)
+CMD_BULK_COMMIT = b"C"  # verify + persist staged bytes
 
-# The USB product string set by USBDevice.setProductDescriptor() in DCO/DCO.ino.
-# The descriptor is space-padded, so match on a prefix.
-USB_PRODUCT_PREFIX = "DCO4-REBORN"
+# Preset store / dump command params (DCO/params_def.h).
+PARAM_PRESET_SAVE = 170  # value = slot: save the board's live state
+PARAM_PRESET_LOAD = 171  # value = slot: recall a slot on the board
+PARAM_PRESET_DUMP = 172  # -1 = directory listing, 0..255 = slot record hex
+PARAM_CAL_DUMP = 173     # 0/-1 = all cal tables, 1..5 = one
+
+# Bulk restore targets ('B'/'C' first payload byte, DCO/preset_store.h).
+BULK_TARGET_PRESET = 0
+BULK_TARGET_VOICE_TABLES = 1
+BULK_TARGET_PW_CENTER = 2
+BULK_TARGET_PW_HIGH_LIMIT = 3
+BULK_TARGET_PW_LOW_LIMIT = 4
+BULK_TARGET_MANUAL_OFFSET = 5
+
+BULK_CHUNK_DATA = 32
+
+# The USB product string set by USBDevice.setProductDescriptor() in DCO/DCO.ino
+# lives in the model profile (models.ModelProfile.usb_product_prefix); the
+# descriptor is space-padded, so it is matched as a prefix.
 
 # USB CDC ignores the line rate, but pyserial requires one. Mirror the firmware's
 # Serial.begin(2000000) for symmetry.
@@ -92,9 +111,33 @@ def filter_block(cutoff: int, resonance: int, adsr2_to_vcf: int, lfo2_to_vcf: in
 
 
 def preset_name(name: str) -> bytes:
-    """'q' frame: 8 ASCII chars, space-padded."""
-    padded = name.encode("ascii", errors="replace")[:8].ljust(8, b" ")
+    """'q' frame: 16 ASCII chars, space-padded."""
+    padded = name.encode("ascii", errors="replace")[:16].ljust(16, b" ")
     return CMD_PRESET_NAME + padded
+
+
+def bulk_chunk(target: int, slot: int, offset: int, data: bytes) -> bytes:
+    """'B' frame: stage 32 bytes at offset in the board's bulk buffer."""
+    payload = bytes(data)[:BULK_CHUNK_DATA].ljust(BULK_CHUNK_DATA, b"\x00")
+    return CMD_BULK_CHUNK + struct.pack("<BBH", target & 0xFF, slot & 0xFF, offset & 0xFFFF) + payload
+
+
+def bulk_commit(target: int, slot: int, size: int, crc32: int) -> bytes:
+    """'C' frame: verify CRC32 over the staged bytes and persist to LittleFS."""
+    return CMD_BULK_COMMIT + struct.pack(
+        "<BBHI", target & 0xFF, slot & 0xFF, size & 0xFFFF, crc32 & 0xFFFFFFFF
+    )
+
+
+def bulk_frames(target: int, slot: int, data: bytes) -> list[bytes]:
+    """All 'B' chunks plus the final 'C' commit for one blob."""
+    blob = bytes(data)
+    frames = [
+        bulk_chunk(target, slot, off, blob[off:off + BULK_CHUNK_DATA])
+        for off in range(0, len(blob), BULK_CHUNK_DATA)
+    ]
+    frames.append(bulk_commit(target, slot, len(blob), zlib.crc32(blob)))
+    return frames
 
 
 def cobs_encode(data: bytes) -> bytes:
@@ -149,19 +192,21 @@ class PortInfo:
 
 
 def find_dco_ports() -> list[PortInfo]:
-    """Return candidate serial ports, DCO-looking ones first.
+    """Return candidate serial ports, active-model boards first.
 
     Matches the USB product descriptor the firmware advertises. Falls back to
     listing everything so a board with a stale descriptor is still reachable.
     """
+    import models
     from serial.tools import list_ports
 
+    prefix = models.active().usb_product_prefix.lower()
     matches: list[PortInfo] = []
     others: list[PortInfo] = []
     for p in list_ports.comports():
         info = PortInfo(p.device, p.description or "")
         product = (getattr(p, "product", None) or "") + " " + (p.description or "")
-        if USB_PRODUCT_PREFIX.lower() in product.lower():
+        if prefix in product.lower():
             matches.append(info)
         else:
             others.append(info)

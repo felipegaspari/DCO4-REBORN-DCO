@@ -1,6 +1,6 @@
 # Dual MCU voice path (RP2350A + RP2040)
 
-**Status:** architecture + firmware scaffold. Helper sketch: [`../../VOICE-AUX/`](../../VOICE-AUX/). Input remains parameter source of truth.
+**Status:** architecture + firmware scaffold. Helper sketch: [`../../VOICE-AUX/`](../../VOICE-AUX/). Input remains the source of truth for **live** parameter values; presets belong to the DCO ([`PRESET_STORE.md`](PRESET_STORE.md)).
 
 Related: [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md), [`PINOUT.md`](PINOUT.md), [`FILTER_ROUTING.md`](FILTER_ROUTING.md), [`DISTORTION.md`](DISTORTION.md), [`../../VOICE-AUX/docs/README.md`](../../VOICE-AUX/docs/README.md).
 
@@ -21,7 +21,7 @@ GPIO / PWM headroom without mandating an **RP2350B**. Production voice path:
 
 ## Parameter authority
 
-- **Source of truth:** Input Controller (panel / presets), same as today.
+- **Source of truth:** Input Controller for live panel values, same as today; preset storage is the DCO's ([`PRESET_STORE.md`](PRESET_STORE.md)).
 - Both MCUs **RX** the Input→voice UART (fan out Input TX to RP2350A RX and RP2040 RX).
 - Each board applies only **its owned** ParamIds / blocks and **discards** the rest.
 - **Nothing upstream from the RP2040** — it never drives the Input bus.
