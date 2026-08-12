@@ -127,10 +127,12 @@ void midi_cc_apply(uint8_t target, int16_t value) {
     case CC_LOCAL_ADSR_VCF_SUSTAIN:     ADSR_VCF_sustain = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_S); serial_send_adsr_vcf_block_to_mb(); break;
     case CC_LOCAL_ADSR_VCF_RELEASE:     ADSR_VCF_release = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_VCF_R); serial_send_adsr_vcf_block_to_mb(); break;
 
-    case CC_LOCAL_ADSR_DCO_ATTACK:      ADSR1_attack  = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_A); break;
-    case CC_LOCAL_ADSR_DCO_DECAY:       ADSR1_decay   = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_D); break;
-    case CC_LOCAL_ADSR_DCO_SUSTAIN:     ADSR1_sustain = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_S); break;
-    case CC_LOCAL_ADSR_DCO_RELEASE:     ADSR1_release = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_R); break;
+    // EnvDCO runs here, but the block still goes out: the Mainboard relays it to
+    // the panel so the faders follow a CC edit.
+    case CC_LOCAL_ADSR_DCO_ATTACK:      ADSR1_attack  = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_A); serial_send_adsr_dco_block_to_mb(); break;
+    case CC_LOCAL_ADSR_DCO_DECAY:       ADSR1_decay   = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_D); serial_send_adsr_dco_block_to_mb(); break;
+    case CC_LOCAL_ADSR_DCO_SUSTAIN:     ADSR1_sustain = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_S); serial_send_adsr_dco_block_to_mb(); break;
+    case CC_LOCAL_ADSR_DCO_RELEASE:     ADSR1_release = (uint16_t)value; mark_adsr_params_dirty(ADSR_DIRTY_DCO_R); serial_send_adsr_dco_block_to_mb(); break;
 
     // Analog VCF CVs live on Mainboard; emit slim 'd' after local update + scale bake.
     case CC_LOCAL_FILTER_CUTOFF:        CUTOFF     = (uint16_t)value; serial_send_filter_block_to_mb(); break;

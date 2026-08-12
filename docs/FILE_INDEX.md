@@ -789,7 +789,7 @@ MIDI CC control surface: the `MIDI_CC_LINEAR` / `MIDI_CC_EXP_TIME` curves, the `
 - `midi_cc_handle()` — Find the controller in `midiCcMap[]`, scale it into `lo..hi`, apply the exp curve for envelope times, then `midi_cc_apply()`. Unmapped CCs ignored.
   - **Called from:** `handleControlChange()`.
   - **When:** MIDI callback.
-- `midi_cc_apply()` — Dispatch: a `CC_LOCAL_*` target writes ADSR/filter block globals here (`cv_bake_adsr2_to_vcf_scale` / `cv_bake_lfo2_to_vcf_scale` for the matching depth CC). VCA/VCF time CCs also TX `'a'`/`'b'` to Mainboard; filter CCs TX `'d'`. PW (`PARAM_PW_VALUE`) and EnvVCA→VCA (`PARAM_ADSR1_TO_VCA`) and every other mapped ParamId go to `update_parameters()` plus `serial_echo_persistable_param16()`.
+- `midi_cc_apply()` — Dispatch: a `CC_LOCAL_*` target writes ADSR/filter block globals here (`cv_bake_adsr2_to_vcf_scale` / `cv_bake_lfo2_to_vcf_scale` for the matching depth CC). VCA/VCF time CCs also TX `'a'`/`'b'` to Mainboard, filter CCs TX `'d'`, and EnvDCO CCs TX `'c'` — the engine is DCO-local, but the Mainboard relays the block to the panel. PW (`PARAM_PW_VALUE`) and EnvVCA→VCA (`PARAM_ADSR1_TO_VCA`) and every other mapped ParamId go to `update_parameters()` plus `serial_echo_persistable_param16()`.
   - **Called from:** `midi_cc_handle()`.
   - **When:** MIDI callback.
 - `handleProgramChange()` — Recall `midiPresetBank * 128 + program` via `preset_store_load()`, ignoring anything past `PRESET_NUM_SLOTS`. Bank Select (CC 0 / CC 32) is what reaches slots 128–255.
@@ -875,8 +875,8 @@ Prototype. **No function definitions.**
 - `serial_send_filter_block_to_mb()` — Slim `'d'` of current `CUTOFF`/`RESONANCE`/`ADSR2toVCF`/`LFO2toVCF` on Serial2.
   - **Called from:** `midi_cc_apply()` filter CCs.
   - **When:** MIDI CC 52–55.
-- `serial_send_adsr_vca_block_to_mb()` / `serial_send_adsr_vcf_block_to_mb()` — Slim `'a'`/`'b'` of current EnvVCA/EnvVCF times on Serial2.
-  - **Called from:** `midi_cc_apply()` VCA/VCF time CCs.
+- `serial_send_adsr_vca_block_to_mb()` / `serial_send_adsr_vcf_block_to_mb()` / `serial_send_adsr_dco_block_to_mb()` — Slim `'a'`/`'b'`/`'c'` of current EnvVCA/EnvVCF/EnvDCO times on Serial2.
+  - **Called from:** `midi_cc_apply()` envelope CCs; `preset_record_apply()`.
   - **When:** MIDI envelope-time CCs.
 - `serial_send_preset_loaded_to_mb(slot)` — `'L'` `[slot]` on Serial2; the Mainboard relays it to Input so the panel/Screen show the DCO's current slot. Drops if Serial2 TX is not writable.
   - **Called from:** `preset_store_load()`.

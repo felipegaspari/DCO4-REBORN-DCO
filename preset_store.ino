@@ -192,6 +192,7 @@ static void preset_record_apply(const uint8_t* buf) {
 
   serial_send_adsr_vca_block_to_mb();
   serial_send_adsr_vcf_block_to_mb();
+  serial_send_adsr_dco_block_to_mb();
   serial_send_filter_block_to_mb();
 
   for (int i = 0; i < 16; ++i) {

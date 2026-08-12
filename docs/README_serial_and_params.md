@@ -40,7 +40,10 @@ commands are now `'p'` ids 222 / 210.
 ## Board-specific frame handling
 
 - `'a'`/`'b'`/`'c'`/`'d'` write the ADSR and filter block globals directly and set
-  dirty flags — they do **not** go through `update_parameters()`.
+  dirty flags — they do **not** go through `update_parameters()`. A USB-origin
+  block is re-sent to the Mainboard (`serial_forward_input_block_to_mb`, gated on
+  `g_param_ingress`), which applies the analog ones and relays all of them to
+  Input so the panel and the Screen follow a host edit.
 - `'p'` is both ingress and the outbound persistable mirror (the mirror covers
   USB/MIDI edits only, never Serial2 ingress).
 - `'q'` stages the name for the next preset save.
@@ -52,8 +55,9 @@ commands are now `'p'` ids 222 / 210.
 Everything else, including `PARAM_PW_VALUE` and `PARAM_ADSR1_TO_VCA`, goes
 through `update_parameters()`. Persistable ParamId CCs also call
 `serial_echo_persistable_param16()` so the panel display, and the next preset
-save, match what you hear. The `'a'`–`'d'` domains are mirrored by their own block
-helpers instead.
+save, match what you hear. The `'a'`–`'d'` domains have no ParamId to echo, so
+they are mirrored by their own block helpers instead — including `'c'`, whose
+engine is DCO-local but whose faders live on the panel.
 
 ## Adding a parameter here
 

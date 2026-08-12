@@ -30,9 +30,12 @@ void serialSendParam32(byte paramNumber, uint32_t paramValue);
 void serialSendParam16(byte paramNumber, int16_t paramValue, bool force = false);
 // Echo LittleFS-persistable 'p' to Mainboard (USB/MIDI only; never MB→DCO loop).
 void serial_echo_persistable_param16(uint8_t id, int16_t value);
-// Analog VCA/VCF blocks → Mainboard (MIDI CC; USB 'a'/'b'/'d' use the USB drain mirror).
+// Analog VCA/VCF blocks → Mainboard (MIDI CC + preset recall; USB 'a'-'d' use
+// the USB drain mirror). The EnvDCO block is DCO-local engine state; it goes out
+// so the Mainboard can relay it to the panel and Screen.
 void serial_send_adsr_vca_block_to_mb();
 void serial_send_adsr_vcf_block_to_mb();
+void serial_send_adsr_dco_block_to_mb();
 void serial_send_filter_block_to_mb();
 
 // 'L' [slot] out on Serial2 at the end of every successful preset_store_load()

@@ -38,6 +38,14 @@ void serial_send_adsr_vcf_block_to_mb() {
     ADSR_VCF_attack, ADSR_VCF_decay, ADSR_VCF_sustain, ADSR_VCF_release);
 }
 
+// EnvDCO times. The engine is DCO-local, but the Mainboard relays this on to
+// the Input so the panel faders and a later preset save follow a host edit.
+void serial_send_adsr_dco_block_to_mb() {
+  serial_send_adsr_block_to_mb(
+    INPUT_CMD_ADSR3_BLOCK,
+    ADSR1_attack, ADSR1_decay, ADSR1_sustain, ADSR1_release);
+}
+
 void serial_send_filter_block_to_mb() {
   if (Serial2.availableForWrite() < 1) return;
   uint8_t payload[INPUT_SERIAL_LEN_FILTER_BLOCK];
@@ -98,7 +106,8 @@ static void input_handle_adsr2(char cmd, const uint8_t* payload, uint8_t len) {
   serial_forward_input_block_to_mb(cmd, payload, len);
 }
 
-// EnvDCO times ('c') → existing ADSR1_* engine (pitch/PW). Stays DCO-local.
+// EnvDCO times ('c') → existing ADSR1_* engine (pitch/PW). The engine is
+// DCO-local; the mirror exists only so the panel and the Screen follow.
 static void input_handle_adsr3(char, const uint8_t* payload, uint8_t len) {
   if (len != INPUT_SERIAL_LEN_ADSR_BLOCK) return;
 
@@ -118,6 +127,7 @@ static void input_handle_adsr3(char, const uint8_t* payload, uint8_t len) {
   if (v != ADSR1_release) { ADSR1_release = v; dirty |= ADSR_DIRTY_DCO_R; }
 
   if (dirty) mark_adsr_params_dirty(dirty);
+  serial_forward_input_block_to_mb(INPUT_CMD_ADSR3_BLOCK, payload, len);
 }
 
 static void input_handle_filter_block(char cmd, const uint8_t* payload, uint8_t len) {
