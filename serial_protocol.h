@@ -18,7 +18,15 @@ enum SerialCmd : uint8_t {
   SERIAL_CMD_BENCH_TEXT  = 't',  // MB → DCO  dump ASCII chunk
   SERIAL_CMD_PARAM_16    = 'p',
   SERIAL_CMD_PARAM_32    = 'x',
+  SERIAL_CMD_SCREEN_SIGNAL = 's',  // DCO → MB → Screen  ScreenMode byte, relayed verbatim
 };
+
+// 's': [ScreenMode] — the raw byte the Screen puts in serialSignal.
+static constexpr uint8_t SERIAL_PAYLOAD_LEN_SCREEN_SIGNAL = 1;
+
+// The two modes the DCO sends. The full enum is the Screen's screen_mode.h.
+static constexpr uint8_t SCREEN_SIGNAL_PRESET_SCROLL = 1;
+static constexpr uint8_t SCREEN_SIGNAL_SILENT        = 6;
 
 static constexpr uint8_t SERIAL_PAYLOAD_LEN_NOTE_ON    = 4;
 static constexpr uint8_t NOTE_FLAG_RETRIGGER           = (1u << 0);
@@ -38,6 +46,7 @@ static inline uint8_t serial_protocol_payload_len(uint8_t cmd) {
     case SERIAL_CMD_BENCH_TEXT:  return SERIAL_PAYLOAD_LEN_BENCH_TEXT;
     case SERIAL_CMD_PARAM_16:    return INPUT_SERIAL_LEN_PARAM_16;
     case SERIAL_CMD_PARAM_32:    return INPUT_SERIAL_LEN_PARAM_32;
+    case SERIAL_CMD_SCREEN_SIGNAL: return SERIAL_PAYLOAD_LEN_SCREEN_SIGNAL;
     // USB/MIDI analog mirror (Input cmds on DCO→MB Serial2). 'c' EnvDCO stays DCO-local.
     case INPUT_CMD_ADSR1_BLOCK:
     case INPUT_CMD_ADSR2_BLOCK:  return INPUT_SERIAL_LEN_ADSR_BLOCK;

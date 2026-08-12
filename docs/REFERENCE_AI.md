@@ -196,12 +196,12 @@ Related docs:
 
 - **`amp_comp.h`**  
   - Defines data structures and precomputation for **per‑DCO amplitude compensation**, with a dual runtime engine:
-    - Shared: `freq_to_amp_comp_array`, plateau metadata, float coeffs `aCoeff` / `bCoeff` / `cCoeff`, `AMP_COMP_MAX_HZ = 7000`.
-    - Shared `ampCompArray` as `int32_t`. Fixed Q8 tables always present; under float also `ampCompFrequencyHz`, `ampCompLut[osc][0..7000]`, and selectable `amp_comp_method` (`FLOAT_QUAD` / `LUT` / `FIXED`; live default FIXED).
-    - Fixed path: `ampCompFrequencyArray` in **Q8 Hz** (`FREQ_FRAC_BITS = 8`), per‑window `y(t) = a*t^2 + b*t + c` with `T_FRAC = 12`, `invDxWIN_q28`, `aQWIN_fast` / `bQWIN_fast`.
-    - Float quadratic: runtime `y = (a*x+b)*x+c` in Hz (`get_chan_level_float_quad` cached walk).
+    - Shared: `freq_to_amp_comp_array`, plateau metadata, `AMP_COMP_MAX_HZ = 7000`.
+    - Shared `ampCompArray` as `int32_t`. Per-window data is array-of-structs: `FixedQuadWindow fixedWin[][]` (Q8 path) and `FloatQuadCoeffs floatCoeffs[][]` (Hz path).
+    - Fixed Q8 tables always present; under `USE_FLOAT_AMP_COMP` also `ampCompFrequencyHz`, `ampCompLut[osc][0..7000]` (`NUM_OSCILLATORS × 7001 × 2` bytes, ~109 KB at 8 osc), and selectable `amp_comp_method` (`FLOAT_QUAD` / `LUT` / `FIXED`).
+    - Fixed path: `ampCompFrequencyArray` in **Q8 Hz** (`FREQ_FRAC_BITS = 8`), per‑window `y(t) = a*t^2 + b*t + c` with `T_FRAC = 12`, fields `invDx_q28` / `aQ_fast` / `bQ_fast` on `FixedQuadWindow`.
+    - Float quadratic: runtime `y = (a*x+b)*x+c` in Hz (`get_chan_level_float_quad` cached walk over `floatCoeffs`).
   - `precompute_amp_comp_for_engine()` — float precompute + LUT fill + fixed Q8 seed/precompute (or fixed-only) after FS load in `setup1()`.
-  - `precomputeCoefficients_OLD()` — legacy precomputation path retained for reference and debugging.
   - Flag / format details: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) §7.
 
 - **`autotune.h` / `autotune.ino`** (+ helper headers)  
@@ -287,13 +287,16 @@ Related docs:
     - `midi_cc_apply()` dispatches: targets at or above `CC_LOCAL_FIRST` (224) are the 1 ms ADSR/filter block values (`'a'`–`'d'`) that have no `ParamId`, so they are written to their globals here exactly as `input_handle_*()` writes them and the touched block is then re-sent to the Mainboard; PW (`PARAM_PW_VALUE`) and EnvVCA→VCA (`PARAM_ADSR1_TO_VCA`) and everything else go to `update_parameters()`.
     - The map, the chart and the Open Stage Control session in `tools/panels/` are all generated from `tools/dco_control/params.py` by `gen_midi_map.py`, which also verifies that each mapped `ParamId` is routed by `paramTable[]` and each `CC_LOCAL_*` has a case in `midi_cc_apply()`.
   - `note_on()` / `note_off()`:
-    - Voice allocation by `voiceMode` / `polyMode`. Note edges stay on the board (`noteStart[]` / `noteEnd[]` → EnvDCO/EnvVCA/EnvVCF on Core1); nothing is sent over serial for notes.
-    - **Mono (`voiceMode == 0`) — last-note-priority held stack** (Core0 MIDI path only, depth 8 in `midi.ino`):
-      - NoteOn: if pitch already held, remove it then push (re-strike → top); if full, drop oldest. Top → `VOICE_NOTES[0]`, gate `VOICES[0]`, pulse `note_on_flag[0]` and `noteStart[0]`.
-      - NoteOff: remove pitch (ignore if not held). Stack empty → gate off + `noteEnd[0]` (keep `VOICE_NOTES` for release pitch). Otherwise fall back to new top, pulse `note_on_flag[0]` for porta, **do not** set `noteStart` (envelopes continue).
-      - Simultaneous / overlapping keys: last pressed sounds; releasing the top while others remain held glides back via the existing voice_task porta edge (`note_on_flag` → `note_on_flag_flag` → restart from current glide pitch to `VOICE_NOTES`). Porta TIME/SLEW math is unchanged.
-      - `mono_note_stack_clear()` runs from `setVoiceMode()` when entering mono so held notes do not leak across mode switches.
-    - **Para / poly / stack stub**: existing allocators (`get_free_voice*`, reuse-if-playing, mode-2 fill); no mono held stack.
+    - Voice allocation by `voiceMode`, with the policy from `voiceAlloc.mode()` (`PARAM_VOICE_ALLOC_MODE`). Note edges stay on the board (`noteStart[]` / `noteEnd[]` → EnvDCO/EnvVCA/EnvVCF on Core1); nothing is sent over serial for notes.
+    - **Shared implementation**: the allocator and the mono stack live in `DCO-SHARED-LIBRARIES/voice_alloc.h`, reached through the `_shared` symlink and wrapped by `voice_alloc_state.h`, which sets `VOICE_ALLOC_SRAM_HOT 1` and declares `voiceAlloc` (`VoiceAllocator<NUM_VOICES_TOTAL>`) and `monoStack` (`MonoNoteStack<8>`). DCO3-MONOSYNTH compiles the same header. `voices.ino` keeps only three adapters — `voice_alloc()`, `voice_mark_on()`, `voice_mark_off()` — which mirror the sketch's gate flag, pitch table and ADSR edge flags into the allocator.
+    - **Allocation state** (owned by `voiceAlloc`, Core0-only writer): each slot is `VOICE_IDLE` / `VOICE_HELD` / `VOICE_RELEASING`, with a trigger stamp for age and a release stamp for the tail. `VOICES[]` and `VOICE_NOTES[]` stay in `globals.h` because `voice_task` and autotune read them; `VOICES[]` is just the gate flag. `alloc()` derives `RELEASING → IDLE` itself from `ADSR_VCA_Level_q15[]` (registered by `init_voices()`) rather than letting Core1 write the state, so there is no window where Core1 frees a slot Core0 just took. Under `ENABLE_MB_MOD_STREAM` nothing refreshes those levels, so no level source is registered and the tail is estimated from `ADSR_VCA_release` instead.
+    - **The allocation mode** is one setting doing two jobs — poly steal policy and mono note priority: `0` round-robin / last, `1` oldest / first, `2` quietest / last, `3` quietest keep-lowest / low, `4` quietest keep-highest / high, `5` no stealing / first with denial. Every poly mode prefers an idle voice, then the release tails, and only steals a held note last; `5` drops the note-on instead.
+    - **Mono (`voiceMode == 0`) — held stack** (Core0 MIDI path only, `monoStack`, depth 8):
+      - NoteOn: `monoStack.push()` re-strikes to the top (dropping the oldest when full) and returns `false` when mode `5` denies the key. `monoStack.pick()` then picks the sounding pitch per the mode; if it is unchanged the new key is held silently (first/low/high priority), otherwise `voice_mark_on(0, …)` sets `VOICE_NOTES[0]`, gate `VOICES[0]`, `note_on_flag[0]` and `noteStart[0]`.
+      - NoteOff: `monoStack.remove()` (ignore if not held). Stack empty → `voice_mark_off(0)` (keep `VOICE_NOTES` for release pitch). Otherwise re-pick; a changed winner calls `voiceAlloc.regate(0, …)` and pulses `note_on_flag[0]` for porta, and **does not** set `noteStart` (envelopes continue).
+      - Simultaneous / overlapping keys: which one sounds is the priority above; releasing it while others remain held glides to the new winner via the existing voice_task porta edge (`note_on_flag` → `note_on_flag_flag` → restart from current glide pitch to `VOICE_NOTES`). Porta TIME/SLEW math is unchanged.
+      - `mono_note_stack_clear()` (`midi.ino`, clears `monoStack` and `mono_sounding_note`) runs from `setVoiceMode()` when entering mono so held notes do not leak across mode switches.
+    - **Poly (`voiceMode == 1`)**: `voiceAlloc.findNote()` first (reuse the voice already on that pitch, including one in release), then `voice_alloc()`. **Stack (`voiceMode == 2`)**: same note on every slot, nothing to allocate.
 
 - **`Serial.h` / `Serial.ino`**  
   - Configures UARTs:

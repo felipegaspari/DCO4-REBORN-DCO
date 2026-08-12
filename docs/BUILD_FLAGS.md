@@ -64,7 +64,7 @@ Float voice / amp / CV are **not** defined by board defaults (enable only in ove
 | Define | Shipping | Effect | Consumed |
 |--------|----------|--------|----------|
 | `USE_FLOAT_VOICE_TASK` | off | Compile `voice_task_float` instead of fixed | [`voices.h`](../voices.h) / [`voices.ino`](../voices.ino) |
-| `USE_FLOAT_AMP_COMP` | off | Float amp tables + LUT (~42 KB) dual-build | [`amp_comp.h`](../amp_comp.h), [`FS.ino`](../FS.ino) |
+| `USE_FLOAT_AMP_COMP` | off | Float amp tables + LUT (`NUM_OSCILLATORS × 7001 × 2` bytes; ~109 KB at 8 osc) dual-build | [`amp_comp.h`](../amp_comp.h), [`FS.ino`](../FS.ino) |
 | `USE_FLOAT_CV_OUTS` | off | Float VCA/VCF/keytrack/drift path | [`cv_out.ino`](../cv_out.ino), [`cv_state.h`](../cv_state.h) |
 
 Pitch A/B: `#undef PITCH_INTERP_MODE` then redefine. Guard: `FLOAT` / `FLOAT_FAST` without float voice → `#error`.
@@ -108,6 +108,9 @@ Pitch interp cmds **28–29** and fixed clkdiv cmds **32–33** (`CLKDIV_MODE` A
 | `ENABLE_PIO_RESET_INVERT` | **on** | Active-low RESET pad via GPIO OVER | [`state_machines.ino`](../state_machines.ino) |
 | `RANGE0_PIO_DITHER_TEST` | **off** | Comment out = HW slice `wrap=DIV_COUNTER` on all 8 `RANGE_PINS[]`. Define = PIO dither (not used on 4×2). | [`PWM.h`](../PWM.h) / [`PWM.ino`](../PWM.ino), [`autotune.ino`](../autotune.ino), `setup1()` |
 | `NOTE_RETRIG_MODE_DEFAULT` | `0` (EXACT_Y) | Note-on sync retrig default; runtime 26/27 | [`globals.h`](../globals.h) |
+| `AUTOTUNE_AMP_METHOD_DEFAULT` | `1` (FREQ_TRACE) | Amp-comp calibration search used by auto-cal: `0` CLASSIC (per-note range-PWM search), `1` FREQ_TRACE (fixed-PWM frequency bisection from the manual 440 Hz anchor). Runtime 34/35 (panel Calibration tab); reported as `amp_cal=` on the profiler `engine:` line. Fallback in `globals.h` is `0` if this is unset. | [`DCO.ino`](../DCO.ino), [`globals.h`](../globals.h), [`AUTOTUNE.md`](AUTOTUNE.md) |
+| `AUTOTUNE_SEARCH_MODE_DEFAULT` | `1` (INTERP) | How the frequency search closes in once it has a bracket: `0` BISECT, `1` INTERP, `2` GATED. Runtime 37/38/39. Fallback in `globals.h` is also `1`. | [`DCO.ino`](../DCO.ino), [`globals.h`](../globals.h) |
+| `AUTOTUNE_AMP0_MODE_DEFAULT` | `1` (CALC) | Amp-comp-0 endpoint (pair 0): `0` MEASURE (live hunt), `1` CALC (bottom-rung fit). Runtime 40/41. Fallback in `_shared/autotune.h` is `0` if this is unset. | [`DCO.ino`](../DCO.ino), [`_shared/autotune.h`](../_shared/autotune.h) |
 
 ---
 

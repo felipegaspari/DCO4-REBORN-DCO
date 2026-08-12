@@ -56,6 +56,11 @@ void serial_send_filter_block_to_mb() {
   serial_frame_write(Serial2, INPUT_CMD_FILTER_BLOCK, payload, INPUT_SERIAL_LEN_FILTER_BLOCK);
 }
 
+void serial_send_screen_signal_to_mb(uint8_t signal) {
+  if (Serial2.availableForWrite() < 1) return;
+  serial_frame_write(Serial2, SERIAL_CMD_SCREEN_SIGNAL, &signal, SERIAL_PAYLOAD_LEN_SCREEN_SIGNAL);
+}
+
 void serial_send_preset_loaded_to_mb(uint8_t slot) {
   if (Serial2.availableForWrite() < 1) return;
   uint8_t payload[INPUT_SERIAL_LEN_PRESET_LOADED] = { slot };

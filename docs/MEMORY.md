@@ -55,7 +55,7 @@ arm-none-eabi-nm --size-sort --print-size DCO.ino.elf | grep time_critical
 
 Look for `.time_critical.*` (each pinned function), large `.bss` (amp tables), `__bss_end__`, `__StackLimit`.
 
-**Big static table (not heap):** `ampCompLut[N][7001]` is built only when `NUM_OSCILLATORS < 8` (`USE_AMP_COMP_LUT`). At 8 oscs the dense LUT is skipped (~112 KB); FLOAT_QUAD / FIXED stay available. RP2040 shipping omits the LUT.
+**Big static table (not heap):** `ampCompLut[NUM_OSCILLATORS][7001]` is compiled whenever `USE_FLOAT_AMP_COMP` is on (`NUM_OSCILLATORS × 7001 × 2` bytes; ~109 KB at 8 osc). RP2040 shipping leaves float amp off, so the LUT is not in that binary. FLOAT_QUAD / FIXED stay available without it.
 
 ---
 

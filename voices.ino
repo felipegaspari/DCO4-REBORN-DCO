@@ -86,7 +86,17 @@ static inline __attribute__((always_inline)) float interpolate_live_ratio_f(floa
 void init_voices() {
   for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
     VOICE_NOTES[i] = DCO_calibration_start_note;
+    VOICES[i] = 0;
   }
+
+#ifdef ENABLE_MB_MOD_STREAM
+  // ADSR_update() bails out early on this build and never refreshes the levels,
+  // so the allocator estimates a release tail from the time instead (see
+  // voice_alloc()).
+  voiceAlloc.begin();
+#else
+  voiceAlloc.begin(ADSR_VCA_Level_q15);
+#endif
 
   initMultiplierTables();
   setVoiceMode();
@@ -1158,70 +1168,42 @@ void __not_in_flash_func(voice_task_float)() {
 
 #endif  // USE_FLOAT_VOICE_TASK
 
-// Round-robin free-voice allocator. Called from note_on() when polyMode == 1.
-inline uint8_t get_free_voice_sequential() {
-  uint8_t nextVoice;
-  uint8_t freeVoices = 0;
+// --- Voice allocation --------------------------------------------------------
+// Thin adapters over the shared allocator (DCO-SHARED-LIBRARIES/voice_alloc.h,
+// instance in voice_alloc_state.h). Every policy in VoiceAllocMode lives there;
+// these keep the sketch's gate flag, pitch table and ADSR edge flags in step
+// with the allocator's bookkeeping so no caller has to update both.
 
-  if (VOICES[VOICES_LAST_SEQUENCE[NUM_VOICES - 1]] == 1 || VOICES[VOICES_LAST_SEQUENCE[NUM_VOICES - 1]] == 0) {
-    for (int voiceIndex = NUM_VOICES - 1; voiceIndex > 0; voiceIndex--) {
-      if (VOICES[VOICES_LAST_SEQUENCE[voiceIndex]] == 0) {
-        nextVoice = VOICES_LAST_SEQUENCE[voiceIndex];
-        freeVoices = 1;
-        for (int freeIndex = voiceIndex; freeIndex > 0; freeIndex--) {
-          VOICES_LAST_SEQUENCE[freeIndex] = VOICES_LAST_SEQUENCE[freeIndex - 1];
-        }
-        VOICES_LAST_SEQUENCE[0] = nextVoice;
-        return nextVoice;
-      }
-    }
-  } else {
-    if (VOICES[VOICES_LAST_SEQUENCE[NUM_VOICES - 1]] == 0) {
-      nextVoice = VOICES_LAST_SEQUENCE[NUM_VOICES - 1];
-
-      for (int voiceIndex = NUM_VOICES - 1; voiceIndex > 0; voiceIndex--) {
-        VOICES_LAST_SEQUENCE[voiceIndex] = VOICES_LAST_SEQUENCE[voiceIndex - 1];
-      }
-
-      VOICES_LAST_SEQUENCE[0] = nextVoice;
-
-      return nextVoice;
-    }
-  }
-  if (freeVoices == 0) {
-    nextVoice = VOICES_LAST_SEQUENCE[NUM_VOICES - 1];
-
-    for (int voiceIndex = NUM_VOICES - 1; voiceIndex > 0; voiceIndex--) {
-      VOICES_LAST_SEQUENCE[voiceIndex] = VOICES_LAST_SEQUENCE[voiceIndex - 1];
-    }
-
-    VOICES_LAST_SEQUENCE[0] = nextVoice;
-  }
-  return nextVoice;
+// Choose a voice for an incoming note. Returns VOICE_ALLOC_NONE when the mode
+// refuses to steal.
+uint8_t voice_alloc() {
+#ifdef ENABLE_MB_MOD_STREAM
+  // No level source on this build, so the allocator ranks release tails by
+  // elapsed time. ADSR_VCA_release is written from the CC handler, the preset
+  // load and the Mainboard block, so refresh it here rather than at each.
+  voiceAlloc.setReleaseMs(ADSR_VCA_release);
+#endif
+  return voiceAlloc.alloc();
 }
 
-// Oldest-voice / steal allocator. Called from note_on() when polyMode == 0.
-inline uint8_t get_free_voice() {
-  uint32_t oldest_time = millis();
-  uint8_t oldest_voice = 0;
+// Mark a voice as sounding a new note. Shared by every note_on path so the
+// allocation bookkeeping never drifts from the gate flags.
+void voice_mark_on(uint8_t voice, uint8_t note, uint8_t velocity) {
+  VOICES[voice] = 1;
+  VOICE_NOTES[voice] = note;
+  midi_velocity[voice] = velocity;
+  note_on_flag[voice] = 1;
+  noteStart[voice] = 1;
+  noteEnd[voice] = 0;
+  voiceAlloc.markOn(voice, note);
+}
 
-  for (int i = 0; i < NUM_VOICES; i++)  // REVISAR!!
-  {
-    uint8_t n = (NEXT_VOICE + i) % NUM_VOICES;
-
-    if (VOICES[n] == 0) {
-      NEXT_VOICE = (n + 1) % NUM_VOICES;
-      return n;
-    }
-
-    if (VOICES[i] < oldest_time) {
-      oldest_time = VOICES[i];
-      oldest_voice = i;
-    }
-  }
-
-  NEXT_VOICE = (oldest_voice + 1) % NUM_VOICES;
-  return oldest_voice;
+// Gate a voice off and start tracking its release tail.
+void voice_mark_off(uint8_t voice) {
+  VOICES[voice] = 0;
+  noteEnd[voice] = 1;
+  noteStart[voice] = 0;
+  voiceAlloc.markOff(voice);
 }
 
 // Map voiceMode → NUM_VOICES / STACK_VOICES. Called from init_voices and apply_param_voice_mode.
@@ -1229,6 +1211,10 @@ inline uint8_t get_free_voice() {
 //   1 poly:  NUM_VOICES_TOTAL independent 2-osc voices
 //   2 stack: all voices, same note
 inline void setVoiceMode() {
+  // Resync allocation state to the gates: a slot that NUM_VOICES dropped mid-note
+  // would otherwise come back HELD when the count grows again.
+  voiceAlloc.resyncFromGates(VOICES);
+
   switch (voiceMode) {
     case 0:
       NUM_VOICES = 1;
@@ -1245,6 +1231,8 @@ inline void setVoiceMode() {
       STACK_VOICES = NUM_VOICES_TOTAL;
       break;
   }
+
+  voiceAlloc.setVoiceCount(NUM_VOICES);
 }
 
 // Rebuild the PIO sync topology and retrigger voices.
@@ -1501,7 +1489,6 @@ uint16_t __not_in_flash_func(get_chan_level_float_quad)(float freqHz, uint8_t vo
   return (uint16_t)round(interpolatedValue);
 }
 
-#ifdef USE_AMP_COMP_LUT
 uint16_t __not_in_flash_func(get_chan_level_lut)(float freqHz, uint8_t voiceN) {
   if (freqHz <= 0.0f) return ampCompLut[voiceN][0];
   if (freqHz >= (float)AMP_COMP_MAX_HZ) return ampCompLut[voiceN][AMP_COMP_MAX_HZ];
@@ -1513,11 +1500,6 @@ uint16_t __not_in_flash_func(get_chan_level_lut)(float freqHz, uint8_t voiceN) {
   if (hz >= AMP_COMP_MAX_HZ) hz = AMP_COMP_MAX_HZ - 1;
   return ampCompLut[voiceN][hz];
 }
-#else
-uint16_t get_chan_level_lut(float freqHz, uint8_t voiceN) {
-  return get_chan_level_float_quad(freqHz, voiceN);
-}
-#endif
 #endif  // USE_FLOAT_AMP_COMP
 
 // Map raw PW counter into calibrated center/limits for one oscillator. Used on the 99 µs PW path.
@@ -1566,8 +1548,9 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
     note1 = VOICE_NOTES[0] - 12;
   }
 
-  if (taskAutotuneVoiceMode == 1 || taskAutotuneVoiceMode == 4) {
-    freq = PIDOutput;
+  if (taskAutotuneVoiceMode == 4) {
+    // Highest-frequency search drives an explicit frequency instead of a note.
+    freq = calibrationFreqHz;
   } else {
     freq = (float)sNotePitches[note1];
   }
@@ -1608,9 +1591,11 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
 
         write_range_pwm((uint8_t)i, calibrationValue);
 
-        const uint8_t pwVoice = (uint8_t)(currentCalibrationOscillator / 2);
-        pwm_set_chan_level(PW_PWM_SLICES[pwVoice],
-                           pwm_gpio_to_channel(PW_PINS[pwVoice]), 0);
+        const uint8_t pwVoice = cal_pw_channel(currentCalibrationOscillator);
+        if (PW_PINS[pwVoice] != PW_PIN_UNASSIGNED) {
+          pwm_set_chan_level(PW_PWM_SLICES[pwVoice],
+                             pwm_gpio_to_channel(PW_PINS[pwVoice]), 0);
+        }
 
         //Serial.println((String) "currentCalibrationOscillator: " + (int)currentCalibrationOscillator + (String) "   calibrationValue: " + (int)calibrationValue);
       }
@@ -1631,11 +1616,8 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
 
     switch (taskAutotuneVoiceMode) {
       case 0:
+      case 4:
         write_range_pwm(currentDCO, calibrationValue);
-        break;
-      case 1:
-        write_range_pwm(currentDCO, calibrationValue);
-        pio_sm_exec(pioN, sm1N, pio_encode_jmp(osc_restart_target(currentDCO)));
         break;
       case 2:
         write_range_pwm(currentDCO, chanLevel);
@@ -1643,8 +1625,6 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode, uint16_t calibrationValu
       case 3:
         chanLevel = get_chan_level_for_engine(freq, currentDCO);
         write_range_pwm(currentDCO, chanLevel);
-      case 4:
-        write_range_pwm(currentDCO, calibrationValue);
         break;
     }
 

@@ -184,6 +184,10 @@ Legacy descriptors — fully commented. **No active function definitions.**
 
 ## 2. Voice / oscillator / PWM path
 
+### `voice_alloc_state.h`
+
+Build-flag wrapper around the shared `_shared/voice_alloc.h`: sets `VOICE_ALLOC_SRAM_HOT 1` and declares `voiceAlloc` (`VoiceAllocator<NUM_VOICES_TOTAL>`, poly allocation state) and `monoStack` (`MonoNoteStack<8>`, mono held keys). **No function definitions.**
+
 ### `voices.h`
 
 Declarations / portamento & table state. **No function definitions.** Carries no profiler
@@ -218,13 +222,13 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `voice_task_autotune()` — Drive one osc for calibration measurement.
   - **Called from:** `loop1()` (manual cal); `measure_gap_for_amp` / PW & freq search helpers in `PID.ino` / `autotune.ino`; unreachable call in `setup1`.
   - **When:** Manual-cal every `loop1`; nested during auto-cal measurements.
-- `get_free_voice_sequential()` — Round-robin free voice.
-  - **Called from:** `note_on()` when `polyMode == 1`.
+- `voice_alloc()` — Adapter over `voiceAlloc.alloc()` (shared library): idle tier, then release tails, then steal a held note. Returns `VOICE_ALLOC_NONE` under `VOICE_ALLOC_NO_STEAL`. Refreshes the allocator's release time under `ENABLE_MB_MOD_STREAM`, where there is no level source.
+  - **Called from:** `note_on()` (poly).
   - **When:** MIDI note-on.
-- `get_free_voice()` — Oldest/steal free voice.
-  - **Called from:** `note_on()` when `polyMode == 0`.
-  - **When:** MIDI note-on.
-- `setVoiceMode()` — Apply `voiceMode` → `NUM_VOICES` / `STACK_VOICES`; on mono also `mono_note_stack_clear()`.
+- `voice_mark_on()` / `voice_mark_off()` — Gate flag, pitch table and ADSR edge flags for one voice, then `voiceAlloc.markOn()` / `markOff()` so the allocation bookkeeping cannot drift from them.
+  - **Called from:** `note_on()` / `note_off()`.
+  - **When:** MIDI note-on / note-off.
+- `setVoiceMode()` — Apply `voiceMode` → `NUM_VOICES` / `STACK_VOICES`; `voiceAlloc.resyncFromGates(VOICES)` and `setVoiceCount()`; on mono also `mono_note_stack_clear()`.
   - **Called from:** `init_voices()`; `apply_param_voice_mode()`.
   - **When:** Boot; Serial2 / MIDI voice-mode param.
 - `setSyncMode()` — Rebuild sync topology via `assign_sm_mapping()` + `start_voice_sms()`; retrigger.
@@ -437,7 +441,7 @@ Soft VCA/VCF/reso CV math (~10 kHz). Depth bakers and peak math: [`CV_MOD_SCALES
 
 ### `amp_comp.h`
 
-Amp-comp tables, LUT, method select, dual precompute/facade.
+Amp-comp tables, LUT, method select, dual precompute/facade. Per-window data is `FixedQuadWindow` / `FloatQuadCoeffs` (AoS). `ampCompLut` is compiled whenever `USE_FLOAT_AMP_COMP` is on (`NUM_OSCILLATORS × 7001 × 2` bytes; ~109 KB at 8 osc).
 
 **Functions**
 - `precomputeCoefficients()` — Fixed Q-window precompute (also under float engine for FIXED).
@@ -1101,8 +1105,6 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | `docs/Serial_comms_and_params_reference.txt` | **Archive** — Mainboard-era protocol notes. |
 | `docs/AUTOTUNE.md` | Autotune algorithms. |
 | `docs/AUTOTUNE_REFACTORED.md` | Autotune refactor structure. |
-| `docs/FIXED_POINT_ANALYSIS.md` | **Archive** |
-| `docs/FIXED_POINT_PLAN.md` | **Archive** |
 
 ---
 
@@ -1124,6 +1126,13 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | `mo-lfo` | `_build_libs/mo-lfo` | `LFO.*` |
 | `MIDI_Library` | `_build_libs/MIDI_Library` | `midi.*` |
 | `PID_v1` | `_build_libs/PID_v1` | `PID.*` / `init_PID` |
+
+Shared **sketch** code, as opposed to a linked library, comes in through a
+separate symlink so `--libraries` never scans it:
+
+| Header | Path | Used by |
+|--------|------|---------|
+| `voice_alloc.h` | `_shared/voice_alloc.h` (symlink → `DCO-SHARED-LIBRARIES`, branch `main`) | `voice_alloc_state.h`, `voices.ino`, `midi.ino` |
 
 ## 10. Other external dependencies
 

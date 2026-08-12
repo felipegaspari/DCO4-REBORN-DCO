@@ -129,6 +129,35 @@
 //#define ENABLE_NOISE_OUT
 
 // =============================================================================
+// CALIBRATION — auto-cal boot defaults (runtime: Calibration tab debug cmds)
+// =============================================================================
+// Amp-comp method: 0 CLASSIC (per-note range-PWM search), 1 FREQ_TRACE
+// (fixed-PWM frequency bisection; needs the manual 440 Hz anchor). Cmds 34/35.
+#ifndef AUTOTUNE_AMP_METHOD_DEFAULT
+#define AUTOTUNE_AMP_METHOD_DEFAULT 1
+#endif
+// Frequency-search close-in: 0 BISECT, 1 INTERP, 2 GATED. Cmds 37/38/39.
+#ifndef AUTOTUNE_SEARCH_MODE_DEFAULT
+#define AUTOTUNE_SEARCH_MODE_DEFAULT 1
+#endif
+// Amp-comp-0 endpoint (pair 0): 0 MEASURE (live hunt), 1 CALC (bottom-rung fit).
+// Cmds 40/41.
+#ifndef AUTOTUNE_AMP0_MODE_DEFAULT
+#define AUTOTUNE_AMP0_MODE_DEFAULT 1
+#endif
+// Overrides (uncomment to force; #undef first):
+// #undef AUTOTUNE_AMP_METHOD_DEFAULT
+// #define AUTOTUNE_AMP_METHOD_DEFAULT 0   // CLASSIC
+// #define AUTOTUNE_AMP_METHOD_DEFAULT 1   // FREQ_TRACE
+// #undef AUTOTUNE_SEARCH_MODE_DEFAULT
+// #define AUTOTUNE_SEARCH_MODE_DEFAULT 0  // BISECT
+// #define AUTOTUNE_SEARCH_MODE_DEFAULT 1  // INTERP
+// #define AUTOTUNE_SEARCH_MODE_DEFAULT 2  // GATED
+// #undef AUTOTUNE_AMP0_MODE_DEFAULT
+// #define AUTOTUNE_AMP0_MODE_DEFAULT 0    // MEASURE
+// #define AUTOTUNE_AMP0_MODE_DEFAULT 1    // CALC
+
+// =============================================================================
 // PROFILING / BENCH (see docs/BENCHMARKING.md)
 // =============================================================================
 // RUNNING_AVERAGE: hot-path profiler in bench.h (count/mean/min/max/total + core share).
@@ -251,7 +280,6 @@
 #include "midi_cc_map.h"  // generated; defines midiCcMap[], so include it once, here
 #include "wave_mux.h"
 
-#include "PID.h"
 #include "autotune.h"
 
 
@@ -288,16 +316,13 @@ void setup() {
   // gpio_pull_down(11);
 }
 
-// Core 1 boot: PID, LittleFS cal load, ADSR, amp-comp precompute, PWM/PIO, voices.
-// Clears calibrationFlag so the init_DCO_calibration block below is currently unreachable.
+// Core 1 boot: LittleFS cal load, ADSR, amp-comp precompute, PWM/PIO, voices.
 void setup1() {
 
   sys_clock_hz_refresh();  // Arduino already set clk_sys; cache real Hz for clkdiv
 
   bench_init_core();
   init_micros_timers();
-
-  init_PID();
 
   // Create voiceTables only if the file is missing (before init_FS stubs it).
   // Force overwrite: PARAM_DEBUG_COMMAND 30 / dco_control Calibration tab.
@@ -323,11 +348,6 @@ void setup1() {
 #endif
   dcoNoisePioBegin(pio[NOISE_PIO], NOISE_SM);
   init_voices();
-
-  if (calibrationFlag == true) {
-    init_DCO_calibration();
-    voice_task_autotune(0, ampCompCalibrationVal);
-  }
 }
 
 // Core 0 forever loop: MIDI every iter; Serial2 + USB CDC on 1 ms; ~50 µs LFO1 + LFO2 + drift.
@@ -369,6 +389,8 @@ void __not_in_flash_func(loop)() {
 #endif
       // One-shot recall of the last saved/loaded preset once both cores are up.
       preset_store_boot_task();
+      // One chunk of a pending 'N' directory push, paced for the Mainboard relay.
+      preset_store_dir_push_task();
     }
     BENCH_END(loop0_serial);
   }
@@ -429,24 +451,38 @@ void __not_in_flash_func(loop1)() {
 
   if (calibrationFlag == true) {
     if (manualCalibrationFlag == true) {
-      VOICE_NOTES[0] = manual_DCO_calibration_start_note;
-      DCO_calibration_current_note = manual_DCO_calibration_start_note;
       // Keep currentDCO in sync so [GAP_MEASURE]/[GAP_TIMEOUT] logs match the soloed osc.
       currentDCO = manualCalibrationStage;
       if (currentDCO >= NUM_OSCILLATORS) {
         currentDCO = NUM_OSCILLATORS - 1;
       }
-      ampCompCalibrationVal = initManualAmpCompCalibrationValPreset + manualCalibrationOffset[manualCalibrationStage];
+
+      if (manualCalibrationStep == 1) {
+        VOICE_NOTES[0] = manual_cal_reference_note;
+        DCO_calibration_current_note = manual_cal_reference_note;
+        if (ampComp440[currentDCO] != 0) {
+          ampCompCalibrationVal = ampComp440[currentDCO];
+        } else {
+          float scale = note_to_freq(manual_cal_reference_note) /
+                        note_to_freq(manual_DCO_calibration_start_note);
+          ampCompCalibrationVal = (uint16_t)(
+            (initManualAmpCompCalibrationValPreset + manualCalibrationOffset[currentDCO]) * scale + 0.5f);
+        }
+      } else {
+        VOICE_NOTES[0] = manual_DCO_calibration_start_note;
+        DCO_calibration_current_note = manual_DCO_calibration_start_note;
+        ampCompCalibrationVal = initManualAmpCompCalibrationValPreset + manualCalibrationOffset[currentDCO];
+      }
       voice_task_autotune(0, ampCompCalibrationVal);
       update_CV_outs_manual_calibration();
-      // In manual calibration mode, continuously measure and report the duty
-      // difference so the screen can display live feedback for the user.
       DCO_calibration_debug();
-      //Serial.println((String) "PW value: " + (PW[0] / 4));
 
     } else {
       DCO_calibration();
     }
+  } else if (calibrationVerifyRequested) {
+    calibrationVerifyRequested = false;
+    run_calibration_verify_sweep();
   } else {
 
     pio_defer_service();

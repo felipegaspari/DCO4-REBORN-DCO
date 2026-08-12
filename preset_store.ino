@@ -36,6 +36,8 @@ static const char* preset_bulk_target_name(uint8_t target) {
     case PRESET_BULK_PW_HIGH_LIMIT: return "PWHighLimit";
     case PRESET_BULK_PW_LOW_LIMIT:  return "PWLowLimit";
     case PRESET_BULK_MANUAL_OFFSET: return "ManualOffset";
+    case PRESET_BULK_AMP_COMP_440:  return "AmpComp440";
+    case PRESET_BULK_AMP_COMP_DUTY: return "AmpCompDutyOffset";
     default:                        return "unknown";
   }
 }
@@ -322,53 +324,75 @@ bool preset_store_load(uint8_t slot) {
     return false;
   }
 
+  // preset_record_apply() mirrors every persistable param and all four blocks to
+  // the Mainboard, which forwards them to the Screen as parameter toasts. Silence
+  // the Screen for the duration so the preset name Input latches from the 'L'
+  // below survives — the Screen defers the redraw and runs it when silence lifts.
+  // Both markers sit past validation, so they stay balanced on every caller path:
+  // boot recall, MIDI program change, dco_control, and Input-triggered loads.
+  serial_send_screen_signal_to_mb(SCREEN_SIGNAL_SILENT);
+
   preset_record_apply(presetRecordBuf);
   preset_store_write_last(slot);
 
   Serial.printf("[preset] loaded slot=%u name=\"%.16s\"\n",
                 (unsigned)slot, (const char*)presetName);
   serial_send_preset_loaded_to_mb(slot);
+  serial_send_screen_signal_to_mb(SCREEN_SIGNAL_PRESET_SCROLL);
   return true;
 }
 
-// 'N' handler: push the whole 256-slot directory towards the Input board as 'O'
-// frames. Opens each chunk once and seeks for the 4 name heads — 64 opens for
-// 256 slots. Blank (all-zero) name = unused slot. On DCO4-REBORN the Serial2
-// peer is the Mainboard, which relays 'O' verbatim on to Input.
+// Cursor for the paced directory push. PRESET_CHUNK_COUNT means idle.
+static uint8_t presetDirPushChunk = PRESET_CHUNK_COUNT;
+
+// 'N' handler: arm the directory push. The 256 'O' frames are 4864 bytes, which
+// at 2.5 Mbaud is 19.5 ms of unbroken traffic — more than the Mainboard can
+// receive and relay on to Input while it is also running the LFOs, envelopes
+// and DAC writes, so sending them in one go loses most of the directory. The
+// task below spreads them out instead; a repeat request just restarts it.
 void preset_store_send_directory_to_mb() {
   if (Serial2.availableForWrite() < 1) return;  // nothing listening on this link
+  presetDirPushChunk = 0;
+}
+
+// One chunk (4 slots, 76 bytes on the wire) per 1 ms tick: 256 slots in 64 ms,
+// ~76 kB/s, which every buffer along the DCO → Mainboard → Input path absorbs
+// without dropping an entry. One file open per tick, same as the old blast.
+// Blank (all-zero) name = unused slot.
+void preset_store_dir_push_task() {
+  if (presetDirPushChunk >= PRESET_CHUNK_COUNT) return;
+
+  const uint8_t chunk = presetDirPushChunk++;
 
   char fname[8];
   uint8_t entry[1 + PRESET_NAME_LEN];
   uint8_t head[PRESET_OFF_BITMAP];
 
-  for (uint8_t chunk = 0; chunk < PRESET_CHUNK_COUNT; ++chunk) {
-    preset_chunk_filename(chunk, fname, sizeof(fname));
-    File f;
-    bool openOk = false;
-    if (LittleFS.exists(fname)) {
-      f = LittleFS.open(fname, "r");
-      openOk = f && f.size() == PRESET_CHUNK_SIZE;
-      if (f && !openOk) f.close();
-    }
-
-    for (uint8_t i = 0; i < PRESET_RECORDS_PER_FILE; ++i) {
-      const uint8_t slot = (uint8_t)((chunk << 2) | i);
-      memset(entry, 0, sizeof(entry));
-      entry[0] = slot;
-
-      if (openOk) {
-        if (f.seek((uint32_t)i * PRESET_RECORD_SIZE) &&
-            f.read(head, sizeof(head)) == (int)sizeof(head) &&
-            head[PRESET_OFF_MAGIC] == PRESET_MAGIC) {
-          memcpy(entry + 1, head + PRESET_OFF_NAME, PRESET_NAME_LEN);
-        }
-      }
-
-      serial_frame_write(Serial2, INPUT_CMD_PRESET_DIR_ENTRY, entry, sizeof(entry));
-    }
-    if (openOk) f.close();
+  preset_chunk_filename(chunk, fname, sizeof(fname));
+  File f;
+  bool openOk = false;
+  if (LittleFS.exists(fname)) {
+    f = LittleFS.open(fname, "r");
+    openOk = f && f.size() == PRESET_CHUNK_SIZE;
+    if (f && !openOk) f.close();
   }
+
+  for (uint8_t i = 0; i < PRESET_RECORDS_PER_FILE; ++i) {
+    const uint8_t slot = (uint8_t)((chunk << 2) | i);
+    memset(entry, 0, sizeof(entry));
+    entry[0] = slot;
+
+    if (openOk) {
+      if (f.seek((uint32_t)i * PRESET_RECORD_SIZE) &&
+          f.read(head, sizeof(head)) == (int)sizeof(head) &&
+          head[PRESET_OFF_MAGIC] == PRESET_MAGIC) {
+        memcpy(entry + 1, head + PRESET_OFF_NAME, PRESET_NAME_LEN);
+      }
+    }
+
+    serial_frame_write(Serial2, INPUT_CMD_PRESET_DIR_ENTRY, entry, sizeof(entry));
+  }
+  if (openOk) f.close();
 }
 
 // PARAM_PRESET_DUMP: -1 = directory listing ([pdir] lines), 0..255 = slot record.
@@ -420,6 +444,8 @@ void preset_store_cal_dump(int16_t sel) {
   if (all || sel == CAL_DUMP_PW_HIGH_LIMIT) dump_fs_file("PWHighLimit", "PWHighLimit", FSPWBankSize);
   if (all || sel == CAL_DUMP_PW_LOW_LIMIT)  dump_fs_file("PWLowLimit", "PWLowLimit", FSPWBankSize);
   if (all || sel == CAL_DUMP_MANUAL_OFFSET) dump_fs_file("ManualOffset", "ManualOffset", FSManualOffsetBankSize);
+  if (all || sel == CAL_DUMP_AMP_COMP_440)  dump_fs_file("AmpComp440", "AmpComp440", FSAmpComp440BankSize);
+  if (all || sel == CAL_DUMP_AMP_COMP_DUTY) dump_fs_file("AmpCompDutyOffset", "AmpCompDutyOffset", FSAmpCompDutyOffsetBankSize);
 }
 
 // --- bulk restore ('B' chunks + 'C' commit) ------------------------------------
@@ -461,6 +487,8 @@ void preset_bulk_commit(const uint8_t* payload, uint8_t len) {
     case PRESET_BULK_PW_HIGH_LIMIT: want = FSPWBankSize;           calFile = "PWHighLimit"; break;
     case PRESET_BULK_PW_LOW_LIMIT:  want = FSPWBankSize;           calFile = "PWLowLimit"; break;
     case PRESET_BULK_MANUAL_OFFSET: want = FSManualOffsetBankSize; calFile = "ManualOffset"; break;
+    case PRESET_BULK_AMP_COMP_440:  want = FSAmpComp440BankSize;   calFile = "AmpComp440"; break;
+    case PRESET_BULK_AMP_COMP_DUTY: want = FSAmpCompDutyOffsetBankSize; calFile = "AmpCompDutyOffset"; break;
     default:
       Serial.printf("[bulk] err target=%s reason=target\n", tname);
       return;

@@ -69,6 +69,8 @@ enum PresetBulkTarget : uint8_t {
   PRESET_BULK_PW_HIGH_LIMIT = 3,
   PRESET_BULK_PW_LOW_LIMIT  = 4,
   PRESET_BULK_MANUAL_OFFSET = 5,
+  PRESET_BULK_AMP_COMP_440  = 6,  // 440 Hz manual anchor bank (FSAmpComp440BankSize)
+  PRESET_BULK_AMP_COMP_DUTY = 7,  // duty target trims (FSAmpCompDutyOffsetBankSize)
 };
 
 static constexpr uint8_t  PRESET_BULK_CHUNK_DATA   = 32;
@@ -82,6 +84,8 @@ static constexpr int16_t CAL_DUMP_PW_CENTER     = 2;
 static constexpr int16_t CAL_DUMP_PW_HIGH_LIMIT = 3;
 static constexpr int16_t CAL_DUMP_PW_LOW_LIMIT  = 4;
 static constexpr int16_t CAL_DUMP_MANUAL_OFFSET = 5;
+static constexpr int16_t CAL_DUMP_AMP_COMP_440  = 6;
+static constexpr int16_t CAL_DUMP_AMP_COMP_DUTY = 7;
 
 // --- Live patch shadow -------------------------------------------------------
 // update_parameters() records every persistable param here so a preset can be
@@ -148,6 +152,7 @@ static inline bool preset_param_is_persistable(uint8_t id) {
     case PARAM_SUB_LEVEL:
     case PARAM_OSC3_LEVEL:
     case PARAM_VOICE_MODE:
+    case PARAM_VOICE_ALLOC_MODE:
     case PARAM_UNISON_DETUNE:
     case PARAM_ANALOG_DRIFT_AMOUNT:
     case PARAM_ANALOG_DRIFT_SPEED:
@@ -206,8 +211,11 @@ void preset_bulk_commit(const uint8_t* payload, uint8_t len);
 void preset_store_boot_recall();
 // Binary directory push towards the Input board ('N' request handler): one 'O'
 // frame per slot (256 total, zero-filled name for empty/invalid slots). Goes out
-// on Serial2, which the Mainboard relays through to Input.
+// on Serial2, which the Mainboard relays through to Input. The request only arms
+// the push; preset_store_dir_push_task() paces it out from loop() so the relay
+// can keep up.
 void preset_store_send_directory_to_mb();
+void preset_store_dir_push_task();
 
 // One-shot boot recall of the last saved/loaded slot ("pstLast"), from loop().
 static inline void preset_store_boot_task() {

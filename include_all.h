@@ -43,10 +43,10 @@
 
 #include "LFO.h"
 #include "adsr.h"
+#include "voice_alloc_state.h"
 #include "wave_mux.h"
 #include "mod_matrix.h"
 
-#include "PID.h"
 #include "autotune.h"
 
 #endif

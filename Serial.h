@@ -44,6 +44,11 @@ void serial_send_filter_block_to_mb();
 // slot even for loads Input didn't itself trigger.
 void serial_send_preset_loaded_to_mb(uint8_t slot);
 
+// 's' [ScreenMode] out on Serial2, relayed verbatim to the Screen by the
+// Mainboard. Used to bracket a preset recall in ScreenMode::Silent so the burst
+// of mirrored params does not bury the preset name under parameter toasts.
+void serial_send_screen_signal_to_mb(uint8_t signal);
+
 void serial_send_note_on(uint8_t voice, uint8_t velocity, uint8_t note, uint8_t flags);
 void serial_send_note_off(uint8_t voice);
 void serial_send_expression();
