@@ -76,9 +76,9 @@ Main sketch: dual-core setup/loops, USB init (product **DCO4-REBORN**), engine f
 - `setup()` — Core 0 init: serial, MIDI, LFOs, pins, USB strings, cal pin.
   - **Called from:** Arduino framework (Core 0).
   - **When:** Boot once.
-- `setup1()` — Core 1 init: PID, `seed_fake_calibration_tables(false)` if `voiceTables` missing, FS, ADSR, `mod_matrix_init`, amp-comp precompute, PWM, PIO, optional `init_range_pio_dither`, voices; clears cal flags.
+- `setup1()` — Core 1 init: `seed_fake_calibration_tables(false)` if `voiceTables` missing, FS, ADSR, `mod_matrix_init`, amp-comp precompute, PWM, PIO, optional `init_range_pio_dither`, voices; clears cal flags.
   - **Called from:** Arduino framework (Core 1).
-  - **When:** Boot once. (`init_DCO_calibration` block below is unreachable — see that function.)
+  - **When:** Boot once.
 - `loop()` — Core 0: MIDI USB+DIN every iteration; Serial2 + USB CDC pumps on `timer1msFlag`; LFO1/LFO2 ~50 µs; drift ~51 µs; `bench_poll_core0` + `mem_diag_poll_core0`. `__not_in_flash_func`.
   - **Called from:** Arduino framework (Core 0).
   - **When:** Forever.
@@ -219,8 +219,8 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `voice_task_float()` — Float hot path (RP2350 default). `__not_in_flash_func` (SRAM-pinned like fixed). Clkdiv via `clkdiv_live_hz_total_cycles` (`CLKDIV_MODE`).
   - **Called from:** `voice_task_main()` when `USE_FLOAT_VOICE_TASK`.
   - **When:** Every play-path `loop1` iter (float-engine builds).
-- `voice_task_autotune()` — Drive one osc for calibration measurement.
-  - **Called from:** `loop1()` (manual cal); `measure_gap_for_amp` / PW & freq search helpers in `PID.ino` / `autotune.ino`; unreachable call in `setup1`.
+- `voice_task_autotune()` — Drive one osc for calibration measurement (mode 4 reads `calibrationFreqHz`; manual-cal PW via `cal_pw_channel`).
+  - **Called from:** `loop1()` (manual cal); `measure_gap_for_amp` / PW & freq search helpers in `_shared/autotune_search_impl.h` / `_shared/autotune_impl.h`.
   - **When:** Manual-cal every `loop1`; nested during auto-cal measurements.
 - `voice_alloc()` — Adapter over `voiceAlloc.alloc()` (shared library): idle tier, then release tails, then steal a held note. Returns `VOICE_ALLOC_NONE` under `VOICE_ALLOC_NO_STEAL`. Refreshes the allocator's release time under `ENABLE_MB_MOD_STREAM`, where there is no level source.
   - **Called from:** `note_on()` (poly).
@@ -569,51 +569,80 @@ Live LFO instances + Q15 levels + pitch mod arrays. Pitch/drift depth scales (`L
 
 ## 4. Calibration / storage / experimental
 
-### `autotune.h`
+> The whole calibration subsystem lives in the shared library
+> (`DCO-SHARED-LIBRARIES/`, reached as `_shared/`), and both sketches consume it. The
+> sketch keeps three one-line shims: `autotune.h` → `_shared/autotune.h`,
+> `autotune.ino` → `_shared/autotune_impl.h`, `autotune_search.ino` →
+> `_shared/autotune_search_impl.h`. The file names below are the shared ones;
+> `autotune_constants.h`, `autotune_context.h` and `autotune_measurement.h` are
+> pulled in by `_shared/autotune.h` and have no shim. See
+> [`_shared/README.md`](../_shared/README.md) for what the sketch must provide.
 
-Globals / types / prototypes. **No function definitions.**
+### `_shared/autotune.h`
 
-### `autotune_constants.h`
+Globals / types / prototypes, plus two inline helpers: `note_to_freq()` (MIDI note → Hz) and `settle_for_freq()` (period-proportional settle delay: 2 periods, floored at 4 ms). Every function defined in the two `*_impl.h` and called from elsewhere is declared here, since the Arduino prototype generator only scans `.ino` files.
 
-Constants only. **No function definitions.**
+### `_shared/autotune_constants.h`
 
-### `autotune_context.h`
+Constants only, plus the `CalPrecisionProfile` struct and its three instances (`kCalPrecisionNormal`, `kCalPrecisionFine`, `kCalPrecisionFast`) holding every speed-vs-quality knob: hi-res segment floor/ceiling and averaging window, frequency-change settle, bisection acceptance/budget, post-bisection re-measurement, anchor and rung retries and the stability-check budget (`kSettleSkipCents` sets the move below which no check is needed, `kSettleBigMoveCents` the one that earns the full budget, and `kSearchStepCentsHigh`/`Mid`/`Low` with `kSearchStepHighHz`/`kSearchStepLowHz` bound one frequency-search step to 400/200/100 cents by range). Selected at runtime by `calibrationPrecision` and read through `cal_precision()` (autotune.h). **No function definitions.**
+
+### `_shared/autotune_context.h`
 
 **Functions**
 - `DCOCalibrationContext::DCOCalibrationContext(...)` — Bind refs for `calibrate_DCO`.
   - **Called from:** `DCO_calibration()` when constructing context.
   - **When:** Auto-cal per oscillator.
 
-### `autotune_measurement.h`
+### `_shared/autotune_measurement.h`
 
 **Functions**
 - `measure_gap()` — Wrap `find_gap()` with timeout flag.
-  - **Called from:** PW search in `autotune.ino`; `measure_gap_for_amp`, `find_highest_freq`, `find_lowest_freq`, `DCO_calibration_debug`.
+  - **Called from:** PW search in `autotune_impl.h`; `measure_gap_for_amp`, `find_highest_freq`, `find_lowest_freq`, `DCO_calibration_debug`.
   - **When:** Auto-cal / manual-cal measurement.
 
-### `autotune.ino`
+### `_shared/autotune_impl.h`
+
+Included once from the `autotune.ino` shim. Statics used before their definition are forward-declared at the top.
 
 **Functions**
-- `disable_all_oscillators_and_range_pwm()` — Mute oscs / park RANGE (PIO `range_pio_set_level(DIV_COUNTER)` when `RANGE0_PIO_DITHER_TEST`, else GPIO high); calls `reset_pw_to_DIV_COUNTER_PW`.
-  - **Called from:** `init_DCO_calibration()`, `DCO_calibration()`, `restart_DCO_calibration()`.
-  - **When:** Cal setup (note `init_DCO_calibration` unreachable at boot).
-- `reset_pw_to_DIV_COUNTER_PW()` — All 4 voice PW PWM → max wrap.
+- `disable_all_oscillators_and_range_pwm()` — Mute oscs / park RANGE (PIO `range_pio_set_level(DIV_COUNTER)` when `RANGE0_PIO_DITHER_TEST`, else GPIO high); calls `reset_pw_to_DIV_COUNTER_PW` and clears `g_lastDrivenFreqHz` (nothing is running any more).
+  - **Called from:** `DCO_calibration()`, `restart_DCO_calibration()`.
+  - **When:** Cal setup.
+- `reset_pw_to_DIV_COUNTER_PW()` — All assigned PW PWM channels → max wrap.
   - **Called from:** `disable_all_oscillators_and_range_pwm()`.
   - **When:** Cal setup.
-- `init_DCO_calibration()` — Legacy/boot cal kickoff.
-  - **Called from:** `setup1()` only if `calibrationFlag` — but flag is set `false` just above → **unreachable**.
-  - **When:** Would be boot; currently never.
-- `DCO_calibration()` — Full auto-cal: even osc → PW center/limits for `voice=osc/2`; every osc → `calibrate_DCO` + FS amp write 0..7; reload; precompute; clears `calibrationFlag`.
+- `DCO_calibration()` — Auto-cal; `calibrationScope` (param 150 value: 1 amp, 2 PW, 3 full; 5/6/7 = the same at `CAL_PRECISION_FINE`; 9/10/11 FAST) selects the stages: PW center/limits once per assigned channel (`cal_pw_channel`), and/or per osc 0..7 the amp-comp stage (fine → `refine_DCO_amp_table`, otherwise `calibrate_DCO` or `calibrate_DCO_freq_trace` per `autotuneAmpMethod`, debug cmds 34/35) + `apply_measured_lowest_freq()` for the classic normal run's amp-comp-0 anchor + raw table dump + `print_calibration_report()` + FS write (skipped when a `FREQ_TRACE` table fails its monotonicity check), reload, precompute; clears `calibrationFlag`. An amp-only run applies the stored `PW_CENTER[ch]` without searching. Cancelable: clears `calibrationCancelRequested` on entry; every search loop polls it (param 150 = 0 sets it from core 0) and the interrupted stage keeps its previous values.
   - **Called from:** `loop1()` when `calibrationFlag && !manualCalibrationFlag`.
   - **When:** Auto-cal (blocking one-shot).
-- `restart_DCO_calibration()` — Reset state between oscillators.
-  - **Called from:** `DCO_calibration()` per osc.
+- `restart_DCO_calibration()` — Reset state/table header between oscillators; also clears `g_lastDrivenFreqHz` so the next oscillator's first probe is treated as a cold start rather than a move from the previous one's frequency.
+  - **Called from:** `DCO_calibration()` (PW pass and per osc).
   - **When:** Auto-cal.
-- `find_PW_for_target_duty()` — Search PW for target duty.
+- `set_pw_and_measure()` — Program PW value, sync `PW[]`/debug tracker, settle, `measure_gap(2)`.
+  - **Called from:** all PW search phases (`pw_coarse_scan`, `pw_bisect_bracket`, `pw_fine_scan_around_best`, `pw_lock_in`, `search_PW_limit_from_center`).
+  - **When:** Auto-cal PW stage.
+- `pw_search_state_init()` / `pw_record_sample()` — `PWSearchState` init and valid-sample bookkeeping (best candidate, in-tolerance count, valid table).
+  - **Called from:** `find_PW_for_target_duty()` and its phases.
+  - **When:** Auto-cal PW stage.
+- `pw_coarse_scan()` — Phase 1: scan PW range for a sign-change bracket; probes the interpolated crossing.
+  - **Called from:** `find_PW_for_target_duty()`.
+  - **When:** Auto-cal PW stage.
+- `pw_bisect_bracket()` — Phase 2a: bisection within the bracket (14 iters max).
+  - **Called from:** `find_PW_for_target_duty()` when a bracket was found.
+  - **When:** Auto-cal PW stage.
+- `pw_fine_scan_around_best()` — Phase 2b: local fine scan when no bracket was found.
+  - **Called from:** `find_PW_for_target_duty()`.
+  - **When:** Auto-cal PW stage.
+- `pw_lock_in()` — Demand 3 consecutive in-band readings at one PW (8 tries max).
+  - **Called from:** `pw_select_and_lock()` (candidate + local refinement).
+  - **When:** Auto-cal PW stage.
+- `pw_select_and_lock()` — Phase 3: pick best candidate from the valid table, lock in, refine PW±2.
+  - **Called from:** `find_PW_for_target_duty()`.
+  - **When:** Auto-cal PW stage.
+- `find_PW_for_target_duty()` — Orchestrates the PW target-duty search phases; returns fallback PW on failure.
   - **Called from:** `find_PW_center()`.
   - **When:** Auto-cal PW stage.
-- `find_PW_center()` — Find ~50% PW center for `voiceIdx = currentDCO/2`; `update_FS_PWCenter(voice)`.
-  - **Called from:** `DCO_calibration()` (even DCOs).
+- `find_PW_center()` — Find ~50% PW center on `cal_pw_channel(currentDCO)`; `update_FS_PWCenter`.
+  - **Called from:** `DCO_calibration()` (once per assigned channel).
   - **When:** Auto-cal.
 - `search_PW_limit_from_center()` — Walk PW toward low/high duty limit.
   - **Called from:** `find_PW_limit_v2()`.
@@ -621,36 +650,80 @@ Constants only. **No function definitions.**
 - `find_PW_limit_v2()` — High-level PW limit; persist low/high via FS.
   - **Called from:** `DCO_calibration()` (LOW then HIGH).
   - **When:** Auto-cal.
-- `find_gap()` — Edge-time duty/freq measurement on cal pin; timeout logs `raw` / `edges` / `rejected` / `accepted`.
-  - **Called from:** `measure_gap()`; also direct inside `#if 0` legacy PID.
+- `find_gap()` — Edge-time duty measurement on cal pin (all state local); timeout logs `freq` / `raw` / `edges` / `rejected` / `accepted`, and `[GAP_MEASURE]` (debug >= 2) logs `freq=` too — the frequency actually driven (`gapGateFreqHz` during an arbitrary-frequency probe, else the note's), since `note=` is stale in that case. Modes 2/3 average an adaptive segment count from the active precision profile (`gapWindowMs` window, clamped to `gapSamplesMin`..`gapSamplesMax`); mode 0 keeps 6. Mode 3 additionally discards a reading whose accepted segments are all one polarity (duty pegged at 0/100%, `avgHigh − avgLow` meaningless) — `[GAP_ONESIDED]` at debug >= 2 — and one whose segments do not sum to the ideal period within `kGapPeriodTolRatio` (15%): the pin is then not toggling at the requested frequency (e.g. a comparator double-trigger at amp 0 near 6 Hz, whose symmetric sub-segments fake ~50% duty) — `[GAP_OFFPERIOD]`. Both return the timeout sentinel.
+  - **Called from:** `measure_gap()`.
   - **When:** Cal measurement (live via wrapper).
+- `cal_report_reset()` / `cal_report_set_pair()` / `cal_report_set_pair_from_gap()` — Per-pair provenance + achieved duty error bookkeeping for the calibration report.
+  - **Called from:** `DCO_calibration()`; both amp-comp methods; `apply_measured_lowest_freq()`.
+  - **When:** Auto-cal, as each pair is written.
+- `print_calibration_report()` — `[CAL_REPORT]` table for one oscillator: method and precision header, then pair / freq / amp comp / duty error / gap / one-count floor / source, plus lowest-highest-span and avg/worst lines (`autotuneDebug >= 1`).
+  - **Called from:** `DCO_calibration()` after the raw table dump.
+  - **When:** End of each oscillator's amp-comp stage.
+- `run_calibration_verify_sweep()` — Read-only `[CAL_VERIFY]` sweep: 3-semitone steps per osc, amp from `get_chan_level_for_engine()`, duty measured and reported with the one-count floor; forces the FINE profile for its own probes (one per note) and restores the caller's; cancelable.
+  - **Called from:** `loop1()` when `calibrationVerifyRequested` (debug cmd 36).
+  - **When:** On request, outside calibration.
 - `cal_sense_probe_log()` — 40 ms raw cal-sense edge probe (no period gate); `[CAL_SENSE] pin=…` ~2 Hz.
   - **Called from:** `DCO_calibration_debug()` on gap timeout.
-  - **When:** Manual-cal timeout diagnostics. Bench table: [`AUTOTUNE.md`](AUTOTUNE.md) “Cal-sense bench checks” (`DCO_calibration_pin` = GP10).
+  - **When:** Manual-cal timeout diagnostics. Bench table: [`../_shared/docs/AUTOTUNE.md`](../_shared/docs/AUTOTUNE.md) “Cal-sense bench checks” (`DCO_calibration_pin` = GP10).
 - `DCO_calibration_debug()` — Live gap → `[MANUAL_GAP]` + `serialSendParam32` for UI; probe on TIMEOUT.
   - **Called from:** `loop1()` manual-cal branch every iter.
   - **When:** Manual-cal.
 
-### `PID.h`
+### `_shared/autotune_search_impl.h`
 
-Globals / prototypes. **No function definitions.**
-
-### `PID.ino`
+Included once from the `autotune_search.ino` shim, which sorts after `autotune.ino` so this file sees the other's statics. Replaces the old `PID.ino` (the `PID_v1` dependency and legacy PID routines were removed; the file never actually used PID for the live calibration path).
 
 **Functions**
 - `compute_gap_tolerance_for_freq()` — Duty tolerance vs frequency.
-  - **Called from:** `calibrate_DCO()`; `find_PW_center()` (via same helper visibility).
+  - **Called from:** `calibrate_DCO()`; `find_PW_center()`.
   - **When:** Auto-cal.
 - `did_sign_change()` — Detect gap error sign flip.
   - **Called from:** `calibrate_DCO()`.
   - **When:** Auto-cal amp search.
-- `measure_gap_for_amp()` — Set amp PWM, `voice_task_autotune`, `measure_gap`.
+- `measure_gap_for_amp()` — Set amp PWM, `voice_task_autotune`, `settle_for_freq`, `measure_gap`; normalizes sign (positive = amplitude too low).
   - **Called from:** `calibrate_DCO()`.
   - **When:** Auto-cal.
+- `calibration_interval_ratio()` — Frequency ratio of one calibration note interval (2^(n/12)).
+  - **Called from:** `find_highest_freq()`, `calibrate_DCO_freq_trace()`.
+  - **When:** Auto-cal.
+- `freq_move_cents()` — Size of a frequency change in cents; 1e9 when there is nothing to compare against (cold start).
+  - **Called from:** `measure_duty_at_freq()`.
+- `wait_periods()` — Delay a number of waveform periods, floored at a minimum number of microseconds; the wait between writing a frequency and reading it.
+  - **Called from:** `measure_duty_at_freq()`.
+- `drive_freq()` — Write a probe frequency in one go and remember it in `g_lastDrivenFreqHz`. No glide by design: stepping toward the target would change the divider again before whole periods have come out at the previous frequency, which is a ramp, not a settle.
+  - **Called from:** `measure_duty_at_freq()`.
+  - **When:** Every arbitrary-frequency probe.
+- `search_step_cap_cents()` — Largest step one probe of the frequency search may take at a frequency: `kSearchStepCentsHigh` (400) at/above 440 Hz, `Mid` (200) from 100 Hz up, `Low` / `VeryLow` (100) below that (the amp-0 hunt under 30 Hz uses the same 100-cent cap: a 50-cent step barely moved the duty).
+  - **Called from:** `find_freq_for_duty50()`.
+- `measure_duty_at_freq()` — Duty probe at an arbitrary frequency with fixed range PWM (`calibrationFreqHz`/`gapGateFreqHz` → `voice_task_autotune(4, …)`); classic sign convention, target duty shifted by `duty_trim_gap_us()`. Sets the frequency, waits the profile's `settlePeriods` periods (floored at `settleMinMs`), then re-reads until two readings agree within `settleStableMult` x the search acceptance (averaging them), with the number of re-readings taken from how far the frequency moved (`kSettleSkipCents` / `kSettleBigMoveCents` / `settleMaxChecks`) and one extra try before believing a timeout after a large move. A timeout only counts when nothing valid was measured: a settle re-read discarded by the gap gates consumes its check and the valid reading in hand stands (marginal waveforms flicker between clean and glitchy readings). Counts every reading into `g_lastFreqBisectProbes` and the extra ones into `g_lastSettleChecks`. `hiRes` picks `find_gap()` mode 3 (profile's adaptive segment window).
+  - **Called from:** `find_freq_for_duty50()`, `run_calibration_verify_sweep()`.
+  - **When:** Auto-cal frequency probes; verification sweep.
+- `find_freq_for_duty50()` — Frequency at a fixed range PWM where duty = 50% (+ duty trim). Measures the caller's seed first, then steps outward by at most `search_step_cap_cents()` (growing by `kSearchStepGrowth`) — and, tighter than the range cap, by at most what the latest reading implies (`dutyErr% × 100 / kSearchSlopeMinPctPer100Cents`, floored at `kSearchStepFloorCents`, so a near-zero seed steps cents rather than the cap) — until the answer is bracketed, then interpolates in log-frequency (Illinois secant, geometric midpoint when it degenerates or lands within `kBracketEdgeGuard` of an edge); a bracket narrower than `kBracketMinWidthCents` (3 cents) stops the search with its best reading. A timeout is placed from evidence where there is any (below a frequency that read = the bottom of the range, above one = the amplitude collapsing) and read as "freq too high" otherwise; `kMaxSearchTimeouts` in a row end an unbounded search. `windowRatio` is the expected travel, `(bisectWindows + 1) x` it the allowance before giving up with the best reading. `bounds` confines the search to a band, exempts it from the timeout allowance and lets it stride `kHuntStepMaxCents` while nothing has pulsed yet. `refine` (FREQ_TRACE, the fine pass and both endpoints) switches to hi-res probes and takes its probe budget, acceptance and post-search re-measurement from `cal_precision()`; the achieved signed error lands in `g_lastFreqBisectGapUs` and the probe count in `g_lastFreqBisectProbes` (`gapUs= dutyErr= probes=` in the logs).
+  - **Called from:** `find_highest_freq()`, `calibrate_DCO_freq_trace()`, `refine_DCO_amp_table()`, `measure_lowest_freq_at_amp0()`.
+  - **When:** Auto-cal (FREQ_TRACE method + top-of-range endpoint + bottom anchor; every pair of a fine run).
+- `freq_trace_local_slope()` — Local d(log freq)/d(log amp) from the two nearest known points, clamped to 0.5..2.0; drives the rung retry correction.
+  - **Called from:** `calibrate_DCO_freq_trace()`.
+  - **When:** Auto-cal (FREQ_TRACE rung off target).
+- `freq_trace_quality()` — Shared log tail `gapUs= dutyErr=…% probes=… settle=…`.
+  - **Called from:** `calibrate_DCO_freq_trace()`, `refine_DCO_amp_table()`.
+- `cal_table_is_monotonic()` — Reject a table whose frequencies or amp comp values do not both rise, logging the offending pair under the caller's tag.
+  - **Called from:** `calibrate_DCO_freq_trace()`, `refine_DCO_amp_table()`.
+- `extrapolate_amp_for_freq()` — generic 1/2/3-point y(x) extrapolation (proportional / log / quadratic) for the curve tracer; works for amp(freq) and freq(amp).
+  - **Called from:** `freq_trace_guess()`.
+
+- `freq_trace_guess()` — interpolate/extrapolate through 3 known points chosen to bracket the target and to be at least `kGuessMinSpread` (10%) apart in x, so a tight cluster cannot drive a wild quadratic; falls back to log (2 points) / proportional (1). Used for both amp-for-freq ladder guesses and freq-for-amp bisection seeds.
+  - **Called from:** `calibrate_DCO_freq_trace()`.
+  - **When:** Auto-cal (FREQ_TRACE method).
+- `calibrate_DCO_freq_trace()` — FREQ_TRACE amp-table builder: anchor probe at the stored `(440 Hz, ampComp440[dco])` manual point (aborts with `[FREQ_TRACE_GUARD]` when unset), the manual trim note measured as a second model point (`[FREQ_TRACE_MANUAL]`, cents deviation), the 440 Hz anchor re-measured and corrected/persisted (`[FREQ_TRACE_ANCHOR]`, up to 3 tries, 15 cents), bootstrap 4 extra probes at `kBootstrapSemitones` (±3/±6 semitones of amp comp) around the anchor (`[FREQ_TRACE_BOOT]`), ladder interval + anchor rung derived from that model (3..12 semitones), then trace the freq(amp comp) curve up/down with fixed-amp frequency bisection (one retry per rung more than 25 cents off target, corrected with the local log-log slope), full-amp and amp-comp-0 endpoints measured last with a tight model-seeded window (+ sentinel fill above the top endpoint), monotonicity check (returns false → table not persisted). Records every pair into the `[CAL_REPORT]` arrays.
+  - **Called from:** `DCO_calibration()` when `autotuneAmpMethod == AMP_METHOD_FREQ_TRACE`.
+  - **When:** Auto-cal (method B, debug cmd 35), normal precision.
+- `refine_DCO_amp_table()` — Fine pass over the stored table: validates it (full-amp endpoint present, both columns monotonic, at least 4 distinct amps — otherwise `[CAL_REFINE_GUARD]` and the table is kept), then keeps every stored amp comp and re-measures the frequency it sits at with `find_freq_for_duty50(…, kRefineWindowRatio 1.02, refine)` — a ±34-cent window, tight on purpose so one noisy first reading cannot send an already-right pair hunting. Sentinels copied through, pairs tagged `CAL_SRC_REFINED` in the report, per-pair `[CAL_REFINE]` lines with the cents moved, monotonicity check (returns false → table not persisted). Method-agnostic.
+  - **Called from:** `DCO_calibration()` when `calibrationPrecision == CAL_PRECISION_FINE`.
+  - **When:** Auto-cal amp stage at param 150 = 5 or 7.
 - `update_best_from_neighbours()` — Probe neighbour amps; keep best.
   - **Called from:** `calibrate_DCO()`.
   - **When:** Auto-cal.
-- `step_amp_from_error()` — Step range PWM from signed error.
+- `step_amp_from_error()` — Return ±1/±2 PWM step from signed error (caller clamps to bounds).
   - **Called from:** `calibrate_DCO()`.
   - **When:** Auto-cal.
 - `compute_initial_amp_for_note()` — Initial amp guess (uses log/quadratic interp).
@@ -659,36 +732,35 @@ Globals / prototypes. **No function definitions.**
 - `store_note_result()` — Write `[freq,pwm]` into `calibrationData`.
   - **Called from:** `calibrate_DCO()`.
   - **When:** Auto-cal per note.
-- `init_PID()` — Init `PID_v1` object/mode.
-  - **Called from:** `setup1()`.
-  - **When:** Boot (PID still inited even though main cal no longer uses it).
-- `PID_dco_calibration()` — Legacy PID note loop.
-  - **Called from:** **`#if 0` (compiled out)**.
-- `PID_find_highest_freq()` — Legacy PID highest-freq helper.
-  - **Called from:** **`#if 0` (compiled out)**.
-- `find_highest_freq()` — Search highest usable freq (Hz×100).
+- `find_highest_freq()` — Highest usable freq at full RANGE PWM (Hz×100); thin wrapper over `find_freq_for_duty50` with the legacy note-interval window. No PID.
   - **Called from:** `calibrate_DCO()`.
+  - **When:** Auto-cal, when the table reaches the top of the PWM range.
+- `find_lowest_freq()` — Estimate lowest usable freq at amp comp 0 (uses `linearInterpolation` / quadratic); now only a seed/fallback for the measured anchor.
+  - **Called from:** `calibrate_DCO()`; `apply_measured_lowest_freq()`.
   - **When:** Auto-cal span setup.
-- `find_lowest_freq()` — Search lowest usable freq (uses `linearInterpolation` / quadratic).
-  - **Called from:** `calibrate_DCO()`.
-  - **When:** Auto-cal span setup.
-- `calibrate_DCO()` — Main per-note amp-table builder.
+- `amp0_search_band()` — The band the amp-comp-0 point may be in: `firstPairHz * 0.99` down to `firstPairHz / kAmp0BandRatio`, floored at `kAmp0MinFreqHz` (under which a reading cannot tell a lopsided pulse from silence). Wide because a measured table puts the point at about pair 1 / 2.2.
+  - **Called from:** `apply_measured_lowest_freq()`, `calibrate_DCO_freq_trace()` (bottom endpoint), `refine_DCO_amp_table()` (pair 0).
+- `scan_duty_at_freq()` — One duty reading with no adaptive settle, waiting `max(kAmp0ScanSettleMs, one period)`.
+  - **Called from:** `amp0_prescan()`.
+- `amp0_prescan()` — Scan `kAmp0ScanPoints` (10) log-spaced frequencies down the band at amp comp 0 looking for two readings of opposite sign; returns that bracket (or the whole band) plus a seed on the secant crossing between its edges. Logs `[AMP0_SCAN]` per point. Probes every point: at amp comp 0 the pulse can be lost above (amplitude collapse) or below (a segment outlasting the deadline), so silence is not evidence about what is under it.
+  - **Called from:** `measure_lowest_freq_at_amp0()`.
+- `measure_lowest_freq_at_amp0()` — Measured lowest usable freq: `amp0_prescan()` for a bracket, then `find_freq_for_duty50` inside it with the amp fixed at 0 and refinement on. Returns Hz or 0 (no signal).
+  - **Called from:** `apply_measured_lowest_freq()`, `calibrate_DCO_freq_trace()`, `refine_DCO_amp_table()`.
+  - **When:** The amp-comp-0 endpoint of every method.
+- `apply_measured_lowest_freq()` — Overwrite the table's amp-comp-0 anchor (`calibrationData[0..1]`) with the measured point; keeps the previous estimate when there is no signal at amp 0, the result leaves `amp0_search_band()`, or its duty is further than `kEndpointAcceptDutyPct` from 50%. Logs `[LOWEST_FREQ]`. Classic method only — FREQ_TRACE and the fine pass measure their own pair 0.
+  - **Called from:** `DCO_calibration()` when `autotuneAmpMethod != AMP_METHOD_FREQ_TRACE`.
+  - **When:** Auto-cal, per oscillator, before the table print / FS write.
+- `calibrate_DCO()` — Classic per-note amp-table builder (method A, default). Guards: max 300 iterations / 30 s per note, max 20 consecutive gap timeouts, PWM clamped to the per-note `[minAmpComp, maxAmpComp]` window (break-with-best when stuck at a bound).
   - **Called from:** `DCO_calibration()`.
   - **When:** Auto-cal.
 - `quadraticInterpolation()` — 3-point quadratic `y(x)`.
-  - **Called from:** `compute_initial_amp_for_note()`; `find_lowest_freq()`.
+  - **Called from:** `compute_initial_amp_for_note()`; `find_lowest_freq()`; `extrapolate_amp_for_freq()`; `calibrate_DCO_freq_trace()`.
   - **When:** Auto-cal.
-- `exponentialInterpolation()` — Exp interpolate → uint16.
-  - **Called from:** **none (dead)**.
 - `logarithmicInterpolation()` — Log interpolate → uint16.
-  - **Called from:** `compute_initial_amp_for_note()`.
+  - **Called from:** `compute_initial_amp_for_note()`; `extrapolate_amp_for_freq()`.
   - **When:** Auto-cal.
-- `logarithmicInterpolationFloat()` — Log interpolate float.
-  - **Called from:** **none (dead)**.
-- `logarithmicInterpolationDouble()` — Log interpolate double.
-  - **Called from:** **none (dead)**.
 - `linearInterpolation()` — Linear interpolate.
-  - **Called from:** `find_lowest_freq()`.
+  - **Called from:** `find_lowest_freq()`; `calibrate_DCO_freq_trace()`.
   - **When:** Auto-cal.
 - `expInterpolationSolveY()` — Solve exp curve for table building.
   - **Called from:** `initMultiplierTables()`.
@@ -1103,8 +1175,10 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | `docs/README_serial_and_params.md` | Slim inner serial / ParamId how-to, including MIDI CC and RAW vs COBS A/B. |
 | `docs/MIDI_CC_MAP.md` | **Generated** — MIDI CC implementation chart. |
 | `docs/Serial_comms_and_params_reference.txt` | **Archive** — Mainboard-era protocol notes. |
-| `docs/AUTOTUNE.md` | Autotune algorithms. |
-| `docs/AUTOTUNE_REFACTORED.md` | Autotune refactor structure. |
+| `docs/AUTOTUNE.md` | Stub — this board’s osc/PW/pin facts; algorithms in `_shared/docs/AUTOTUNE.md`. |
+| `docs/CALIBRATION_PROCEDURE.md` | Stub — operator workflow in `_shared/docs/CALIBRATION_PROCEDURE.md`. |
+| `_shared/docs/AUTOTUNE.md` | Shared autotune algorithms. |
+| `_shared/docs/CALIBRATION_PROCEDURE.md` | Shared calibration bring-up. |
 
 ---
 
@@ -1125,7 +1199,7 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | `DCO_Noise` | `_build_libs/DCO_Noise` (symlink → monorepo root) | `noise.h` fleet |
 | `mo-lfo` | `_build_libs/mo-lfo` | `LFO.*` |
 | `MIDI_Library` | `_build_libs/MIDI_Library` | `midi.*` |
-| `PID_v1` | `_build_libs/PID_v1` | `PID.*` / `init_PID` |
+| `PID_v1` | `_build_libs/PID_v1` | **unused** (kept on disk; the autotune cleanup removed the last user) |
 
 Shared **sketch** code, as opposed to a linked library, comes in through a
 separate symlink so `--libraries` never scans it:

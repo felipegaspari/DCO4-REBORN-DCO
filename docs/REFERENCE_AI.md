@@ -11,7 +11,7 @@ Related docs:
 - Float vs fixed engine math (depth): [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
 - Hot-path profiling: [`BENCHMARKING.md`](BENCHMARKING.md)
 - SRAM / heap / stack: [`MEMORY.md`](MEMORY.md)
-- Autotune algorithms / refactor layout: [`AUTOTUNE.md`](AUTOTUNE.md), [`AUTOTUNE_REFACTORED.md`](AUTOTUNE_REFACTORED.md)
+- Autotune algorithms: [`../_shared/docs/AUTOTUNE.md`](../_shared/docs/AUTOTUNE.md) (this board: [`AUTOTUNE.md`](AUTOTUNE.md))
 - Repo entry point: [`../README.md`](../README.md)
 
 ---
@@ -22,9 +22,9 @@ Related docs:
   - Main application for the RP2040 / RP2350.  
   - Runs on both cores using the Arduino dual-core API:
     - `setup()` / `loop()` (core 0): USB/serial/MIDI I/O, LFO evaluation (~50 µs tick).
-    - `setup1()` / `loop1()` (core 1): PID & FS init, ADSR init, DCO calibration/autotune, real‑time voice engine.  
+    - `setup1()` / `loop1()` (core 1): FS init, ADSR init, DCO calibration/autotune, real‑time voice engine.  
   - **Engine build options** (top of file: **pitch ids** → **board defaults** → **overrides** → **guards** → profiling / board):
-    - Board defaults (both MCUs): fixed voice/amp/CV (no `USE_FLOAT_*`), `PITCH_INTERP_RATIO_Q16`, amp method `FIXED`, `CLKDIV_MODE CLKDIV_Q16`. No `USE_FLOAT_ENGINE` umbrella.
+    - Board defaults: RP2350 float voice/amp, `PITCH_INTERP_FLOAT_FAST`, amp method `FLOAT_QUAD`, `CLKDIV_FLOAT`; RP2040 fixed voice/amp/CV, `PITCH_INTERP_RATIO_Q16`, amp method `FIXED`, `CLKDIV_Q16`. No `USE_FLOAT_ENGINE` umbrella.
     - Overrides can `#undef` / `#define` those flags (pitch A/B needs `#undef PITCH_INTERP_MODE` first).
     - Full catalog: [`BUILD_FLAGS.md`](BUILD_FLAGS.md). Math depth: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md).
   - Configures USB product strings in `init_usb()` (via Adafruit TinyUSB; product **DCO4-REBORN**), toggles board pins (23/24) for hardware fixes, and selects DCO calibration mode.
@@ -205,44 +205,39 @@ Related docs:
   - Flag / format details: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) §7.
 
 - **`autotune.h` / `autotune.ino`** (+ helper headers)  
+  - Lives in the shared library: the sketch files are one-line shims onto `_shared/autotune.h`, `_shared/autotune_impl.h` and `_shared/autotune_search_impl.h`. Edit the shared copies; see [`_shared/README.md`](../_shared/README.md), [`FILE_INDEX.md`](FILE_INDEX.md) §4, and [`../_shared/docs/AUTOTUNE.md`](../_shared/docs/AUTOTUNE.md).
   - DCO and PW **autocalibration subsystem**:
     - Flags and state: `calibrationFlag`, `manualCalibrationFlag`, `firstTuneFlag`, `manualCalibrationStage`, offsets per oscillator, PW calibration values, note indices.
     - Calibration arrays (`calibrationData[]`) store [frequency, amplitude] pairs used to rebuild amp‑comp tables.
-  - Included helpers (see [`AUTOTUNE_REFACTORED.md`](AUTOTUNE_REFACTORED.md)):
+  - Included helpers (file roles: [`FILE_INDEX.md`](FILE_INDEX.md) §4):
     - **`autotune_constants.h`** — shared constants / sizes.
     - **`autotune_context.h`** — `DCOCalibrationContext` grouping for `calibrate_DCO`.
     - **`autotune_measurement.h`** — structured `GapMeasurement` wrappers around edge timing.
-  - `init_DCO_calibration()`:
-    - Sets initial note, PWM centre and target sample counts, clears accumulators and global flags.
-    - Ensures all oscillators are temporarily muted and PW is centralized before measuring.
-    - Runs `voice_task_autotune()` to feed the PIO with an initial calibration waveform.
-  - `DCO_calibration()` / `VCO_calibration()`:
-    - High‑level procedures that:
-      - Iterate across all oscillators and notes.
-      - For each oscillator, optionally find PW centre (`find_PW_center()`), then call `calibrate_DCO()` to populate `calibrationData[]`.
-      - Persist data using `update_FS_voice()` and refresh amp‑comp tables with `init_FS()` and `precompute_amp_comp_for_engine()`.
+  - Boot default amp method is `FREQ_TRACE` (`AUTOTUNE_AMP_METHOD_DEFAULT` = 1); method / search / amp-0 enums live in `_shared/autotune.h`.
+  - `DCO_calibration()`:
+    - High‑level procedure (called from `loop1()` on `calibrationFlag`):
+      - Calibrates PW once per assigned channel via `cal_pw_channel(osc)` (`find_PW_center()`, `find_PW_limit_v2()` low/high). This board: 8 osc → 4 PW channels (`ch = osc / 2`).
+      - For each oscillator, `restart_DCO_calibration()` then `calibrate_DCO()` or `calibrate_DCO_freq_trace()` to populate `calibrationData[]`.
+      - Persists data using `update_FS_voice()` and refreshes amp‑comp tables with `init_FS()` and `precompute_amp_comp_for_engine()`.
   - `restart_DCO_calibration()`:
-    - Reset calibration state, PWM levels and measurement accumulators between oscillators.
-  - `find_PW_center()` / `find_PW_low_limit()`:
-    - Step PW until the measured duty cycle gap around 50% (or low limit) is within a target tolerance using `find_gap()`.
-    - Persist PW calibration values into LittleFS via `update_FS_PWCenter()` / `update_FS_PW_Low_Limit()`.
-  - `find_gap()` / `DCO_calibration_find_highest_freq()` / `DCO_calibration_debug()` / `VCO_measure_frequency()`:
-    - Edge‑timing routines that measure the DCO duty cycle or frequency at the calibration pin, using pulse timing over multiple cycles.
-    - Provide raw error values (`DCO_calibration_difference`) used by PID, search routines or calibration heuristics.
-  - `calibrate_DCO()` and interpolation helpers (`quadraticInterpolation`, `exponentialInterpolation`, `logarithmicInterpolation*`, `linearInterpolation`, `expInterpolationSolveY()`):
-    - Use a mix of polynomial, exponential and logarithmic interpolation to derive good amplitude starting points between measured calibration anchors.
+    - Reset the note schedule and `calibrationData` header between oscillators; re‑arms RANGE pin/PIO.
+  - `find_PW_center()` / `find_PW_limit_v2()`:
+    - PW target-duty searches built on the phased `find_PW_for_target_duty()` (coarse scan → bisection or fine scan → lock‑in) and `search_PW_limit_from_center()`; all probes go through `set_pw_and_measure()`.
+    - Persist PW calibration values into LittleFS via `update_FS_PWCenter()` / `update_FS_PW_Low_Limit()` / `update_FS_PW_High_Limit()`.
+  - `find_gap()` / `DCO_calibration_debug()`:
+    - Edge‑timing measurement core (state fully local) that measures the DCO duty cycle at the calibration pin; consumed via the `measure_gap()` wrapper.
 
-- **`PID.h` / `PID.ino`**  
-  - Wraps the `PID_v1` Arduino library for use in calibration and frequency search:
-    - Defines PID terms (three Kp/Ki/Kd presets), gap tracking, output limits and helper variables.
-    - `init_PID()` initializes PID state and setpoint.
-  - `PID_dco_calibration()`:
-    - Main PID‑driven DCO calibration loop:
-      - Uses `find_gap()` to measure duty‑cycle errors.
-      - Adjusts `ampCompCalibrationVal` until the gap is below `PIDMinGap`, tracking best candidates and detecting oscillation (“flip”) conditions.
-      - When calibrated for a note, stores the result, advances to the next note, recomputes min gap and limits, and triggers new `voice_task_autotune()` runs.
-  - `PID_find_highest_freq()`, `find_highest_freq()`, `find_lowest_freq()`:
-    - PID‑based search helpers used in some calibration modes to identify highest/lowest usable frequencies per DCO.
+- **`autotune_search.ino`** (formerly `PID.ino`; the `PID_v1` dependency was removed)  
+  - `calibrate_DCO()`:
+    - Main search‑based amp‑comp loop: interpolated initial guess per note, sign‑change detection with neighbour probing, ±1/±2 stepping clamped to per‑note bounds, iteration/time/timeout guards.
+  - `find_highest_freq()` / `find_lowest_freq()`:
+    - Bisection search at full RANGE PWM (driven via `calibrationFreqHz` → `voice_task_autotune(4, …)`) and quadratic extrapolation to PWM 0, used when the table hits the top of the PWM range.
+  - `amp0_search_band()` / `amp0_prescan()` / `measure_lowest_freq_at_amp0()` / `apply_measured_lowest_freq()`:
+    - The shared amp-comp-0 endpoint used by all three amp paths: a wide band under the first measured pair (`kAmp0BandRatio`, floored at `kAmp0MinFreqHz`), a scan across it for two readings that bracket 50% duty, a bounded frequency search between them with the amp comp fixed at 0, and acceptance only within `kEndpointAcceptDutyPct` — otherwise the extrapolation stands. `apply_measured_lowest_freq()` is the classic wrapper that writes `calibrationData[0..1]`; `FREQ_TRACE` and the fine pass call the measurement directly.
+  - `calibrate_DCO_freq_trace()`:
+    - `FREQ_TRACE` table builder: two manual points (440 Hz anchor + trim note) and a bootstrap cluster feed a curve model, the ladder spacing is derived from it, rungs are traced with fixed-amp frequency bisection, and the full-amp / amp-comp-0 endpoints are measured last.
+  - Interpolation helpers (`quadraticInterpolation`, `logarithmicInterpolation`, `linearInterpolation`, `expInterpolationSolveY()`):
+    - Derive good amplitude starting points between measured calibration anchors.
 
 ---
 
