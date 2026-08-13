@@ -1,4 +1,5 @@
 #include <cstddef>
+#include "project_config.h"
 #include "include_all.h"
 
 #ifndef __GLOBALS_H__
@@ -43,7 +44,8 @@ static inline void sys_clock_hz_refresh(void) {
 #define sysClock_Hz (sysClock_Hz_cached)
 #define sysClock    (sysClock_Hz_cached / 1000u)
 
-static constexpr uint16_t DIV_COUNTER = 14000;
+static constexpr uint16_t DIV_COUNTER = RANGE_PWM_WRAP;
+static_assert(DIV_COUNTER >= 1, "RANGE_PWM_WRAP must be >= 1");
 static constexpr uint16_t DIV_COUNTER_PW = 1024;
 
 // Reset pulse width in system clock cycles (Y). Runtime-settable via
@@ -131,16 +133,11 @@ int32_t char_pw_scale_q15 = 0;
 float BASE_NOTE = 440.0f;
 
 
-// WEACT RP2040 (legacy 8-osc map — kept for reference):
-// static constexpr uint8_t RESET_PINS[8] = { 29, 27, 19, 18, 15, 13, 12, 8 };
-// static constexpr uint8_t RANGE_PINS[8] = { 28, 22, 17, 16, 14, 11, 9, 7 };
-
-// Raspberry Pi Pico (legacy):
-// static constexpr uint8_t RESET_PINS[8] = { 28, 26, 19, 18, 15, 13, 12, 8 };
-// static constexpr uint8_t RANGE_PINS[8] = { 27, 22, 17, 16, 14, 11,  9,  7 };
-
-// Live WEACT 8-osc RESET/RANGE/PW/cal (old DCO4). CV/mux in PINOUT.md is DCO3 leftover — not live.
-// GPIO 24 is board fix-rail (see DCO.ino), not a DCO output.
+// RESET/RANGE from DCO_MCU_BOARD in project_config.h. Osc 0/1 differ: WeAct
+// breaks out GPIO 29; official Pico / Pico 2 use that pad as the VSYS ADC, so
+// those two oscillators sit on GP28/26 and GP27/22. Osc 2–7 are identical.
+// CV/mux in PINOUT.md is DCO3 leftover — not live.
+// GP23/24 from DCO_MCU_BOARD: WeAct KEY + analog fix rail; Pico/Pico 2 SMPS PS.
 //
 // Hub UART:
 //   Input UART  GP20 TX / GP21 RX
@@ -170,8 +167,23 @@ static constexpr uint8_t SUB_LEVEL_PIN            = 33;  // RP2350B provisional
 static constexpr uint16_t DIV_COUNTER_CV          = 4095;
 #endif
 
+static constexpr uint8_t MCU_PIN_UNASSIGNED = 0xFF;
+
+#if DCO_MCU_BOARD == DCO_MCU_WEACT_RP2040
 static constexpr uint8_t RESET_PINS[NUM_OSCILLATORS] = { 29, 27, 19, 18, 15, 13, 12, 8 };
 static constexpr uint8_t RANGE_PINS[NUM_OSCILLATORS] = { 28, 22, 17, 16, 14, 11, 9, 7 };
+static constexpr uint8_t SMPS_PS_PIN = MCU_PIN_UNASSIGNED;  // GP23 is the onboard KEY
+static constexpr uint8_t USER_KEY_PIN = 23;                 // active-low, INPUT_PULLUP
+static constexpr uint8_t BOARD_FIX_PIN = 24;                // analog carrier rail
+#elif (DCO_MCU_BOARD == DCO_MCU_PICO) || (DCO_MCU_BOARD == DCO_MCU_PICO2)
+static constexpr uint8_t RESET_PINS[NUM_OSCILLATORS] = { 28, 26, 19, 18, 15, 13, 12, 8 };
+static constexpr uint8_t RANGE_PINS[NUM_OSCILLATORS] = { 27, 22, 17, 16, 14, 11, 9, 7 };
+static constexpr uint8_t SMPS_PS_PIN = 23;                  // RT6150 PS: drive HIGH
+static constexpr uint8_t USER_KEY_PIN = MCU_PIN_UNASSIGNED;
+static constexpr uint8_t BOARD_FIX_PIN = MCU_PIN_UNASSIGNED;  // GP24 is VBUS sense
+#else
+#error "DCO_MCU_BOARD must be DCO_MCU_WEACT_RP2040, DCO_MCU_PICO, or DCO_MCU_PICO2"
+#endif
 
 // Freq SMs: voices 0–1 on pio0 (osc 0–3), voices 2–3 on pio1 (osc 4–7).
 // A voice pair always shares a PIO block so hard-sync sideset can share RESET.
@@ -229,6 +241,9 @@ uint8_t OSC3_LEVEL_PWM_CHAN;
 uint8_t SUB_LEVEL_PWM_SLICE;
 uint8_t SUB_LEVEL_PWM_CHAN;
 #endif
+
+// Board-specific PW center seeds (fake-seed / bank rebuild defaults).
+static constexpr uint16_t kPwCenterDefault[NUM_PW_CHANNELS] = { 570, 552, 540, 553 };
 
 uint16_t PW_CENTER[NUM_PW_CHANNELS] = { 570, 552, 540, 553 };
 uint16_t PW_LOW_LIMIT[NUM_PW_CHANNELS] = { 0, 0, 0, 0 };

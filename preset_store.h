@@ -77,7 +77,7 @@ static constexpr uint8_t  PRESET_BULK_CHUNK_DATA   = 32;
 // DCO4-REBORN: 8 oscillators → voiceTables is 1408 B (vs 528 on DCO3).
 static constexpr uint16_t PRESET_BULK_STAGING_SIZE = 1440;  // >= record 598, voiceTables 1408
 
-// Calibration dump selectors (PARAM_CAL_DUMP value). 0 / -1 = all five tables.
+// Calibration dump selectors (PARAM_CAL_DUMP value). 0 / -1 = all seven tables.
 static constexpr int16_t CAL_DUMP_ALL           = 0;
 static constexpr int16_t CAL_DUMP_VOICE_TABLES  = 1;
 static constexpr int16_t CAL_DUMP_PW_CENTER     = 2;
@@ -120,7 +120,7 @@ static inline uint32_t preset_crc32(const uint8_t* data, size_t len) {
 
 // The persistable patch-parameter set (moved from Serial.ino so the preset
 // shadow and the Mainboard-echo path share one definition). Command/cal/UI ids
-// (150-160, 170-173, ...) are deliberately excluded.
+// (150-160, 170-174, ...) are deliberately excluded.
 static inline bool preset_param_is_persistable(uint8_t id) {
   if (id >= (uint8_t)PARAM_MOD_SLOT0_SOURCE && id <= (uint8_t)PARAM_MOD_SLOT7_DEPTH) {
     return true;

@@ -369,6 +369,12 @@ static void apply_param_analog_drift_spread(int16_t v) {
 
 // PARAM_SYNC_MODE: PIO sync topology → setSyncMode() (deferred to core 1).
 static void apply_param_sync_mode(int16_t v) {
+  if (manualCalibrationFlag) {
+    // The walk needs every oscillator to own its own RESET pin, so a preset load
+    // mid-walk only books the topology for when manual cal exits.
+    manualCalSavedSyncMode = (uint8_t)v;
+    return;
+  }
   syncMode = v;
   pio_defer_request_sync_mode();
 }
@@ -379,6 +385,10 @@ static void apply_param_sync_mode(int16_t v) {
 static void apply_param_soft_sync(int16_t v) {
   if (v < 0) v = 0;
   if (v > 3) v = 3;
+  if (manualCalibrationFlag) {
+    manualCalSavedSoftSyncChunks = (uint8_t)v;
+    return;
+  }
   softSyncChunks = (uint8_t)v;
   pio_defer_request_sync_mode();
 }
@@ -581,6 +591,18 @@ static void apply_param_manual_calibration_flag(int16_t v) {
   // When manual calibration is active, both flags follow this param.
   // Rising edge (0 -> non-zero): broadcast current offsets upstream (Input hub or Mainboard).
   if (v != 0 && !manualCalibrationFlag) {
+    // The solo stops every other SM, which a synced pair cannot survive, so the
+    // walk runs a neutral topology (see manualCalSavedSyncMode in autotune.h).
+    manualCalSavedSyncMode = syncMode;
+    manualCalSavedSoftSyncChunks = softSyncChunks;
+    if (syncMode != 0) {
+      Serial.println((String)"[MANUAL_CAL] sync neutralised: syncMode " + syncMode +
+                     " -> 0, softSyncChunks " + softSyncChunks + " -> 0 (restored on exit)");
+    }
+    syncMode = 0;
+    softSyncChunks = 0;
+    calSyncNeutralRequested = true;
+
     for (uint8_t osc = 0; osc < NUM_OSCILLATORS; ++osc) {
       uint8_t idx    = osc;
       uint8_t offset = (uint8_t)manualCalibrationOffset[osc];
@@ -590,13 +612,21 @@ static void apply_param_manual_calibration_flag(int16_t v) {
     }
   }
 
-  // Falling edge: manual cal forced the SQR levels and wave mux — restore panel state.
+  // Falling edge: manual cal forced the oscillator levels and wave mux — restore panel state.
+  // It also left every un-soloed oscillator's SM stopped and the PW channels at 0,
+  // which only core 1 may undo (PIO), so that part goes through the deferred queue.
   if (v == 0 && manualCalibrationFlag) {
+    // Hand the sync topology back before the restore below: its start_voice_sms()
+    // is what rebuilds the SMs from syncMode / softSyncChunks.
+    syncMode = manualCalSavedSyncMode;
+    softSyncChunks = manualCalSavedSoftSyncChunks;
+    calSyncNeutralRequested = false;
     apply_param_osc1_level(OSC1LevelVal);
     apply_param_osc2_level(OSC2LevelVal);
     apply_param_osc3_level(OSC3LevelVal);
     apply_param_sub_level(SubLevelVal);
     update_waveSelector();
+    pio_defer_request_cal_restore();
   }
 
   // Every manual-cal entry starts at the trimpot step; the UI switches to the
@@ -616,14 +646,13 @@ static void apply_param_manual_calibration_step(int16_t v) {
 }
 
 // PARAM_AMP_COMP_440: absolute range-PWM at 440 Hz for the oscillator selected
-// by manualCalibrationStage. Persisted by PARAM_MANUAL_CALIBRATION_STORE.
+// by manualCalibrationStage (osc = stage / 3). Persisted by STORE.
 static void apply_param_amp_comp_440(int16_t v) {
-  uint8_t stage = (uint8_t)manualCalibrationStage;
-  if (stage >= NUM_OSCILLATORS) stage = NUM_OSCILLATORS - 1;
+  uint8_t osc = cal_manual_osc();
   if (v < 0) v = 0;
   uint16_t val = (uint16_t)v;
   if (val > DIV_COUNTER) val = DIV_COUNTER;
-  ampComp440[stage] = val;
+  ampComp440[osc] = val;
 }
 
 // PARAM_AMP_COMP_DUTY_OFFSET: duty target trim (hundredths of a percent) for
@@ -632,26 +661,41 @@ static void apply_param_amp_comp_440(int16_t v) {
 // the manual duty readout aim at 50% + this value. Persisted by
 // PARAM_MANUAL_CALIBRATION_STORE.
 static void apply_param_amp_comp_duty_offset(int16_t v) {
-  uint8_t stage = (uint8_t)manualCalibrationStage;
-  if (stage >= NUM_OSCILLATORS) stage = NUM_OSCILLATORS - 1;
+  uint8_t osc = cal_manual_osc();
   if (v < -500) v = -500;
   if (v >  500) v =  500;
-  ampCompDutyOffset[stage] = v;
+  ampCompDutyOffset[osc] = v;
 }
 
-// PARAM_MANUAL_CALIBRATION_STAGE: which osc/stage is being edited in manual cal UI.
+// PARAM_CAL_PW_CENTER: live PW_CENTER for the calibrated oscillator's PW channel.
+static void apply_param_cal_pw_center(int16_t v) {
+  const uint8_t ch = cal_pw_channel(cal_manual_osc());
+  if (v < 0) v = 0;
+  if (v > (int16_t)CAL_PW_CENTER_MAX) v = (int16_t)CAL_PW_CENTER_MAX;
+  PW_CENTER[ch] = (uint16_t)v;
+}
+
+// PARAM_MANUAL_CALIBRATION_STAGE: packed walk (see cal_stage_*_n). Do not
+// clamp to NUM_OSCILLATORS-1 — that collapsed DCO3 stages 3–5 onto osc 2.
 static void apply_param_manual_calibration_stage(int16_t v) {
-  int8_t stage = (int8_t)v;
+  int16_t stage = v;
   if (stage < 0) stage = 0;
-  if (stage >= (int8_t)NUM_OSCILLATORS) stage = (int8_t)(NUM_OSCILLATORS - 1);
-  manualCalibrationStage = stage;
+  const int16_t maxStage = (int16_t)cal_stage_max();
+  if (stage > maxStage) stage = maxStage;
+  manualCalibrationStage = (uint8_t)stage;
+  manualCalibrationStep = cal_stage_is_440((uint8_t)stage) ? 1 : 0;
+  if (cal_stage_is_440((uint8_t)stage)) {
+    serialSendParam16(PARAM_AMP_COMP_440, (int16_t)ampComp440[cal_manual_osc()], true);
+  } else if (cal_stage_is_pw_edit((uint8_t)stage)) {
+    serialSendParam16(PARAM_CAL_PW_CENTER,
+                      (int16_t)PW_CENTER[cal_pw_channel(cal_manual_osc())], true);
+  }
 }
 
-// PARAM_MANUAL_CALIBRATION_OFFSET: per-osc manual amp offset for current stage.
+// PARAM_MANUAL_CALIBRATION_OFFSET: per-osc manual amp offset for current osc.
 static void apply_param_manual_calibration_offset(int16_t v) {
-  uint8_t stage = (uint8_t)manualCalibrationStage;
-  if (stage >= NUM_OSCILLATORS) stage = NUM_OSCILLATORS - 1;
-  manualCalibrationOffset[stage] = (int8_t)v;
+  uint8_t osc = cal_manual_osc();
+  manualCalibrationOffset[osc] = (int8_t)v;
 }
 
 // Explicit "store manual calibration offsets" command. This is called when
@@ -662,6 +706,9 @@ static void apply_param_manual_calibration_store(int16_t /*v*/) {
     update_FS_ManualCalibrationOffset(osc, manualCalibrationOffset[osc]);
     update_FS_AmpComp440(osc, ampComp440[osc]);
     update_FS_AmpCompDutyOffset(osc, ampCompDutyOffset[osc]);
+  }
+  for (uint8_t ch = 0; ch < NUM_PW_CHANNELS; ++ch) {
+    update_FS_PWCenter(ch, PW_CENTER[ch]);
   }
 }
 
@@ -684,6 +731,14 @@ static void apply_param_cal_dump(int16_t v) {
   preset_store_cal_dump(v);
 }
 
+// Host / panel: Screen slot+name from live presetName[] (USB 16-byte 'q' first).
+// Not PARAM_PRESET_LOAD — that would recall LittleFS instead of the PC bank.
+static void apply_param_ui_preset_scroll(int16_t v) {
+  if (v < 0 || v > 255) return;
+  serial_send_preset_scroll_to_mb((uint8_t)v);
+  serial_send_screen_signal_to_mb(SCREEN_SIGNAL_PRESET_SCROLL);
+}
+
 // PARAM_DEBUG_COMMAND: bench / debug opcodes for tools/dco_control (Diagnostics + Calibration
 // + Character). See params_def.h near PARAM_DEBUG_COMMAND for the opcode list.
 //
@@ -702,7 +757,8 @@ static void apply_param_cal_dump(int16_t v) {
 // once both have answered, so this handler never blocks the audio core.
 // 13 dumps heap + per-core stack (mem_diag; needs ENABLE_MEM_DIAG; runtime polls on).
 // 14 / 15 disable / enable mem_diag loop polls (A/B vs profiler without rebuild).
-// 40 / 41 / 42 forward to Mainboard (dump / reset / ~1 Hz); not DCO 10–12.
+// 42 / 43 / 44 / 45 forward to Mainboard (profiler toggle / MCP4728 probe /
+// reattach / profiler dump once). 40 / 41 stay DCO amp-0 mode; do not forward.
 static void apply_param_debug_command(int16_t v) {
   // Wire may pack unsigned 16-bit (param16u); reinterpret before small-opcode switch.
   uint32_t n = (uint16_t)v;
@@ -797,6 +853,9 @@ static void apply_param_debug_command(int16_t v) {
       break;
 #endif
     case 42:
+    case 43:
+    case 44:
+    case 45:
       serialSendParam16(PARAM_DEBUG_COMMAND, v, true);
       break;
     // Amp-comp live method (USE_FLOAT_AMP_COMP). Ack via paced Board pane when
@@ -860,6 +919,16 @@ static void apply_param_debug_command(int16_t v) {
       break;
     case 36:
       calibrationVerifyRequested = true;
+      break;
+    // PW CV probe: needs manual cal running, since the soloed oscillator's
+    // pulse on the cal-sense pin is what tells us the CV arrived.
+    case 46:
+      if (!manualCalibrationFlag) {
+        Serial.println("[PW_PROBE] start manual calibration first (param 151), "
+                       "on a pulse (PW) substage");
+      } else {
+        pwCvProbeRequested = true;
+      }
       break;
     case 34:
     case 35:
@@ -1020,6 +1089,7 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_MANUAL_CALIBRATION_OFFSET, apply_param_manual_calibration_offset },
   { PARAM_MANUAL_CALIBRATION_STEP,   apply_param_manual_calibration_step },
   { PARAM_AMP_COMP_440,              apply_param_amp_comp_440 },
+  { PARAM_CAL_PW_CENTER,             apply_param_cal_pw_center },
   { PARAM_AMP_COMP_DUTY_OFFSET,      apply_param_amp_comp_duty_offset },
   { PARAM_GAP_FROM_DCO,              apply_param_gap_from_dco },
   { PARAM_MANUAL_CALIBRATION_STORE,  apply_param_manual_calibration_store },
@@ -1027,6 +1097,7 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_PRESET_LOAD,               apply_param_preset_load },
   { PARAM_PRESET_DUMP,               apply_param_preset_dump },
   { PARAM_CAL_DUMP,                  apply_param_cal_dump },
+  { PARAM_UI_PRESET_SCROLL,          apply_param_ui_preset_scroll },
   { PARAM_DEBUG_COMMAND,             apply_param_debug_command }
 };
 

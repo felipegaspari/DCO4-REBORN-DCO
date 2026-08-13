@@ -322,11 +322,16 @@ static constexpr uint8_t PIO_DEFER_SYNC   = 1u << 0;
 static constexpr uint8_t PIO_DEFER_RESET  = 1u << 1;
 static constexpr uint8_t PIO_DEFER_SUBOSC = 1u << 2;
 static constexpr uint8_t PIO_DEFER_PROBE  = 1u << 3;
-
-void setSyncMode();  // voices.ino — must run on core 1 only
+// Bit 7: bits 4-6 are the DCO3 tree's per-sub requests, kept free here so both
+// trees can carry the same value.
+static constexpr uint8_t PIO_DEFER_CAL_RESTORE = 1u << 7;
 
 void pio_defer_request_sync_mode() {
   __atomic_fetch_or(&pio_defer_pending, PIO_DEFER_SYNC, __ATOMIC_SEQ_CST);
+}
+
+void pio_defer_request_cal_restore() {
+  __atomic_fetch_or(&pio_defer_pending, PIO_DEFER_CAL_RESTORE, __ATOMIC_SEQ_CST);
 }
 
 void pio_defer_request_reset_pulse_all() {
@@ -375,6 +380,11 @@ void pio_defer_service() {
     return;
   }
 
+  if (pending & PIO_DEFER_CAL_RESTORE) {
+    // Manual cal stops every oscillator SM but the soloed one and zeroes the PW
+    // channels; nothing in the play path ever starts them again.
+    restore_voice_engine_after_calibration();
+  }
   if (pending & PIO_DEFER_SYNC) {
     setSyncMode();
   }

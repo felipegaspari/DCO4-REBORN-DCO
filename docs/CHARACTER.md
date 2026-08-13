@@ -55,7 +55,7 @@ If `character == 0` or the axis is 0, that axis scale is 0 (hot path early-outs 
 | Scale | Peak `max_delta` (Character=128 and axis=128) |
 |-------|-----------------------------------------------|
 | `char_pitch_scale_q15` | `(1<<24)/20` → ±0.05 octave (Q24) |
-| `char_amp_scale_q15` | `DIV_COUNTER/20` = **700** (±5% RANGE, absolute) |
+| `char_amp_scale_q15` | `DIV_COUNTER/20` (±5% RANGE, absolute) |
 | `char_pw_scale_q15` | `DIV_COUNTER_PW/10` = **102** (±10% PW) |
 
 Amp / PW products fit in `int32`. Pitch uses `int64` for the mul. Amp RANGE writes use `character_clamp_amp` (0..`DIV_COUNTER`).

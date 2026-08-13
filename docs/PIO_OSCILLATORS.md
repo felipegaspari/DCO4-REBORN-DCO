@@ -261,9 +261,9 @@ pad regardless of function select, so a slave can read a pin another state machi
 Hand-encoded in [`range_pwm_dither.pio.h`](../range_pwm_dither.pio.h) (not `init_pio()`). Intent is
 commented in [`pico-dco.pio`](../pico-dco.pio). Flag: `RANGE0_PIO_DITHER_TEST` in [`DCO.ino`](../DCO.ino)
 — **off on 4×2** (not feasible for 8 oscs). Comment out = hardware slice PWM on all eight
-`RANGE_PINS[]` (`wrap = DIV_COUNTER` = 14000). Voice/amp-comp still write **0..14000** via `write_range_pwm()`.
+`RANGE_PINS[]` (`wrap = DIV_COUNTER` = `RANGE_PWM_WRAP` in [`project_config.h`](../../project_config.h)). Voice/amp-comp still write **0..`DIV_COUNTER`** via `write_range_pwm()`.
 
-1-cycle-per-count sideset PWM (beats slice wrap-14000 ripple: ~54 kHz carrier @ 250 MHz vs ~17.9 kHz):
+1-cycle-per-count sideset PWM (beats slice wrap-`DIV_COUNTER` ripple; carrier ≈ `clk_sys / (DIV_COUNTER + 1)`):
 
 ```
 .side_set 1 opt
@@ -277,9 +277,10 @@ low:
 .wrap
 ```
 
-DMA word = `(low << 16) | high`. Wrap **4666**; 3 frames → **13998** effective levels
-(`t = level * 13998 / 14000`, then `base = t/3`, `rem = t%3`, frame *i* gets `base + (i < rem)`).
-Two counts in 14000 (~0.014%) vs analog noise — ignore. Waveform is PIO+DMA (no CPU); each amp
+DMA word = `(low << 16) | high`. Period **`DIV_COUNTER / RANGE_PIO_FRAMES`**; 3 frames →
+`RANGE_PIO_LEVELS` effective levels (`t = level * RANGE_PIO_LEVELS / DIV_COUNTER`, then
+`base = t/3`, `rem = t%3`, frame *i* gets `base + (i < rem)`).
+The integer remainder vs analog noise is negligible. Waveform is PIO+DMA (no CPU); each amp
 update is `range_pio_set_level` (~sub-µs).
 
 RP2040 DMA ring only wraps at **2^n bytes**, so 3 words cannot use ring mode. Each osc uses a
@@ -493,6 +494,16 @@ slave.
 
 In soft-sync mode the master leaves its sideset on **its own** pin — otherwise both mechanisms
 would fire at once.
+
+Either flavour makes the slave depend on a *running* master, so **manual calibration forces a
+neutral topology**: it solos one oscillator by stopping every other state machine, and a stopped
+master leaves its slave's reset pin dead (hard sync) or its polled pin static (soft sync), so the
+soloed oscillator would fall silent. `apply_param_manual_calibration_flag()` saves `syncMode` /
+`softSyncChunks`, zeroes them, and asks core 1 to rebuild through `calSyncNeutralRequested`
+(`loop1()`'s manual-cal branch, since that branch never reaches `pio_defer_service()`); exit
+restores the pair before `restore_voice_engine_after_calibration()` calls `start_voice_sms()`
+again. A `PARAM_SYNC_MODE` / `PARAM_SOFT_SYNC` write arriving mid-walk is booked for the exit
+instead of applied.
 
 ### 7.4 Soft-sync thresholds
 

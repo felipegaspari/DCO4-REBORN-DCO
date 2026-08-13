@@ -12,6 +12,7 @@ Purpose of **every file**, and for each source function: **what it does**, **who
 - Deep narrative: [`REFERENCE_AI.md`](REFERENCE_AI.md)
 - Build flags catalog: [`BUILD_FLAGS.md`](BUILD_FLAGS.md)
 - Preset store / cal dump protocol: [`PRESET_STORE.md`](PRESET_STORE.md)
+- Calibration banks on flash: [`../_shared/docs/CALIBRATION_STORAGE.md`](../_shared/docs/CALIBRATION_STORAGE.md)
 - Engine float/fixed math: [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md)
 - Hot-path profiling: [`BENCHMARKING.md`](BENCHMARKING.md)
 - SRAM / heap / stack: [`MEMORY.md`](MEMORY.md)
@@ -73,7 +74,7 @@ flowchart TD
 Main sketch: dual-core setup/loops, USB init (product **DCO4-REBORN**), engine flags (**pitch ids** / **board defaults** / **overrides** / **guards** at top). **4 MIDI voices × 2 oscillators**.
 
 **Functions**
-- `setup()` — Core 0 init: serial, MIDI, LFOs, pins, USB strings, cal pin.
+- `setup()` — Core 0 init: serial, MIDI, LFOs, USB strings, cal pin.
   - **Called from:** Arduino framework (Core 0).
   - **When:** Boot once.
 - `setup1()` — Core 1 init: `seed_fake_calibration_tables(false)` if `voiceTables` missing, FS, ADSR, `mod_matrix_init`, amp-comp precompute, PWM, PIO, optional `init_range_pio_dither`, voices; clears cal flags.
@@ -82,11 +83,15 @@ Main sketch: dual-core setup/loops, USB init (product **DCO4-REBORN**), engine f
 - `loop()` — Core 0: MIDI USB+DIN every iteration; Serial2 + USB CDC pumps on `timer1msFlag`; LFO1/LFO2 ~50 µs; drift ~51 µs; `bench_poll_core0` + `mem_diag_poll_core0`. `__not_in_flash_func`.
   - **Called from:** Arduino framework (Core 0).
   - **When:** Forever.
-- `loop1()` — Core 1: `microsTimer2`; noise fleet; auto/manual cal **or** ADSR + FIFO pop + `voice_task_main`; ends with `bench_service(1)` + `mem_diag_poll_core1`. `__not_in_flash_func`.
+- `loop1()` — Core 1: `microsTimer2`; noise fleet; auto/manual cal **or** ADSR + FIFO pop + `voice_task_main`; ends with `bench_service(1)` + `mem_diag_poll_core1`. The manual-cal branch runs the PIO work core 0 books for it — `calSyncNeutralRequested` → `setSyncMode()`, `pwCvProbeRequested` → `run_pw_cv_probe()` — since `pio_defer_service()` only runs on the play path. `__not_in_flash_func`.
   - **Called from:** Arduino framework (Core 1).
   - **When:** Forever.
 
 **Key macros:** full catalog in [`BUILD_FLAGS.md`](BUILD_FLAGS.md). Engine: `USE_FLOAT_VOICE_TASK`, `USE_FLOAT_AMP_COMP`, `USE_FLOAT_CV_OUTS`, `PITCH_INTERP_MODE` (`FLOAT` / `FLOAT_FAST` / `RATIO_Q16` / `Q12`), `CLKDIV_MODE` (`GOLD` / `FLOAT` / `Q16` / `Q8` / `FAST_Q4`), `AMP_COMP_METHOD_DEFAULT`. Noise: `NOISE_ENGINE`, `ENABLE_NOISE_OUT`. Profiler: `RUNNING_AVERAGE`, `RUNNING_AVERAGE_FINE`, `RUNNING_AVERAGE_PERIOD`, `BENCH_STAGE_STRIDE`, `BENCH_USE_SYSTICK`, `BENCH_PERIOD_MAX_US`, `BENCH_PATH_STATS`, `ENABLE_MEM_DIAG`. Board/IO: `ENABLE_USB_CONTROL`, `ENABLE_CV_OUTS`, `ENABLE_WAVE_MUX`, `ENABLE_VOICE_AUX`, `ENABLE_PIO_RESET_INVERT`, `RANGE0_PIO_DITHER_TEST`, `NOTE_RETRIG_MODE_DEFAULT`.
+
+### `mcu_board.h`
+
+Shim to `_shared/mcu_board.h`. Pico/Pico 2 SMPS PS HIGH, WeAct KEY (A440) + analog board-fix. **Not included** by the sketch (`include_all.h` does not pull it). To enable: `#include "mcu_board.h"` and call `mcu_board_pins_init()` from `setup()` / `user_key_task()` from Core 0 `loop()`. Pin constants stay in `globals.h`.
 
 ### `bench.h`
 
@@ -231,9 +236,9 @@ Real-time voice engine (float/fixed), allocation, pitch tables, amp/PW helpers.
 - `setVoiceMode()` — Apply `voiceMode` → `NUM_VOICES` / `STACK_VOICES`; `voiceAlloc.resyncFromGates(VOICES)` and `setVoiceCount()`; on mono also `mono_note_stack_clear()`.
   - **Called from:** `init_voices()`; `apply_param_voice_mode()`.
   - **When:** Boot; Serial2 / MIDI voice-mode param.
-- `setSyncMode()` — Rebuild sync topology via `assign_sm_mapping()` + `start_voice_sms()`; retrigger.
-  - **Called from:** `apply_param_sync_mode()`, `apply_param_soft_sync()`.
-  - **When:** Serial2 param.
+- `setSyncMode()` — Rebuild sync topology via `assign_sm_mapping()` + `start_voice_sms()`; retrigger. Declared in `state_machines.h` (core 1 only).
+  - **Called from:** `pio_defer_service()` for `apply_param_sync_mode()` / `apply_param_soft_sync()`; `loop1()`'s manual-cal branch when `calSyncNeutralRequested`.
+  - **When:** Serial2 param; manual-cal entry, to unsync the pairs before the solo.
 - `get_chan_level_lookup_fast()` — Q8 Hz → range PWM (always compiled; live FIXED / fixed `voice_task_fixed_point`). `__not_in_flash_func`.
   - **Called from:** `amp_level_q24()` (FIXED); `get_chan_level_for_engine()` / method FIXED.
   - **When:** Fixed hot path; float-engine FIXED method / benches.
@@ -375,8 +380,8 @@ pio0 and pio1 when `RANGE0_PIO_DITHER_TEST`. Detail: [`PIO_OSCILLATORS.md`](PIO_
 ### `PWM.h`
 
 `write_range_pwm()` is **inline** here (PIO dither or slice). Under `RANGE0_PIO_DITHER_TEST`:
-prototypes `init_range_pio_dither`, `range_pio_set_level`. Constants `RANGE_PIO_PERIOD` (4666),
-`RANGE_PIO_FRAMES` (3), `RANGE_PIO_LEVELS` (13998).
+prototypes `init_range_pio_dither`, `range_pio_set_level`. Constants `RANGE_PIO_FRAMES` (3),
+`RANGE_PIO_PERIOD` (`DIV_COUNTER / RANGE_PIO_FRAMES`), `RANGE_PIO_LEVELS` (`PERIOD * FRAMES`).
 
 ### `PWM.ino`
 
@@ -389,7 +394,7 @@ prototypes `init_range_pio_dither`, `range_pio_set_level`. Constants `RANGE_PIO_
   start 3× data+ctrl DMA rings. Idempotent re-enable.
   - **Called from:** `setup1()` when `RANGE0_PIO_DITHER_TEST`.
   - **When:** Boot Core1, after `init_pio()`.
-- `range_pio_set_level(osc, level)` — Scale `0..14000` → 3-frame packed DMA words.
+- `range_pio_set_level(osc, level)` — Scale `0..DIV_COUNTER` → 3-frame packed DMA words.
   - **Called from:** `write_range_pwm()`; `disable_all_oscillators_and_range_pwm()`.
   - **When:** Live amp-comp / cal RANGE writes when flag on.
 - `init_cv_pwm()` — Cutoff / reso / VCA / dist PWM; calls `init_level_pwm()`.
@@ -569,11 +574,15 @@ Live LFO instances + Q15 levels + pitch mod arrays. Pitch/drift depth scales (`L
 
 ## 4. Calibration / storage / experimental
 
-> The whole calibration subsystem lives in the shared library
+> The whole calibration subsystem — the searches **and** their LittleFS storage —
+> lives in the shared library
 > (`DCO-SHARED-LIBRARIES/`, reached as `_shared/`), and both sketches consume it. The
-> sketch keeps three one-line shims: `autotune.h` → `_shared/autotune.h`,
+> sketch keeps five one-line shims: `autotune.h` → `_shared/autotune.h`,
 > `autotune.ino` → `_shared/autotune_impl.h`, `autotune_search.ino` →
-> `_shared/autotune_search_impl.h`. The file names below are the shared ones;
+> `_shared/autotune_search_impl.h`, `FS.h` → `_shared/FS.h`, `FS.ino` →
+> `_shared/FS_impl.h`. On-flash bank format:
+> [`_shared/docs/CALIBRATION_STORAGE.md`](../_shared/docs/CALIBRATION_STORAGE.md).
+> The file names below are the shared ones;
 > `autotune_constants.h`, `autotune_context.h` and `autotune_measurement.h` are
 > pulled in by `_shared/autotune.h` and have no shim. See
 > [`_shared/README.md`](../_shared/README.md) for what the sketch must provide.
@@ -608,17 +617,23 @@ Included once from the `autotune.ino` shim. Statics used before their definition
 - `disable_all_oscillators_and_range_pwm()` — Mute oscs / park RANGE (PIO `range_pio_set_level(DIV_COUNTER)` when `RANGE0_PIO_DITHER_TEST`, else GPIO high); calls `reset_pw_to_DIV_COUNTER_PW` and clears `g_lastDrivenFreqHz` (nothing is running any more).
   - **Called from:** `DCO_calibration()`, `restart_DCO_calibration()`.
   - **When:** Cal setup.
-- `reset_pw_to_DIV_COUNTER_PW()` — All assigned PW PWM channels → max wrap.
+- `reset_pw_to_DIV_COUNTER_PW()` — All assigned PW PWM channels → max wrap. A rail, not an operating point: only the PW searches (which program PW per probe) may leave it here.
   - **Called from:** `disable_all_oscillators_and_range_pwm()`.
   - **When:** Cal setup.
-- `DCO_calibration()` — Auto-cal; `calibrationScope` (param 150 value: 1 amp, 2 PW, 3 full; 5/6/7 = the same at `CAL_PRECISION_FINE`; 9/10/11 FAST) selects the stages: PW center/limits once per assigned channel (`cal_pw_channel`), and/or per osc 0..7 the amp-comp stage (fine → `refine_DCO_amp_table`, otherwise `calibrate_DCO` or `calibrate_DCO_freq_trace` per `autotuneAmpMethod`, debug cmds 34/35) + `apply_measured_lowest_freq()` for the classic normal run's amp-comp-0 anchor + raw table dump + `print_calibration_report()` + FS write (skipped when a `FREQ_TRACE` table fails its monotonicity check), reload, precompute; clears `calibrationFlag`. An amp-only run applies the stored `PW_CENTER[ch]` without searching. Cancelable: clears `calibrationCancelRequested` on entry; every search loop polls it (param 150 = 0 sets it from core 0) and the interrupted stage keeps its previous values.
+- `apply_pw_center_solo()` — Stored `PW_CENTER` on the given PW channel (via `apply_pw_center()`), 0 on the others. Only the soloed channel is tracked in `PW[]`, since `PW[0]` doubles as the panel's pulse width.
+  - **Called from:** `restart_DCO_calibration()`.
+  - **When:** Auto-cal, per oscillator.
+- `pw_level_readback()` — What a PW channel is actually driving, read from the slice's `cc` register. Used by the diagnostics because `PW[]` is not a hardware mirror.
+  - **Called from:** `find_gap()` (`[GAP_TIMEOUT]`, `[GAP_MEASURE]`), `calibrate_DCO_freq_trace()` (`[FREQ_TRACE_GUARD]`).
+  - **When:** Cal logging.
+- `DCO_calibration()` — Auto-cal; `calibrationScope` (param 150 value: 1 amp, 2 PW, 3 full; 5/6/7 = the same at `CAL_PRECISION_FINE`; 9/10/11 FAST) selects the stages: PW center/limits once per assigned channel (`cal_pw_channel`), and/or per osc 0..7 the amp-comp stage (fine → `refine_DCO_amp_table`, otherwise `calibrate_DCO` or `calibrate_DCO_freq_trace` per `autotuneAmpMethod`, debug cmds 34/35) + `apply_measured_lowest_freq()` for the classic normal run's amp-comp-0 anchor + raw table dump + `print_calibration_report()` + FS write (skipped when a `FREQ_TRACE` table fails its monotonicity check), reload, precompute; clears `calibrationFlag`. An amp-only run applies the stored `PW_CENTER[ch]` without searching (per oscillator, in `restart_DCO_calibration()`). Cancelable: clears `calibrationCancelRequested` on entry; every search loop polls it (param 150 = 0 sets it from core 0) and the interrupted stage keeps its previous values.
   - **Called from:** `loop1()` when `calibrationFlag && !manualCalibrationFlag`.
   - **When:** Auto-cal (blocking one-shot).
-- `restart_DCO_calibration()` — Reset state/table header between oscillators; also clears `g_lastDrivenFreqHz` so the next oscillator's first probe is treated as a cold start rather than a move from the previous one's frequency.
+- `restart_DCO_calibration()` — Reset state/table header between oscillators; drives this oscillator's PW channel at its stored `PW_CENTER` and the others at 0 (`apply_pw_center_solo()`), undoing the max-wrap park so the amp-comp stage has a pulse to measure; also clears `g_lastDrivenFreqHz` so the next oscillator's first probe is treated as a cold start rather than a move from the previous one's frequency.
   - **Called from:** `DCO_calibration()` (PW pass and per osc).
   - **When:** Auto-cal.
-- `set_pw_and_measure()` — Program PW value, sync `PW[]`/debug tracker, settle, `measure_gap(2)`.
-  - **Called from:** all PW search phases (`pw_coarse_scan`, `pw_bisect_bracket`, `pw_fine_scan_around_best`, `pw_lock_in`, `search_PW_limit_from_center`).
+- `set_pw_and_measure()` — Program a PW value on a **PW channel** (`cal_pw_channel(osc)`, not an oscillator index), sync `PW[]`, settle, `measure_gap(2)`.
+  - **Called from:** all PW search phases (`pw_coarse_scan`, `pw_bisect_bracket`, `pw_fine_scan_around_best`, `pw_lock_in`, `search_PW_limit_from_center`), each passing `cal_pw_channel(currentDCO)`.
   - **When:** Auto-cal PW stage.
 - `pw_search_state_init()` / `pw_record_sample()` — `PWSearchState` init and valid-sample bookkeeping (best candidate, in-tolerance count, valid table).
   - **Called from:** `find_PW_for_target_duty()` and its phases.
@@ -662,6 +677,9 @@ Included once from the `autotune.ino` shim. Statics used before their definition
 - `run_calibration_verify_sweep()` — Read-only `[CAL_VERIFY]` sweep: 3-semitone steps per osc, amp from `get_chan_level_for_engine()`, duty measured and reported with the one-count floor; forces the FINE profile for its own probes (one per note) and restores the caller's; cancelable.
   - **Called from:** `loop1()` when `calibrationVerifyRequested` (debug cmd 36).
   - **When:** On request, outside calibration.
+- `run_pw_cv_probe()` — `[PW_PROBE]` sweep of every PW channel through 0 / ¼ / ½ / ¾ / full scale on the soloed oscillator, printing the duty each level produces plus a per-channel `span≈…pp` and a verdict: expected channel moves = CV live, another channel moves = `PW_PINS` mismapped, nothing moves = no CV path to that pulse. Leaves PW clobbered; the next manual-cal pass rewrites it. Cancelable.
+  - **Called from:** `loop1()` manual-cal branch when `pwCvProbeRequested` (debug cmd 46).
+  - **When:** On request, during manual cal only (it needs the solo).
 - `cal_sense_probe_log()` — 40 ms raw cal-sense edge probe (no period gate); `[CAL_SENSE] pin=…` ~2 Hz.
   - **Called from:** `DCO_calibration_debug()` on gap timeout.
   - **When:** Manual-cal timeout diagnostics. Bench table: [`../_shared/docs/AUTOTUNE.md`](../_shared/docs/AUTOTUNE.md) “Cal-sense bench checks” (`DCO_calibration_pin` = GP10).
@@ -766,35 +784,65 @@ Included once from the `autotune_search.ino` shim, which sorts after `autotune.i
   - **Called from:** `initMultiplierTables()`.
   - **When:** Boot (pitch tables), not cal.
 
-### `FS.h`
+### `_shared/FS.h`
 
-Constants / buffers; declares fake-calibration helpers under `ENABLE_FS_CALIBRATION`. Amp-comp `FSBankSize` × `NUM_OSCILLATORS` (8); PW `FSPWBankSize` × `NUM_PW_CHANNELS` (4).
+Shim: sketch `FS.h` → `_shared/FS.h`. Bank sizes, RAM bank buffers, `File`
+handles, and hand-written prototypes for `init_FS()` / every `update_FS_*()` /
+`write_fs_bank()` / the two seed helpers (the Arduino prototype generator cannot
+see through the `.ino` shim). Sizes on this board: `FSBankSize` 1408 B
+(`NUM_OSCILLATORS` 8 × 176), `FSPWBankSize` 8 B (`NUM_PW_CHANNELS` 4),
+`FSManualOffsetBankSize` 8 B, `FSAmpComp440BankSize` /
+`FSAmpCompDutyOffsetBankSize` 16 B. Included from `include_all.h` **before**
+`amp_comp.h`, which sizes its arrays with `chanLevelVoiceDataSize` from here.
+Format: [`_shared/docs/CALIBRATION_STORAGE.md`](../_shared/docs/CALIBRATION_STORAGE.md).
 
-### `FS.ino`
+### `_shared/FS_impl.h`
+
+Shim: sketch `FS.ino` → `_shared/FS_impl.h`. Included once; sorts first among the
+sketch `.ino` files, so these definitions precede the autotune impls that call
+them.
 
 **Functions**
-- `init_FS()` — Mount LittleFS; load amp-comp (8 osc) + PW (4 voices); rewrite PW files if size ≠ `FSPWBankSize`.
-  - **Called from:** `setup1()`; end of `DCO_calibration()`; end of `seed_fake_calibration_tables()`.
-  - **When:** Boot; after auto-cal write; after fake seed.
+- `init_FS()` — Mount LittleFS; create any missing bank; read the leading `FS*BankSize` bytes of all seven banks (never the file's real length) and unpack into `ampCompArray` + float/Q8 frequency arrays (8 osc), `PW_CENTER` / `PW_LOW_LIMIT` / `PW_HIGH_LIMIT` (4 PW channels), `manualCalibrationOffset`, `ampComp440`, `ampCompDutyOffset`. Calls `ensure_pw_fs_banks()` first. Body under `ENABLE_FS_CALIBRATION`; idempotent.
+  - **Called from:** `setup1()`; end of `DCO_calibration()`; end of `seed_fake_calibration_tables()`; `preset_bulk_commit()` after cal restore.
+  - **When:** Boot; after auto-cal write; after fake seed; after bulk cal restore.
+- `write_fs_bank()` — Truncate/create a LittleFS file and write a full bank in one shot.
+  - **Called from:** `seed_fake_calibration_tables()`; `ensure_pw_fs_banks()`; `preset_bulk_commit()` for cal targets.
+  - **When:** Fake seed; PW bank repair; host bulk restore.
 - `update_FS_voice()` — Persist one osc amp table.
-  - **Called from:** `DCO_calibration()` per osc; `seed_fake_calibration_tables()`.
-  - **When:** Auto-cal; fake seed.
-- `update_FS_PWCenter()` — Persist PW center for one MIDI voice (0..3).
-  - **Called from:** `find_PW_center()`; `seed_fake_calibration_tables()`.
-  - **When:** Auto-cal; fake seed.
-- `update_FS_PW_High_Limit()` — Persist PW high limit (voice 0..3).
-  - **Called from:** `find_PW_limit_v2()`; `seed_fake_calibration_tables()`.
-  - **When:** Auto-cal; fake seed.
-- `update_FS_PW_Low_Limit()` — Persist PW low limit (voice 0..3).
-  - **Called from:** `find_PW_limit_v2()`; `seed_fake_calibration_tables()`.
-  - **When:** Auto-cal; fake seed.
-- `update_FS_ManualCalibrationOffset()` — Persist manual offset.
+  - **Called from:** `DCO_calibration()` per osc.
+  - **When:** Auto-cal.
+- `update_FS_PWCenter()` — Persist PW center for one **PW channel** (`cal_pw_channel(osc)` = osc / 2, 0..3); out-of-range index returns silently.
+  - **Called from:** `find_PW_center()`; `apply_param_manual_calibration_store()`.
+  - **When:** PW cal stage; manual store.
+- `update_FS_PW_High_Limit()` — Persist PW high limit (PW channel, bounds-checked).
+  - **Called from:** `find_PW_limit_v2()`.
+  - **When:** PW cal stage.
+- `update_FS_PW_Low_Limit()` — Persist PW low limit (PW channel, bounds-checked).
+  - **Called from:** `find_PW_limit_v2()`.
+  - **When:** PW cal stage.
+- `update_FS_ManualCalibrationOffset()` — Persist manual offset (`i8`/osc).
   - **Called from:** `apply_param_manual_calibration_store()`.
   - **When:** Serial2 param (user store).
-- `generate_fake_calibration_data()` — Build one osc’s 22 `[freq_x100, RANGE PWM]` pairs (archived curve shape, real note schedule).
+- `update_FS_AmpComp440()` — Persist one osc's 440 Hz manual anchor (`AmpComp440`, `u16`/osc).
+  - **Called from:** `apply_param_manual_calibration_store()`; `calibrate_DCO_freq_trace()` when the anchor is corrected.
+  - **When:** Serial2 param (user store); FREQ_TRACE re-anchor.
+- `update_FS_AmpCompDutyOffset()` — Persist one osc's duty target trim (`AmpCompDutyOffset`, `i16`/osc, 0.01 % units).
+  - **Called from:** `apply_param_manual_calibration_store()`.
+  - **When:** Serial2 param (user store).
+- `pack_pw_u16()` — `static`. Pack one `u16` little-endian into a PW bank buffer at `channel * 2`.
+  - **Called from:** `seed_fake_calibration_tables()`; `ensure_pw_fs_banks()`.
+  - **When:** Fake seed; PW bank repair.
+- `fs_file_size_ok()` — `static`, **`PROJECT_INSTRUMENT == 4` only**. True when a cal file's on-disk size equals the expected bank size.
+  - **Called from:** `ensure_pw_fs_banks()`.
+  - **When:** Boot, before the PW reads.
+- `ensure_pw_fs_banks()` — `static`, **`PROJECT_INSTRUMENT == 4` only**. Rewrites all three PW banks from `kPwCenterDefault` / 0 / `DIV_COUNTER_PW` when any is missing or still the old 8-slot (16 B) size. Not compiled on DCO3, where a 6 B bank would look stale and a measured center would be lost.
+  - **Called from:** `init_FS()`.
+  - **When:** Boot; after every cal write that reloads.
+- `generate_fake_calibration_data()` — Build one osc’s 22 `[freq_x100, RANGE PWM]` pairs (archived curve shape, real note schedule). Per-osc spread from a fixed 8-entry `kOscScale`.
   - **Called from:** `seed_fake_calibration_tables()`.
   - **When:** Fake seed.
-- `seed_fake_calibration_tables(force)` — Write full fake amp-comp (8 osc) + PW defaults (4 voices) to LittleFS (`"w"` truncate), then `init_FS()`. Precomputes when `force=true`. Silent (no Serial). `force=false` only if `voiceTables` is missing.
+- `seed_fake_calibration_tables(force)` — Write full fake amp-comp (8 osc) + PW banks (centers from `kPwCenterDefault` in `globals.h`, low 0, high `DIV_COUNTER_PW`) + `AmpComp440` = `DIV_COUNTER/10` to LittleFS (`"w"` truncate, which also repairs a wrong-sized leftover file), then `init_FS()`. Precomputes when `force=true`. Silent (no Serial). `force=false` only if `voiceTables` is missing.
   - **Called from:** `setup1()` with `false` (before `init_FS`); `apply_param_debug_command` case **30** with `true`.
   - **When:** Boot if file missing; on-demand force-overwrite.
 
@@ -1056,8 +1104,8 @@ Non-blocking inner-frame parser. RAW: cmd LUT + fixed payload. COBS (`SERIAL_FRA
 - `apply_param_analog_drift_amount()` — Drift depth.
 - `apply_param_analog_drift_speed()` — Drift speed (recomputes via `expConverterFloat`).
 - `apply_param_analog_drift_spread()` — Drift spread (recomputes speeds).
-- `apply_param_sync_mode()` — → `setSyncMode()`.
-- `apply_param_soft_sync()` — Soft sync threshold 0..3 (hard / poll N=1/2/3) → `setSyncMode()`.
+- `apply_param_sync_mode()` — → `setSyncMode()`. While manual cal runs, the value only lands in `manualCalSavedSyncMode` (the walk needs an unsynced topology).
+- `apply_param_soft_sync()` — Soft sync threshold 0..3 (hard / poll N=1/2/3) → `setSyncMode()`. Also booked in `manualCalSavedSoftSyncChunks` instead while manual cal runs.
 - `apply_param_subosc_divide()` — Sub-osc off / ÷2 / ÷4 → `set_subosc_divide()`.
 - `apply_param_lfo1_to_dco()` — LFO1→DCO depth (`expConverterFloat`).
 - `apply_param_lfo1_to_osc1/2/3()` — additive LFO1 pitch depth per osc (stacks on global FIFO bus).
@@ -1074,7 +1122,7 @@ Non-blocking inner-frame parser. RAW: cmd LUT + fixed payload. COBS (`SERIAL_FRA
 - `apply_param_pwm_pots_manual()` — Manual PWM pots flag.
 - `apply_param_function_key()` — Function key (reserved/no-op).
 - `apply_param_calibration_flag()` — Sets `calibrationFlag` → next `loop1` auto-cal.
-- `apply_param_manual_calibration_flag()` — Manual cal mode; may `serialSendParam32` offsets.
+- `apply_param_manual_calibration_flag()` — Manual cal mode; may `serialSendParam32` offsets. Entry saves `syncMode` / `softSyncChunks`, forces both to 0 (logged as `[MANUAL_CAL] sync neutralised: …` when sync was armed) and raises `calSyncNeutralRequested`, because the cal solo stops the partner of every pair and a synced slave cannot reset itself without a running master; exit restores them before `pio_defer_request_cal_restore()`, whose `start_voice_sms()` rebuilds the real topology.
 - `apply_param_manual_calibration_stage()` — Manual cal stage index.
 - `apply_param_manual_calibration_offset()` — Per-osc manual offset.
 - `apply_param_manual_calibration_store()` — → `update_FS_ManualCalibrationOffset`.
@@ -1179,6 +1227,7 @@ All detailed docs live under `docs/` (this file included). Root `README.md` is t
 | `docs/CALIBRATION_PROCEDURE.md` | Stub — operator workflow in `_shared/docs/CALIBRATION_PROCEDURE.md`. |
 | `_shared/docs/AUTOTUNE.md` | Shared autotune algorithms. |
 | `_shared/docs/CALIBRATION_PROCEDURE.md` | Shared calibration bring-up. |
+| `_shared/docs/CALIBRATION_STORAGE.md` | Shared FS banks: on-flash format, sizing, invariants. |
 
 ---
 
@@ -1207,6 +1256,8 @@ separate symlink so `--libraries` never scans it:
 | Header | Path | Used by |
 |--------|------|---------|
 | `voice_alloc.h` | `_shared/voice_alloc.h` (symlink → `DCO-SHARED-LIBRARIES`, branch `main`) | `voice_alloc_state.h`, `voices.ino`, `midi.ino` |
+| `FS.h` / `FS_impl.h` | `_shared/FS.h`, `_shared/FS_impl.h` | sketch `FS.h` / `FS.ino` shims; readers: `preset_store.ino`, `params.ino`, autotune impls |
+| `mcu_board.h` | `_shared/mcu_board.h` | **not included** — parked; see above |
 
 ## 10. Other external dependencies
 
@@ -1227,6 +1278,7 @@ separate symlink so `--libraries` never scans it:
 | Control the board with no panel | [`tools/dco_control`](../tools/dco_control/README.md) over USB; needs `ENABLE_USB_CONTROL` |
 | Start auto-cal | Param → `apply_param_calibration_flag` → `loop1` → `DCO_calibration` |
 | Manual cal UI | `apply_param_manual_calibration_*` → `loop1` manual branch |
+| Calibration bank on flash (size, layout, a new bank) | [`_shared/docs/CALIBRATION_STORAGE.md`](../_shared/docs/CALIBRATION_STORAGE.md); `_shared/FS.h` + `_shared/FS_impl.h` — sizes are load-bearing for presets |
 | MIDI notes | `loop` → MIDI `.read` → `note_on`/`note_off` → local `noteStart[]`/`noteEnd[]` (no serial note frames) |
 | Mono note priority / held notes | `midi.ino` mono stack (`mono_note_stack_*`); porta still via `note_on_flag` → `voices.ino` |
 | MIDI CC assignments | `tools/dco_control/params.py` `cc=` field → `gen_midi_map.py` → `midi_cc_map.h` + [`MIDI_CC_MAP.md`](MIDI_CC_MAP.md) |
@@ -1234,4 +1286,5 @@ separate symlink so `--libraries` never scans it:
 | OSC2 note-on phase align | `PARAM_OSC_SYNC_MODE` → `oscSync` / `phaseAlignOSC2`; EXACT_Y in `voices.ino` → `osc_phase_align_hold_stopped` ([`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §8) |
 | Measure where the time goes | `RUNNING_AVERAGE` in `DCO.ino` → probe table in `bench.h` → debug command 10 |
 | Measure SRAM / heap / stack | dump cmd **13** → [`MEMORY.md`](MEMORY.md) / `mem_diag.ino`; `ENABLE_MEM_DIAG` + runtime 14/15; pin policy there |
+| RANGE PWM wrap / amplitude resolution vs carrier | `RANGE_PWM_WRAP` in [`../../project_config.h`](../../project_config.h) (`DIV_COUNTER` aliases it). After a change, re-seed or re-calibrate: LittleFS `voiceTables` / `AmpComp440` store absolute PWM counts. |
 | RANGE carrier / slice vs PIO dither | `RANGE0_PIO_DITHER_TEST` in `DCO.ino` → `PWM.h` / `PWM.ino` / [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §4.4 |

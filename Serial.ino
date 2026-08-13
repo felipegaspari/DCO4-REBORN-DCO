@@ -1,5 +1,6 @@
 // Serial1 = MIDI DIN @ 31250; Serial2 = Mainboard @ 2.5M.
-// USB CDC still accepts Input-style 'a'..'d'/'p'/'q' for bench without the panel.
+// Serial2 TX is DMA (uart1 DREQ); RX stays Arduino UART IRQ. USB CDC is not UART.
+// USB CDC still accepts Input-style 'a'..'d'/'p'/'q'/'s' for bench without the panel.
 // Analog VCA/VCF CVs live on Mainboard: USB 'a'/'b'/'d' are mirrored on Serial2.
 
 // USB uses the Input-style LUT. Serial2 uses the Mainboard LUT.
@@ -12,18 +13,18 @@ static ParamIngress g_param_ingress = PARAM_SRC_INPUT;
 
 static void serial_forward_input_block_to_mb(char cmd, const uint8_t* payload, uint8_t len) {
   if (g_param_ingress != PARAM_SRC_USB) return;
-  if (Serial2.availableForWrite() < 1) return;
-  serial_frame_write(Serial2, (uint8_t)cmd, payload, len);
+  if (!serial2_dma_tx_ready()) return;
+  serial_frame_write(Serial2Dma, (uint8_t)cmd, payload, len);
 }
 
 static void serial_send_adsr_block_to_mb(uint8_t cmd, uint16_t a, uint16_t d, uint16_t s, uint16_t r) {
-  if (Serial2.availableForWrite() < 1) return;
+  if (!serial2_dma_tx_ready()) return;
   uint8_t payload[INPUT_SERIAL_LEN_ADSR_BLOCK];
   encode_u16_le(payload + 0, a);
   encode_u16_le(payload + 2, d);
   encode_u16_le(payload + 4, s);
   encode_u16_le(payload + 6, r);
-  serial_frame_write(Serial2, cmd, payload, INPUT_SERIAL_LEN_ADSR_BLOCK);
+  serial_frame_write(Serial2Dma, cmd, payload, INPUT_SERIAL_LEN_ADSR_BLOCK);
 }
 
 void serial_send_adsr_vca_block_to_mb() {
@@ -47,24 +48,34 @@ void serial_send_adsr_dco_block_to_mb() {
 }
 
 void serial_send_filter_block_to_mb() {
-  if (Serial2.availableForWrite() < 1) return;
+  if (!serial2_dma_tx_ready()) return;
   uint8_t payload[INPUT_SERIAL_LEN_FILTER_BLOCK];
   encode_u16_le(payload + 0, CUTOFF);
   encode_u16_le(payload + 2, RESONANCE);
   encode_u16_le(payload + 4, (uint16_t)ADSR2toVCF);
   encode_u16_le(payload + 6, LFO2toVCF);
-  serial_frame_write(Serial2, INPUT_CMD_FILTER_BLOCK, payload, INPUT_SERIAL_LEN_FILTER_BLOCK);
+  serial_frame_write(Serial2Dma, INPUT_CMD_FILTER_BLOCK, payload, INPUT_SERIAL_LEN_FILTER_BLOCK);
 }
 
 void serial_send_screen_signal_to_mb(uint8_t signal) {
-  if (Serial2.availableForWrite() < 1) return;
-  serial_frame_write(Serial2, SERIAL_CMD_SCREEN_SIGNAL, &signal, SERIAL_PAYLOAD_LEN_SCREEN_SIGNAL);
+  if (!serial2_dma_tx_ready()) return;
+  serial_frame_write(Serial2Dma, SERIAL_CMD_SCREEN_SIGNAL, &signal, SERIAL_PAYLOAD_LEN_SCREEN_SIGNAL);
 }
 
 void serial_send_preset_loaded_to_mb(uint8_t slot) {
-  if (Serial2.availableForWrite() < 1) return;
+  if (!serial2_dma_tx_ready()) return;
   uint8_t payload[INPUT_SERIAL_LEN_PRESET_LOADED] = { slot };
-  serial_frame_write(Serial2, INPUT_CMD_PRESET_LOADED, payload, INPUT_SERIAL_LEN_PRESET_LOADED);
+  serial_frame_write(Serial2Dma, INPUT_CMD_PRESET_LOADED, payload, INPUT_SERIAL_LEN_PRESET_LOADED);
+}
+
+void serial_send_preset_scroll_to_mb(uint8_t slot) {
+  if (!serial2_dma_tx_ready()) return;
+  uint8_t payload[SERIAL_PAYLOAD_LEN_SCREEN_PRESET_SCROLL];
+  payload[0] = slot;
+  for (uint8_t i = 0; i < 16; ++i) {
+    payload[1 + i] = presetName[i];
+  }
+  serial_frame_write(Serial2Dma, (uint8_t)'q', payload, SERIAL_PAYLOAD_LEN_SCREEN_PRESET_SCROLL);
 }
 
 static void input_handle_adsr1(char cmd, const uint8_t* payload, uint8_t len) {
@@ -150,12 +161,15 @@ static void input_handle_filter_block(char cmd, const uint8_t* payload, uint8_t 
 // (preset_param_is_persistable), shared with the preset shadow capture.
 
 void serialSendParam16(byte paramNumber, int16_t paramValue, bool force) {
-  if (!force && Serial2.availableForWrite() < 1) {
+  if (!force && !serial2_dma_tx_ready()) {
     return;
+  }
+  while (force && !serial2_dma_tx_ready()) {
+    tight_loop_contents();
   }
   uint8_t payload[INPUT_SERIAL_LEN_PARAM_16];
   encode_param_p(payload, (uint8_t)paramNumber, paramValue);
-  serial_frame_write(Serial2, INPUT_CMD_PARAM_16, payload, INPUT_SERIAL_LEN_PARAM_16);
+  serial_frame_write(Serial2Dma, INPUT_CMD_PARAM_16, payload, INPUT_SERIAL_LEN_PARAM_16);
 }
 
 void serial_echo_persistable_param16(uint8_t id, int16_t value) {
@@ -182,6 +196,13 @@ static void input_handle_preset_name(char, const uint8_t* payload, uint8_t len) 
   }
 }
 
+// USB 's' (1-byte ScreenMode). Host Silent before a patch push; PresetScroll
+// after PARAM_UI_PRESET_SCROLL. Relayed to Mainboard → Screen, same as DCO TX.
+static void usb_handle_screen_signal(char, const uint8_t* payload, uint8_t len) {
+  if (len != SERIAL_PAYLOAD_LEN_SCREEN_SIGNAL) return;
+  serial_send_screen_signal_to_mb(payload[0]);
+}
+
 // Bulk restore staging ('B') and commit ('C') → preset_store.ino.
 static void input_handle_bulk_chunk(char, const uint8_t* payload, uint8_t len) {
   preset_bulk_chunk(payload, len);
@@ -204,6 +225,7 @@ static const SerialCommandDef inputSerialCommands[] = {
   { INPUT_CMD_FILTER_BLOCK,  INPUT_SERIAL_LEN_FILTER_BLOCK, input_handle_filter_block },
   { INPUT_CMD_PARAM_16,      INPUT_SERIAL_LEN_PARAM_16,     input_handle_param16      },
   { INPUT_CMD_PRESET_NAME,   INPUT_SERIAL_LEN_PRESET_NAME,  input_handle_preset_name  },
+  { SERIAL_CMD_SCREEN_SIGNAL, SERIAL_PAYLOAD_LEN_SCREEN_SIGNAL, usb_handle_screen_signal },
   { INPUT_CMD_BULK_CHUNK,    INPUT_SERIAL_LEN_BULK_CHUNK,   input_handle_bulk_chunk   },
   { INPUT_CMD_BULK_COMMIT,   INPUT_SERIAL_LEN_BULK_COMMIT,  input_handle_bulk_commit  },
 };
@@ -319,6 +341,7 @@ void init_serial() {
   Serial2.setRX(21);
   Serial2.setTX(20);
   Serial2.begin(2500000);
+  serial2_dma_init();
 
   serial_command_table_init(
     inputSerialLut,
@@ -354,6 +377,7 @@ void init_usb() {
 }
 
 void __not_in_flash_func(serial_panel_task)() {
+  serial2_dma_poll();
   g_param_ingress = PARAM_SRC_INPUT;
   serial_parser_drain(
     mainboardSerialParser,
@@ -383,39 +407,42 @@ void __not_in_flash_func(serial_usb_task)() {
 #endif  // ENABLE_USB_CONTROL
 
 // TX slim 'x' to Mainboard: gap (154) and cal offsets (155). MB relays to Input → Screen.
-// Drop the frame if Serial2 TX is not ready (USB-only bench with no Mainboard).
+// Drop if Serial2 TX is not ready unless force (USB-only bench with no Mainboard).
 // Persistable USB/MIDI 'p' echo is serialSendParam16 / serial_echo_persistable_param16.
-void serialSendParam32(byte paramNumber, uint32_t paramValue) {
-  if (Serial2.availableForWrite() < 1) {
+void serialSendParam32(byte paramNumber, uint32_t paramValue, bool force) {
+  if (!force && !serial2_dma_tx_ready()) {
     return;
+  }
+  while (force && !serial2_dma_tx_ready()) {
+    tight_loop_contents();
   }
   uint8_t payload[INPUT_SERIAL_LEN_PARAM_32];
   encode_param32(payload, (uint8_t)paramNumber, paramValue);
-  serial_frame_write(Serial2, INPUT_CMD_PARAM_32, payload, INPUT_SERIAL_LEN_PARAM_32);
+  serial_frame_write(Serial2Dma, INPUT_CMD_PARAM_32, payload, INPUT_SERIAL_LEN_PARAM_32);
 }
 
 void serial_send_note_on(uint8_t voice, uint8_t velocity, uint8_t note, uint8_t flags) {
-  if (Serial2.availableForWrite() < 1) {
+  if (!serial2_dma_tx_ready()) {
     return;
   }
   uint8_t payload[SERIAL_PAYLOAD_LEN_NOTE_ON] = { voice, velocity, note, flags };
-  serial_frame_write(Serial2, SERIAL_CMD_NOTE_ON, payload, SERIAL_PAYLOAD_LEN_NOTE_ON);
+  serial_frame_write(Serial2Dma, SERIAL_CMD_NOTE_ON, payload, SERIAL_PAYLOAD_LEN_NOTE_ON);
 }
 
 void serial_send_note_off(uint8_t voice) {
-  if (Serial2.availableForWrite() < 1) {
+  if (!serial2_dma_tx_ready()) {
     return;
   }
-  serial_frame_write(Serial2, SERIAL_CMD_NOTE_OFF, &voice, SERIAL_PAYLOAD_LEN_NOTE_OFF);
+  serial_frame_write(Serial2Dma, SERIAL_CMD_NOTE_OFF, &voice, SERIAL_PAYLOAD_LEN_NOTE_OFF);
 }
 
 void serial_send_expression() {
-  if (Serial2.availableForWrite() < 1) {
+  if (!serial2_dma_tx_ready()) {
     return;
   }
   uint8_t payload[SERIAL_PAYLOAD_LEN_EXPRESSION];
   payload[0] = midi_aftertouch;
   payload[1] = midi_mod_wheel;
   encode_u16_le(payload + 2, (uint16_t)midi_pitch_bend);
-  serial_frame_write(Serial2, SERIAL_CMD_EXPRESSION, payload, SERIAL_PAYLOAD_LEN_EXPRESSION);
+  serial_frame_write(Serial2Dma, SERIAL_CMD_EXPRESSION, payload, SERIAL_PAYLOAD_LEN_EXPRESSION);
 }

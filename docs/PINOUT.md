@@ -1,16 +1,18 @@
 # DCO4-REBORN pinout — 4 voices × 2 oscillators
 
-**Status:** Live RESET / RANGE / **PW ×4** / cal match **old DCO4 WEACT**. **Not frozen for PCB fab.** Four SUB GPIOs are TBD (`SUBOSC_PINS[]` still `0xFF`). Cut/Res/VCA/dist/levels/wave-mux **firmware is kept** behind `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` (off) for later expansion — not used on this 4×2 board (draft pins collide with RESET/RANGE).
+**Status:** Live RESET / RANGE selected by `DCO_MCU_BOARD` in [`project_config.h`](../../project_config.h) (default **WeAct RP2040**). **PW ×4** / cal match old DCO4. **Not frozen for PCB fab.** Four SUB GPIOs are TBD (`SUBOSC_PINS[]` still `0xFF`). Cut/Res/VCA/dist/levels/wave-mux **firmware is kept** behind `ENABLE_CV_OUTS` / `ENABLE_WAVE_MUX` (off) for later expansion — not used on this 4×2 board (draft pins collide with RESET/RANGE).
 
-**Platform:** RP2040 and RP2350 (WEACT / Pico-class). Dual-MCU: [`DUAL_MCU.md`](DUAL_MCU.md). Live constants: [`globals.h`](../globals.h).
+**Platform:** RP2040 and RP2350 (WEACT / Pico / Pico 2). Dual-MCU: [`DUAL_MCU.md`](DUAL_MCU.md). Live constants: [`globals.h`](../globals.h).
 
 Related: [`MAINBOARD_ABSORPTION.md`](MAINBOARD_ABSORPTION.md), [`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md).
 
 ---
 
-## Live DCO outs (old DCO4 WEACT)
+## Live DCO outs (`DCO_MCU_BOARD`)
 
-From [`globals.h`](../globals.h):
+From [`globals.h`](../globals.h). Switch the MCU module in [`project_config.h`](../../project_config.h) (`DCO_MCU_WEACT_RP2040` / `DCO_MCU_PICO` / `DCO_MCU_PICO2`). Official Pico and Pico 2 share the 40-pin header; only osc 0/1 move because WeAct breaks out GPIO 29 and Pico/Pico 2 use that pad as the VSYS ADC.
+
+**WeAct RP2040** (`DCO_MCU_WEACT_RP2040`, this tree’s default):
 
 | Osc / voice | RESET | RANGE | PIO block / default SM | PW (per voice) |
 |-------------|-------|-------|------------------------|----------------|
@@ -23,12 +25,22 @@ From [`globals.h`](../globals.h):
 | V3 A (osc 6) | 12 | 9 | pio1 SM2 | GP5 |
 | V3 B (osc 7) | 8 | 7 | pio1 SM3 | — |
 
+**Raspberry Pi Pico / Pico 2** (`DCO_MCU_PICO` / `DCO_MCU_PICO2`) — osc 2–7 unchanged:
+
+| Osc / voice | RESET | RANGE |
+|-------------|-------|-------|
+| V0 A (osc 0) | 28 | 27 |
+| V0 B (osc 1) | 26 | 22 |
+| V1–V3 (osc 2–7) | same as WeAct | same as WeAct |
+
 `VOICE_TO_PIO[]` = `{0,0,0,0,1,1,1,1}`. A voice pair (A+B) **must share one PIO block** so hard/soft sync can share a RESET pin. `VOICE_TO_SM[]` is mutable: within a pair the slave takes the lower local SM so hard-sync sideset wins. `PW_PINS[]` is length **4**: `{3,2,4,5}` (one PW PWM per MIDI voice — shipping).
 
 | Function | GPIO | Notes |
 |----------|------|-------|
 | Cal sense | **10** | `DCO_calibration_pin` (old DCO4). GP6 is free. |
-| Board fix rails | 23, 24 | GPIO out HIGH (`DCO.ino`) |
+| WeAct KEY | **23** | `USER_KEY_PIN`: `INPUT_PULLUP`, hold = MIDI 69 / A440. Not a header output. |
+| Analog board-fix | **24** | `BOARD_FIX_PIN` WeAct only, OUT HIGH. Pico/Pico 2: GP24 is VBUS sense — not driven. |
+| SMPS Power Save | **23** | Pico/Pico 2 only (`SMPS_PS_PIN`): OUT HIGH forces RT6150 PWM (less 3.3 V ripple). |
 | SUB ×4 | **TBD** | RP2350 only: pio2 SM0–3, one per voice, wait on that voice’s OSC A RESET (`RESET_PINS[v*2]`). All `SUBOSC_PINS[]` = `0xFF` until assigned. **GP8 is OSC8 RESET — do not reuse DCO3’s single SUB.** RP2040: no sub PIO. |
 | Noise PIO LFSR | off | CPU `DCO_Noise` only. `NOISE_OUT_PIN` 2 unused. |
 | RANGE PWM | HW slice | `RANGE0_PIO_DITHER_TEST` off (8 oscs). |
@@ -93,13 +105,14 @@ Cut/Res/VCA/dist/osc-sub levels/wave mux are **not wired** on this 4×2 project.
 | 0,1 | HW MIDI UART0 |
 | 2,3,4,5 | PW voices 0–3 |
 | 6 | free (later SUB candidate) |
-| 7,9,11,14,16,17,22,28 | RANGE ×8 |
-| 8,12,13,15,18,19,27,29 | RESET ×8 |
+| 7,9,11,14,16,17,22,28 | RANGE ×8 (WeAct). Pico / Pico 2: RANGE osc 0 is GP27, not GP28 |
+| 8,12,13,15,18,19,27,29 | RESET ×8 (WeAct). Pico / Pico 2: RESET osc 0/1 are GP28/26, not GP29/27 |
 | 10 | Cal sense |
 | 20,21 | HW UART1 Input |
-| 23,24 | Board fix |
+| 23 | WeAct: onboard KEY (A440). Pico/Pico 2: SMPS PS, OUT HIGH |
+| 24 | WeAct: analog board-fix OUT HIGH. Pico/Pico 2: VBUS sense, not driven |
 | 25 | Pico LED (not on header) |
-| 26 | free (Dist Mix only if CV is enabled later) |
+| 26 | Pico / Pico 2: RESET osc 1. WeAct: free (Dist Mix only if CV is enabled later) |
 | SUB ×4 | TBD (RP2350 pio2 SM0–3) |
 
 ---

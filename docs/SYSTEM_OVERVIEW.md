@@ -16,7 +16,7 @@ Board-specific detail lives in each folder’s `docs/`. Reintegration contract: 
 | **Screen** | `SCREEN-CONTROLLER/` | RP2040 | LVGL UI |
 | Voice aux | `VOICE-AUX/` | RP2040 | Optional Dist / filter-mode helper |
 
-OSC3 ParamIds (33–35, 38, 87–89) stay in the enum for presets. Analog 4×2 has SQR1 / SQR2 / Sub only — OSC3 level dest is a no-op on Mainboard. Dist 52–53 is stubbed unless that analog exists.
+OSC3 ParamIds (33–35, 38, 87–89) stay in the enum for presets. Analog 4×2 has OSC A / OSC B / Sub levels only — OSC3 level dest is a no-op on Mainboard. Dist 52–53 is stubbed unless that analog exists.
 
 **ParamId space:** `params_def.h` is one canonical superset, byte-identical across all seven live board copies of both projects; the master lives at `DCO3-MONOSYNTH/DCO/params_def.h` — edit there and copy out. It is not a per-board fork: each board routes a subset, and existing ids are never renumbered. `serial_input_protocol.h` shares its command values and payload lengths the same way, but each board's copy is trimmed to the commands that board parses or sends.
 

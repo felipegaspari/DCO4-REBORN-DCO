@@ -326,8 +326,8 @@ bool preset_store_load(uint8_t slot) {
 
   // preset_record_apply() mirrors every persistable param and all four blocks to
   // the Mainboard, which forwards them to the Screen as parameter toasts. Silence
-  // the Screen for the duration so the preset name Input latches from the 'L'
-  // below survives — the Screen defers the redraw and runs it when silence lifts.
+  // the Screen for the duration so the Screen 'q' (slot+name) below is latched
+  // before PresetScroll lifts silence. 'L' still goes to Input for the panel.
   // Both markers sit past validation, so they stay balanced on every caller path:
   // boot recall, MIDI program change, dco_control, and Input-triggered loads.
   serial_send_screen_signal_to_mb(SCREEN_SIGNAL_SILENT);
@@ -338,6 +338,7 @@ bool preset_store_load(uint8_t slot) {
   Serial.printf("[preset] loaded slot=%u name=\"%.16s\"\n",
                 (unsigned)slot, (const char*)presetName);
   serial_send_preset_loaded_to_mb(slot);
+  serial_send_preset_scroll_to_mb(slot);
   serial_send_screen_signal_to_mb(SCREEN_SIGNAL_PRESET_SCROLL);
   return true;
 }
@@ -351,7 +352,7 @@ static uint8_t presetDirPushChunk = PRESET_CHUNK_COUNT;
 // and DAC writes, so sending them in one go loses most of the directory. The
 // task below spreads them out instead; a repeat request just restarts it.
 void preset_store_send_directory_to_mb() {
-  if (Serial2.availableForWrite() < 1) return;  // nothing listening on this link
+  if (!serial2_dma_tx_ready()) return;  // nothing listening on this link
   presetDirPushChunk = 0;
 }
 
@@ -390,7 +391,7 @@ void preset_store_dir_push_task() {
       }
     }
 
-    serial_frame_write(Serial2, INPUT_CMD_PRESET_DIR_ENTRY, entry, sizeof(entry));
+    serial_frame_write(Serial2Dma, INPUT_CMD_PRESET_DIR_ENTRY, entry, sizeof(entry));
   }
   if (openOk) f.close();
 }
@@ -436,7 +437,7 @@ void preset_store_dump(int16_t sel) {
   dump_buffer("preset", sel, presetRecordBuf, PRESET_RECORD_SIZE);
 }
 
-// PARAM_CAL_DUMP: dump calibration LittleFS files as hex (0 / -1 = all five).
+// PARAM_CAL_DUMP: dump calibration LittleFS files as hex (0 / -1 = all seven).
 void preset_store_cal_dump(int16_t sel) {
   const bool all = (sel <= CAL_DUMP_ALL);
   if (all || sel == CAL_DUMP_VOICE_TABLES)  dump_fs_file("voiceTables", "voiceTables", FSBankSize);

@@ -70,6 +70,7 @@ Ensure `ADSR_Bezier` is on branch **`Q15`** (and `mo-lfo` on **`q15`**). To try 
 See `docs/` — especially:
 
 - [`docs/PRESET_STORE.md`](docs/PRESET_STORE.md) — 256-slot LittleFS preset store, host dump/restore, and the `'N'`/`'O'`/`'L'` front-panel directory protocol
+- [`_shared/docs/CALIBRATION_STORAGE.md`](_shared/docs/CALIBRATION_STORAGE.md) — the seven calibration banks on flash: byte format, per-board sizing, and what must never change (`FS.h` / `FS.ino` are shims over the shared library)
 - [`docs/BUILD_FLAGS.md`](docs/BUILD_FLAGS.md) — complete compile-time flag catalog (`DCO.ino` + headers + vendored libs)
 - [`docs/ENGINE_OPTIONS.md`](docs/ENGINE_OPTIONS.md) — float vs fixed voice/amp/CV math depth
 - [`docs/BENCHMARKING.md`](docs/BENCHMARKING.md) — hot-path CPU profiler

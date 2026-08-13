@@ -24,6 +24,9 @@ enum SerialCmd : uint8_t {
 // 's': [ScreenMode] — the raw byte the Screen puts in serialSignal.
 static constexpr uint8_t SERIAL_PAYLOAD_LEN_SCREEN_SIGNAL = 1;
 
+// DCO → MB → Screen 'q': [slot:u8][name:16]. Not Input's 16-byte save-name 'q'.
+static constexpr uint8_t SERIAL_PAYLOAD_LEN_SCREEN_PRESET_SCROLL = 17;
+
 // The two modes the DCO sends. The full enum is the Screen's screen_mode.h.
 static constexpr uint8_t SCREEN_SIGNAL_PRESET_SCROLL = 1;
 static constexpr uint8_t SCREEN_SIGNAL_SILENT        = 6;
