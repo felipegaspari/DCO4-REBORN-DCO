@@ -177,7 +177,7 @@ static constexpr uint8_t USER_KEY_PIN = 23;                 // active-low, INPUT
 static constexpr uint8_t BOARD_FIX_PIN = 24;                // analog carrier rail
 #elif (DCO_MCU_BOARD == DCO_MCU_PICO) || (DCO_MCU_BOARD == DCO_MCU_PICO2)
 static constexpr uint8_t RESET_PINS[NUM_OSCILLATORS] = { 28, 26, 19, 18, 15, 13, 12, 8 };
-static constexpr uint8_t RANGE_PINS[NUM_OSCILLATORS] = { 27, 22, 17, 16, 14, 11, 9, 7 };
+static constexpr uint8_t RANGE_PINS[NUM_OSCILLATORS] = { 21, 22, 17, 16, 14, 11, 9, 7 };
 static constexpr uint8_t SMPS_PS_PIN = 23;                  // RT6150 PS: drive HIGH
 static constexpr uint8_t USER_KEY_PIN = MCU_PIN_UNASSIGNED;
 static constexpr uint8_t BOARD_FIX_PIN = MCU_PIN_UNASSIGNED;  // GP24 is VBUS sense
