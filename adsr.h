@@ -56,6 +56,11 @@ int16_t ADSR_VCA_Level_q15[NUM_VOICES_TOTAL];
 int16_t ADSR_VCF_Level_q15;
 int16_t ADSR_VCF2_Level_q15;
 
+volatile int16_t ADSR1Level_q15_volatile[NUM_VOICES_TOTAL];
+volatile int16_t ADSR_VCA_Level_q15_volatile[NUM_VOICES_TOTAL];
+volatile int16_t ADSR_VCF_Level_q15_volatile;
+volatile int16_t ADSR_VCF2_Level_q15_volatile;
+
 static constexpr uint16_t ADSR_1_CC = 4095;
 // Max CV code / levelDac export for EnvVCA/EnvVCF (legal u12 peak).
 static constexpr uint16_t ADSR_CV_CC = 4095;

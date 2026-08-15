@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 // Periods (µs) — compile-time immediates in microsTimer() / microsTimer2().
+static constexpr uint32_t kTimer49us  = 49;
 static constexpr uint32_t kTimer50us  = 50;
 static constexpr uint32_t kTimer51us  = 51;
 static constexpr uint32_t kTimer99us  = 99;
@@ -20,6 +21,7 @@ static constexpr uint32_t kTimer5ms    = 5000;
 // static constexpr uint32_t kTimer1000ms = 1000000;
 
 // --- Core 0 (loop / microsTimer) ---
+unsigned long timer49micros = 0;
 unsigned long timer50micros = 0;
 unsigned long timer51micros = 0;
 unsigned long timer99micros = 0;
@@ -35,6 +37,7 @@ unsigned long timer1ms = 0;
 // unsigned long timer500ms = 0;
 // unsigned long timer1000ms = 0;
 
+bool timer49microsFlag = 0;
 bool timer50microsFlag = 0;
 bool timer51microsFlag = 0;
 bool timer99microsFlag = 0;

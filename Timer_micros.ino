@@ -1,7 +1,7 @@
 // Seed last-fire stamps for both cores. Periods live as constexpr in Timer_micros.h.
 void init_micros_timers() {
   const unsigned long now = micros();
-
+  timer49micros = now;  timer49microsFlag = 0;
   timer50micros = now;  timer50microsFlag = 0;
   timer51micros = now;  timer51microsFlag = 0;
   timer99micros = now;  timer99microsFlag = 0;
@@ -37,6 +37,7 @@ void init_micros_timers() {
 void __not_in_flash_func(microsTimer)() {
   const unsigned long now = micros();
 
+  timer49microsFlag = 0;  if (now - timer49micros > kTimer49us) { timer49micros = now; timer49microsFlag = 1; }
   timer50microsFlag = 0;  if (now - timer50micros > kTimer50us) { timer50micros = now; timer50microsFlag = 1; }
   timer51microsFlag = 0;  if (now - timer51micros > kTimer51us) { timer51micros = now; timer51microsFlag = 1; }
   timer99microsFlag = 0;  if (now - timer99micros > kTimer99us) { timer99micros = now; timer99microsFlag = 1; }

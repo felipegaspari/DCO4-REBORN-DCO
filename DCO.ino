@@ -30,32 +30,32 @@
 //   4 FAST_Q4  — Q4 Hz → 32/32 (fastest, least accurate)
 // Value 0 is GOLD, not the old HP0 Q4 path (that is FAST_Q4 = 4).
 // Value 1 is FLOAT, not the old PRECISE_Q8 path (Q8 is 3).
-#define CLKDIV_GOLD        0
-#define CLKDIV_FLOAT       1
-#define CLKDIV_Q16         2
-#define CLKDIV_Q8          3
-#define CLKDIV_FAST_Q4     4
+#define CLKDIV_GOLD 0
+#define CLKDIV_FLOAT 1
+#define CLKDIV_Q16 2
+#define CLKDIV_Q8 3
+#define CLKDIV_FAST_Q4 4
 
 // =============================================================================
 // ENGINE — board defaults (Arduino core: PICO_RP2350 / else)
 // =============================================================================
 #if defined(PICO_RP2350)
-  // RP2350 has an FPU: float voice + float amp-comp dual-build (LUT + Q8 for A/B).
-  #ifndef USE_FLOAT_VOICE_TASK
-    #define USE_FLOAT_VOICE_TASK
-  #endif
-  #ifndef PITCH_INTERP_MODE
-    #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT_FAST
-  #endif
-  #ifndef USE_FLOAT_AMP_COMP
-    #define USE_FLOAT_AMP_COMP
-  #endif
-  #ifndef AMP_COMP_METHOD_DEFAULT
-    #define AMP_COMP_METHOD_DEFAULT 0   // FLOAT_QUAD (0); LUT=1, FIXED=2 — cmds 20–22
-  #endif
-  #ifndef CLKDIV_MODE
-    #define CLKDIV_MODE CLKDIV_FLOAT  // native Hz on float voice
-  #endif
+// RP2350 has an FPU: float voice + float amp-comp dual-build (LUT + Q8 for A/B).
+#ifndef USE_FLOAT_VOICE_TASK
+#define USE_FLOAT_VOICE_TASK
+#endif
+#ifndef PITCH_INTERP_MODE
+#define PITCH_INTERP_MODE PITCH_INTERP_FLOAT_FAST
+#endif
+#ifndef USE_FLOAT_AMP_COMP
+#define USE_FLOAT_AMP_COMP
+#endif
+#ifndef AMP_COMP_METHOD_DEFAULT
+#define AMP_COMP_METHOD_DEFAULT 0  // FLOAT_QUAD (0); LUT=1, FIXED=2 — cmds 20–22
+#endif
+#ifndef CLKDIV_MODE
+#define CLKDIV_MODE CLKDIV_FLOAT  // native Hz on float voice
+#endif
 #else
 // RP2040 / fallback: fixed voice + lean Q8 amp (no float amp tables / LUT RAM).
 // CV outs stay fixed-point (no USE_FLOAT_CV_OUTS) — soft-float would choke Core1.
@@ -173,10 +173,13 @@
 // BENCH_USE_SYSTICK: 1 = SysTick for PERIOD + stages; 0 = 1 us timer for all probes.
 // Dump window (1 s gate) always uses bench_us_now(). BENCH_PERIOD_MAX_US: discard PERIOD
 // samples longer than this (autotune / wrap-looking stalls).
+
 #define RUNNING_AVERAGE
 // #define RUNNING_AVERAGE_FINE
 #define RUNNING_AVERAGE_PERIOD
+
 // #define BENCH_PATH_STATS
+
 #ifndef BENCH_STAGE_STRIDE
 #define BENCH_STAGE_STRIDE 1
 #endif
@@ -195,7 +198,7 @@
 // #define AMP_COMP_BENCHMARK
 
 #ifdef AMP_COMP_BENCHMARK
-  #define USE_FLOAT_AMP_COMP
+#define USE_FLOAT_AMP_COMP
 #endif
 // =============================================================================
 // BOARD / IO
@@ -304,8 +307,11 @@ void setup() {
   init_DRIFT_LFOs();
 
 
-  // init_tuner();
-  // init_tuning_tables();
+#if (DCO_MCU_BOARD == DCO_MCU_PICO) || (DCO_MCU_BOARD == DCO_MCU_PICO2)
+  for (uint8_t i = 0; i < NUM_OSCILLATORS; i++) {
+    pinMode(RANGE_PINS[i], OUTPUT_8MA);
+  }
+#endif
 
   pinMode(DCO_calibration_pin, INPUT);
 
@@ -393,28 +399,45 @@ void __not_in_flash_func(loop)() {
     BENCH_END(loop0_serial);
   }
 
+    BENCH_BEGIN(loop0_lfo1);
+    LFO1();
+    BENCH_END(loop0_lfo1);
+
+    BENCH_BEGIN(loop0_lfo2);
+    LFO2();
+    BENCH_END(loop0_lfo2);
+
+
   if (timer50microsFlag == 1) {
 #ifndef ENABLE_MB_MOD_STREAM
-    {
-      BENCH_BEGIN(loop0_lfo1);
-      LFO1();
-      BENCH_END(loop0_lfo1);
-    }
 
-
-    {
-      BENCH_BEGIN(loop0_lfo2);
-      LFO2();
-      BENCH_END(loop0_lfo2);
-    }
+    BENCH_BEGIN(loop1_cv_outs);
+    update_CV_outs();
+    BENCH_END(loop1_cv_outs);
 #endif
   }
   if (timer51microsFlag == 1) {
+    BENCH_BEGIN(loop0_drift);
+    DRIFT_LFOs();
+    BENCH_END(loop0_drift);
+  }
+
+  if (timer49microsFlag == 1) {
+    BENCH_BEGIN(loop1_adsr);
+    ADSR_update();
+    BENCH_END(loop1_adsr);
+  }
+
+  {
+    BENCH_BEGIN(loop1_noise);
     {
-      BENCH_BEGIN(loop0_drift);
-      DRIFT_LFOs();
-      BENCH_END(loop0_drift);
+      BENCH_BEGIN(loop1_noise_refill);
+      dcoNoisePioRefill();
+      BENCH_END(loop1_noise_refill);
     }
+    noiseLevel[0] = noise0.next();
+    noiseLevel[1] = noise1.next();
+    BENCH_END(loop1_noise);
   }
 
   // Snapshot core 0's probes and print once core 1 has handed its own over. All profiler
@@ -433,18 +456,6 @@ void __not_in_flash_func(loop1)() {
     BENCH_BEGIN(loop1_microsTimer);
     microsTimer2();
     BENCH_END(loop1_microsTimer);
-  }
-
-  {
-    BENCH_BEGIN(loop1_noise);
-    {
-      BENCH_BEGIN(loop1_noise_refill);
-      dcoNoisePioRefill();
-      BENCH_END(loop1_noise_refill);
-    }
-    noiseLevel[0] = noise0.next();
-    noiseLevel[1] = noise1.next();
-    BENCH_END(loop1_noise);
   }
 
   if (calibrationFlag == true) {
@@ -467,10 +478,8 @@ void __not_in_flash_func(loop1)() {
         if (ampComp440[currentDCO] != 0) {
           ampCompCalibrationVal = ampComp440[currentDCO];
         } else {
-          float scale = note_to_freq(manual_cal_reference_note) /
-                        note_to_freq(manual_DCO_calibration_start_note);
-          ampCompCalibrationVal = (uint16_t)(
-            (initManualAmpCompCalibrationValPreset + manualCalibrationOffset[currentDCO]) * scale + 0.5f);
+          float scale = note_to_freq(manual_cal_reference_note) / note_to_freq(manual_DCO_calibration_start_note);
+          ampCompCalibrationVal = (uint16_t)((initManualAmpCompCalibrationValPreset + manualCalibrationOffset[currentDCO]) * scale + 0.5f);
         }
       } else {
         VOICE_NOTES[0] = manual_DCO_calibration_start_note;
@@ -491,36 +500,34 @@ void __not_in_flash_func(loop1)() {
     } else {
       DCO_calibration();
     }
-  } else if (calibrationVerifyRequested) {
+  } /*else if (calibrationVerifyRequested) {
     calibrationVerifyRequested = false;
     run_calibration_verify_sweep();
-  } else {
+  } else {*/
 
-    pio_defer_service();
+  pio_defer_service();
 
-    if (timer5msFlag2 == 1) {
-      ADSR_set_parameters();
-    }
+  if (timer5msFlag2 == 1) {
+    ADSR_set_parameters();
+  }
 
-    if (timer50microsFlag2 == 1) {
-      {
-        BENCH_BEGIN(loop1_adsr);
-        ADSR_update();
-        BENCH_END(loop1_adsr);
+  if (timer50microsFlag2 == 1) {
+    // BENCH_BEGIN(loop1_cv_outs);
+    // update_CV_outs();
+    // BENCH_END(loop1_cv_outs);
+
+    for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+      ADSR1Level_q15[i] = ADSR1Level_q15_volatile[i];
+      ADSR_VCA_Level_q15[i] = ADSR_VCA_Level_q15_volatile[i];
       }
-    }
+      ADSR_VCF_Level_q15 = ADSR_VCF_Level_q15_volatile;
+      ADSR_VCF2_Level_q15 = ADSR_VCF2_Level_q15_volatile;
+  }
 
-    if (timer99microsFlag2 == 1) {
-        BENCH_BEGIN(loop1_cv_outs);
-        update_CV_outs();
-        BENCH_END(loop1_cv_outs);
-    }
-
-    {
-      BENCH_BEGIN(voice_task);
-      voice_task_main();
-      BENCH_END(voice_task);
-    }
+  {
+    BENCH_BEGIN(voice_task);
+    voice_task_main();
+    BENCH_END(voice_task);
   }
 
   // Hand this core's counters to core 0, which does all the printing.

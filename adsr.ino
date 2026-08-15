@@ -83,25 +83,25 @@ void __not_in_flash_func(ADSR_update)() {
         noteStart[i] = 0;
       }
   #if ADSR_BEZIER_NATIVE_Q15
-      ADSR1Level_q15[i] = (int16_t)ADSRVoices[i].adsr1_voice.getWave();
-      ADSR_VCA_Level_q15[i] = (int16_t)ADSRVoices[i].adsr_vca_voice.getWave();
+      ADSR1Level_q15_volatile[i] = (int16_t)ADSRVoices[i].adsr1_voice.getWave();
+      ADSR_VCA_Level_q15_volatile[i] = (int16_t)ADSRVoices[i].adsr_vca_voice.getWave();
   #else
       ADSR1Level[i] = ADSRVoices[i].adsr1_voice.getWave();
-      ADSR1Level_q15[i] = ADSRVoices[i].adsr1_voice.levelQ15();
+      ADSR1Level_q15_volatile[i] = ADSRVoices[i].adsr1_voice.levelQ15();
       ADSR_VCA_Level[i] = ADSRVoices[i].adsr_vca_voice.getWave();
-      ADSR_VCA_Level_q15[i] = ADSRVoices[i].adsr_vca_voice.levelQ15();
+      ADSR_VCA_Level_q15_volatile[i] = ADSRVoices[i].adsr_vca_voice.levelQ15();
   #endif
     }
   
     // Shared EnvVCF / EnvVCF2 stay outside the loop (runs every tick)
   #if ADSR_BEZIER_NATIVE_Q15
-    ADSR_VCF_Level_q15 = (int16_t)adsr_vcf_voice.getWave();
-    ADSR_VCF2_Level_q15 = (int16_t)adsr_vcf2_voice.getWave();
+    ADSR_VCF_Level_q15_volatile = (int16_t)adsr_vcf_voice.getWave();
+    ADSR_VCF2_Level_q15_volatile = (int16_t)adsr_vcf2_voice.getWave();
   #else
     ADSR_VCF_Level = adsr_vcf_voice.getWave();
-    ADSR_VCF_Level_q15 = adsr_vcf_voice.levelQ15();
+    ADSR_VCF_Level_q15_volatile = adsr_vcf_voice.levelQ15();
     ADSR_VCF2_Level = adsr_vcf2_voice.getWave();
-    ADSR_VCF2_Level_q15 = adsr_vcf2_voice.levelQ15();
+    ADSR_VCF2_Level_q15_volatile = adsr_vcf2_voice.levelQ15();
   #endif
   }
 
