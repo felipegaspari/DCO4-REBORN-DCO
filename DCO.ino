@@ -216,6 +216,11 @@
 
 // #define SERIAL_FRAMING_COBS  // A/B vs default RAW; host: dco_control --cobs
 
+////////////////////////////////////////////////
+// DMA implementation -- uncomment to enable
+#define DCO_PROTOCOL_IMPLEMENT_DMA
+////////////////////////////////////////////////
+
 // All RANGE pins via dithered PIO PWM (3-frame, period = DIV_COUNTER/3). Off for 8 oscs:
 // dither needs one SM per RANGE pin and there are none spare. HW PWM slices instead.
 // #define RANGE0_PIO_DITHER_TEST
@@ -259,7 +264,7 @@
 
 #include <stdint.h>
 #include "params_def.h"
-#include "param_router.h"
+#include "_build_libs/DCO-PROTOCOL/param_router.h"
 
 #include "globals.h"
 #include "amp_comp.h"
@@ -269,7 +274,7 @@
 #include "FS.h"
 #include "preset_store.h"
 
-#include "noteList.h"
+#include "_shared/noteList.h"
 
 #include "Serial.h"
 #include "midi.h"
@@ -332,6 +337,7 @@ void setup1() {
   // Force overwrite: PARAM_DEBUG_COMMAND 30 / dco_control Calibration tab.
   seed_fake_calibration_tables(false);
   init_FS();
+  preset_store_init_ram();
 
   init_ADSR();
   init_cv_out();

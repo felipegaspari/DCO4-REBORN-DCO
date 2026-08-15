@@ -6,32 +6,8 @@
 #include "params_def.h"
 
 // -----------------------------------------------------------------------------
-// MCU-side preset store (LittleFS) + host dump / bulk-restore protocol.
-// Ported from DCO3-MONOSYNTH; record format is shared between both synths.
-//
-// A preset is a snapshot of every persistable 'p' parameter (captured in a
-// shadow array by update_parameters) plus the four packed block payloads
-// ('a'/'b'/'c'/'d': EnvVCA, EnvVCF, EnvDCO, filter), which live in globals and
-// are read back directly.
-//
-// Storage: 256 slots packed 4-per-file into LittleFS chunks "pb00".."pb63"
-// (each file = PRESET_CHUNK_SIZE bytes = 4 × PRESET_RECORD_SIZE). That keeps
-// each chunk inside one 4096-byte LittleFS block so an in-place save is a
-// single block erase. "pstLast" (1 byte) is the boot-recall slot.
-// Requires a 512 KB FS partition (FQBN flash=4194304_524288).
-//
-// Host control (tools/dco_control):
-//   'p' PARAM_PRESET_SAVE / _LOAD / _DUMP / PARAM_CAL_DUMP  — see params_def.h
-//   'B' bulk chunk  [target][slot][offset:u16 LE][32 data]  — stage bytes
-//   'C' bulk commit [target][slot][size:u16 LE][crc32 LE]   — verify + persist
-//
-// DCO → host is structured text on USB CDC (parseable, human-readable):
-//   [dump] begin target=<t> slot=<n> size=<n> / [dump] d <off> <hex> /
-//   [dump] end target=<t> crc=<crc32 hex> ; [pdir] / [preset] / [bulk] lines.
-//
-// The DCO also pushes an 'N'/'O'/'L' preset directory towards the Input board.
-// On DCO4-REBORN the Serial2 peer is the STM32 Mainboard, which relays those
-// three frames verbatim in both directions (MAINBOARD-CONTROLLER/Serial.ino).
+// MCU-side Full In-RAM Preset Store (RP2350) + LittleFS Backing Store.
+// All 256 presets (153 KB) stay resident in RAM for 0-latency live performance.
 // -----------------------------------------------------------------------------
 
 static constexpr uint16_t PRESET_NUM_SLOTS         = 256;
@@ -42,42 +18,33 @@ static constexpr uint8_t  PRESET_MAGIC             = 0xA5;
 static constexpr uint8_t  PRESET_VERSION           = 1;
 
 // Record layout (all little-endian). CRC32 covers bytes [0 .. PRESET_OFF_CRC).
-static constexpr uint16_t PRESET_PARAM_COUNT  = 256;  // wire ParamId is uint8
-static constexpr uint8_t  PRESET_BLOCK_FIELDS = 16;   // 3 ADSR blocks + filter
+static constexpr uint16_t PRESET_PARAM_COUNT  = 256;  
+static constexpr uint8_t  PRESET_BLOCK_FIELDS = 16;   
 static constexpr uint16_t PRESET_OFF_MAGIC   = 0;
 static constexpr uint16_t PRESET_OFF_VERSION = 1;
 static constexpr uint16_t PRESET_OFF_NAME    = 2;
-static constexpr uint16_t PRESET_OFF_BITMAP  = 18;   // 32 B: bit set = param captured
-static constexpr uint16_t PRESET_OFF_PARAMS  = 50;   // 256 x int16 LE
-static constexpr uint16_t PRESET_OFF_BLOCKS  = 562;  // 16 x uint16 LE (see order below)
-static constexpr uint16_t PRESET_OFF_CRC     = 594;  // crc32 LE
+static constexpr uint16_t PRESET_OFF_BITMAP  = 18;   
+static constexpr uint16_t PRESET_OFF_PARAMS  = 50;   
+static constexpr uint16_t PRESET_OFF_BLOCKS  = 562;  
+static constexpr uint16_t PRESET_OFF_CRC     = 594;  
 static constexpr uint16_t PRESET_RECORD_SIZE = 598;
 static constexpr uint16_t PRESET_CHUNK_SIZE  =
     (uint16_t)PRESET_RECORDS_PER_FILE * PRESET_RECORD_SIZE;  // 2392
 
-// Block field order inside a record:
-//   0..3   EnvVCA  A D S R      ('a')
-//   4..7   EnvVCF  A D S R      ('b')
-//   8..11  EnvDCO  A D S R      ('c' → ADSR1_*)
-//   12..15 filter  CUTOFF RESONANCE ADSR2toVCF LFO2toVCF ('d')
-
-// Bulk restore targets ('B'/'C' first payload byte).
 enum PresetBulkTarget : uint8_t {
-  PRESET_BULK_PRESET        = 0,  // one preset slot record
-  PRESET_BULK_VOICE_TABLES  = 1,  // amp-comp bank (FSBankSize)
+  PRESET_BULK_PRESET        = 0,
+  PRESET_BULK_VOICE_TABLES  = 1,
   PRESET_BULK_PW_CENTER     = 2,
   PRESET_BULK_PW_HIGH_LIMIT = 3,
   PRESET_BULK_PW_LOW_LIMIT  = 4,
   PRESET_BULK_MANUAL_OFFSET = 5,
-  PRESET_BULK_AMP_COMP_440  = 6,  // 440 Hz manual anchor bank (FSAmpComp440BankSize)
-  PRESET_BULK_AMP_COMP_DUTY = 7,  // duty target trims (FSAmpCompDutyOffsetBankSize)
+  PRESET_BULK_AMP_COMP_440  = 6,
+  PRESET_BULK_AMP_COMP_DUTY = 7,
 };
 
 static constexpr uint8_t  PRESET_BULK_CHUNK_DATA   = 32;
-// DCO4-REBORN: 8 oscillators → voiceTables is 1408 B (vs 528 on DCO3).
-static constexpr uint16_t PRESET_BULK_STAGING_SIZE = 1440;  // >= record 598, voiceTables 1408
+static constexpr uint16_t PRESET_BULK_STAGING_SIZE = 1440;
 
-// Calibration dump selectors (PARAM_CAL_DUMP value). 0 / -1 = all seven tables.
 static constexpr int16_t CAL_DUMP_ALL           = 0;
 static constexpr int16_t CAL_DUMP_VOICE_TABLES  = 1;
 static constexpr int16_t CAL_DUMP_PW_CENTER     = 2;
@@ -87,18 +54,14 @@ static constexpr int16_t CAL_DUMP_MANUAL_OFFSET = 5;
 static constexpr int16_t CAL_DUMP_AMP_COMP_440  = 6;
 static constexpr int16_t CAL_DUMP_AMP_COMP_DUTY = 7;
 
-// --- Live patch shadow -------------------------------------------------------
-// update_parameters() records every persistable param here so a preset can be
-// captured without param read-back. Blocks are read from their globals instead.
-int16_t presetParamShadow[PRESET_PARAM_COUNT];
-uint8_t presetParamSetBitmap[PRESET_PARAM_COUNT / 8];
+// --- Live patch shadow & Full 153 KB In-RAM Preset Bank ---
+extern int16_t presetParamShadow[PRESET_PARAM_COUNT];
+extern uint8_t presetParamSetBitmap[PRESET_PARAM_COUNT / 8];
+extern uint8_t presetStoreRAM[PRESET_NUM_SLOTS][PRESET_RECORD_SIZE]; // 153,088 bytes
 
-// Boot recall: one-shot from loop() once both cores are up.
-bool presetBootPending = true;
+extern bool presetBootPending;
 static constexpr uint32_t PRESET_BOOT_RECALL_MS = 1500;
 
-// CRC32 (IEEE / zlib-compatible), nibble table. Streamable: seed 0xFFFFFFFF,
-// update per chunk, xor 0xFFFFFFFF at the end. preset_crc32() does it in one go.
 static inline uint32_t preset_crc32_update(uint32_t crc, const uint8_t* data, size_t len) {
   static const uint32_t tbl[16] = {
     0x00000000, 0x1DB71064, 0x3B6E20C8, 0x26D930AC,
@@ -118,16 +81,9 @@ static inline uint32_t preset_crc32(const uint8_t* data, size_t len) {
   return preset_crc32_update(0xFFFFFFFFu, data, len) ^ 0xFFFFFFFFu;
 }
 
-// The persistable patch-parameter set (moved from Serial.ino so the preset
-// shadow and the Mainboard-echo path share one definition). Command/cal/UI ids
-// (150-160, 170-174, ...) are deliberately excluded.
 static inline bool preset_param_is_persistable(uint8_t id) {
-  if (id >= (uint8_t)PARAM_MOD_SLOT0_SOURCE && id <= (uint8_t)PARAM_MOD_SLOT7_DEPTH) {
-    return true;
-  }
-  if (id >= (uint8_t)PARAM_LFO1_TO_OSC1 && id <= (uint8_t)PARAM_ADSR3_PITCH_MODE) {
-    return true;
-  }
+  if (id >= (uint8_t)PARAM_MOD_SLOT0_SOURCE && id <= (uint8_t)PARAM_MOD_SLOT7_DEPTH) return true;
+  if (id >= (uint8_t)PARAM_LFO1_TO_OSC1 && id <= (uint8_t)PARAM_ADSR3_PITCH_MODE) return true;
   switch (id) {
     case PARAM_OSC1_SAW_ENABLE:
     case PARAM_OSC1_PULSE_ENABLE:
@@ -193,7 +149,6 @@ static inline bool preset_param_is_persistable(uint8_t id) {
   }
 }
 
-// Hook for update_parameters(): remember the last value of every persistable id.
 static inline void preset_shadow_capture(uint16_t id, int16_t value) {
   if (id >= PRESET_PARAM_COUNT) return;
   if (!preset_param_is_persistable((uint8_t)id)) return;
@@ -201,23 +156,18 @@ static inline void preset_shadow_capture(uint16_t id, int16_t value) {
   presetParamSetBitmap[id >> 3] |= (uint8_t)(1u << (id & 7u));
 }
 
-// --- preset_store.ino --------------------------------------------------------
+// --- API Prototypes ---
+void preset_store_init_ram(); // Loads all 256 presets from Flash to RAM at boot
 void preset_store_save(uint8_t slot);
 bool preset_store_load(uint8_t slot);
-void preset_store_dump(int16_t sel);      // -1 = directory listing, 0..255 = slot record
-void preset_store_cal_dump(int16_t sel);  // CAL_DUMP_* selector, 0/-1 = all
+void preset_store_dump(int16_t sel);      
+void preset_store_cal_dump(int16_t sel);  
 void preset_bulk_chunk(const uint8_t* payload, uint8_t len);
 void preset_bulk_commit(const uint8_t* payload, uint8_t len);
 void preset_store_boot_recall();
-// Binary directory push towards the Input board ('N' request handler): one 'O'
-// frame per slot (256 total, zero-filled name for empty/invalid slots). Goes out
-// on Serial2, which the Mainboard relays through to Input. The request only arms
-// the push; preset_store_dir_push_task() paces it out from loop() so the relay
-// can keep up.
 void preset_store_send_directory_to_mb();
 void preset_store_dir_push_task();
 
-// One-shot boot recall of the last saved/loaded slot ("pstLast"), from loop().
 static inline void preset_store_boot_task() {
   if (!presetBootPending) return;
   if (millis() < PRESET_BOOT_RECALL_MS) return;
