@@ -1,4 +1,5 @@
 #include "include_all.h"
+#include <LittleFS.h>
 
 static const char PRESET_LAST_FILE[] = "pstLast";
 
@@ -162,16 +163,15 @@ static bool preset_record_validate(const uint8_t* buf) {
 }
 
 static void preset_record_apply(const uint8_t* buf) {
-  // Apply parameters locally to DCO audio engine
+  // 1. Apply parameters locally to DCO engine (without echoing 70 individual frames)
   for (uint16_t id = 0; id < PRESET_PARAM_COUNT; ++id) {
     if (!(buf[PRESET_OFF_BITMAP + (id >> 3)] & (1u << (id & 7u)))) continue;
     if (!preset_param_is_persistable((uint8_t)id)) continue;
     const int16_t value = (int16_t)decode_u16_le(buf + PRESET_OFF_PARAMS + id * 2);
     update_parameters(id, value);
-    // (serial_echo_persistable_param16 removed here to prevent packet storm)
   }
 
-  // Unpack envelopes and filter
+  // 2. Unpack local envelopes & filter
   const uint8_t* b = buf + PRESET_OFF_BLOCKS;
   ADSR_VCA_attack  = decode_u16_le(b + 0);
   ADSR_VCA_decay   = decode_u16_le(b + 2);
@@ -198,16 +198,15 @@ static void preset_record_apply(const uint8_t* buf) {
     presetName[i] = buf[PRESET_OFF_NAME + i];
   }
 
-  // Send fast blocks to Mainboard
+  // 3. Send Domain Blocks over Serial2 (<0.45 ms total wire time!)
   serial_send_adsr_vca_block_to_mb();
   serial_send_adsr_vcf_block_to_mb();
   serial_send_adsr_dco_block_to_mb();
   serial_send_filter_block_to_mb();
 
-  // Send the 3 new domain blocks
-  serial_send_patch_osc_block_to_mb();
-  serial_send_patch_lfo_block_to_mb();
-  serial_send_patch_mod_block_to_mb();
+  serial_send_patch_osc_block_to_mb(); // 'v'
+  serial_send_patch_lfo_block_to_mb(); // 'l'
+  serial_send_patch_mod_block_to_mb(); // 'M'
 }
 
 static void preset_store_write_last(uint8_t slot) {
@@ -279,16 +278,23 @@ bool preset_store_load(uint8_t slot) {
     return false;
   }
 
+  // 1. Tell Input Controller to drop manual controls BEFORE sending audio blocks
+  serial_send_preset_loaded_to_mb(slot);
+
+  // 2. Freeze Screen display redraws
   serial_send_screen_signal_to_mb(SCREEN_SIGNAL_SILENT);
+
+  // 3. Apply sound locally & transmit domain blocks
   preset_record_apply(record);
   preset_store_write_last(slot);
 
+  // 4. Update display name & unfreeze Screen
   Serial.printf("[preset] loaded slot=%u name=\"%.16s\"\n", (unsigned)slot, (const char*)presetName);
-  serial_send_preset_loaded_to_mb(slot);
   serial_send_preset_scroll_to_mb(slot);
   serial_send_screen_signal_to_mb(SCREEN_SIGNAL_PRESET_SCROLL);
   return true;
 }
+
 
 // --- In-RAM Directory Push (Streams from RAM over DMA) ---
 static uint8_t presetDirPushChunk = PRESET_CHUNK_COUNT;
