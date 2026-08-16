@@ -4,16 +4,17 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "params_def.h"
+#include "_build_libs/DCO-PROTOCOL/serial_input_protocol.h"
+
 
 // -----------------------------------------------------------------------------
 // MCU-side Full In-RAM Preset Store (RP2350) + LittleFS Backing Store.
 // All 256 presets (153 KB) stay resident in RAM for 0-latency live performance.
 // -----------------------------------------------------------------------------
 
-static constexpr uint16_t PRESET_NUM_SLOTS         = 256;
+// PRESET_NUM_SLOTS (256) and PRESET_NAME_LEN (16) come from serial_input_protocol.h
 static constexpr uint8_t  PRESET_RECORDS_PER_FILE  = 4;
-static constexpr uint8_t  PRESET_CHUNK_COUNT       = 64;   // 256 / 4
-static constexpr uint8_t  PRESET_NAME_LEN          = 16;
+static constexpr uint8_t  PRESET_CHUNK_COUNT       = PRESET_NUM_SLOTS / PRESET_RECORDS_PER_FILE; // 64
 static constexpr uint8_t  PRESET_MAGIC             = 0xA5;
 static constexpr uint8_t  PRESET_VERSION           = 1;
 
@@ -152,8 +153,15 @@ static inline bool preset_param_is_persistable(uint8_t id) {
 static inline void preset_shadow_capture(uint16_t id, int16_t value) {
   if (id >= PRESET_PARAM_COUNT) return;
   if (!preset_param_is_persistable((uint8_t)id)) return;
+
+  // 1. Capture into shadow RAM & mark bitmap
   presetParamShadow[id] = value;
   presetParamSetBitmap[id >> 3] |= (uint8_t)(1u << (id & 7u));
+
+  // 2. Synchronize pulseWaveOn whenever the shadow for OSC1 Pulse is captured
+  if (id == (uint16_t)PARAM_OSC1_PULSE_ENABLE) {
+    pulseWaveOn = (value != 0);
+  }
 }
 
 // --- API Prototypes ---

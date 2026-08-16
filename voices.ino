@@ -726,8 +726,7 @@ void __not_in_flash_func(voice_task_fixed_point)() {
       voice_write_range_pair(DCO_A, DCO_B, chanLevel, chanLevel2);
       BENCH_END(vt_range_pwm);
 
-      const bool pulseOn = waveEnable[0][1] || waveEnable[1][1];
-      if (pulseOn) {
+      if (pulseWaveOn) {
         const int16_t local_LFO2Level = LFO2Level;
         const int16_t local_LFO2toPW = LFO2toPW;
         BENCH_FBEGIN(vt_pwm_calc);
@@ -1125,13 +1124,14 @@ void __not_in_flash_func(voice_task_float)() {
         voice_write_range_pair(DCO_A, DCO_B, chanLevel, chanLevel2);
         BENCH_END(vt_range_pwm);
 
-        const bool pulseOn = waveEnable[0][1] || waveEnable[1][1];
-        if (pulseOn) {
+        if (pulseWaveOn) {
           const int16_t local_LFO2Level = LFO2Level;
           const int16_t local_LFO2toPW = LFO2toPW;
+          const int16_t local_ADSR1toPWM = ADSR1toPWM;
+          
           BENCH_FBEGIN(vt_pwm_calc);
           float adsr1_delta =
-            ((float)ADSR1Level_q15[i] * (float)ADSR1toPWM_scale) * (1.0f / 32768.0f);
+            ((float)ADSR1Level_q15[i] * (float)local_ADSR1toPWM) * (1.0f / 32768.0f);
           float lfo2_delta =
             ((float)local_LFO2Level * (float)local_LFO2toPW) * (1.0f / 32767.0f);
           float pw_calc =

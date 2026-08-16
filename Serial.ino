@@ -4,16 +4,22 @@
 
 UartDmaTx Serial2Dma = {0};
 
+// Ingress tag to prevent bouncing Mainboard frames back onto Serial2
 enum ParamIngress : uint8_t {
-  PARAM_SRC_INPUT = 0,
-  PARAM_SRC_USB   = 1,
+  PARAM_SRC_MAINBOARD = 0, // Arrived from hardware UART (Serial2)
+  PARAM_SRC_USB       = 1, // Arrived from Host PC CDC (Serial)
 };
-static ParamIngress g_param_ingress = PARAM_SRC_INPUT;
+static ParamIngress g_param_ingress = PARAM_SRC_MAINBOARD;
 
-static void serial_forward_input_block_to_mb(char cmd, const uint8_t* payload, uint8_t len) {
+// Forward to Mainboard ONLY if the command originated from USB Host
+static void serial_forward_usb_edit_to_mb(char cmd, const uint8_t* payload, uint8_t len) {
   if (g_param_ingress != PARAM_SRC_USB) return;
   serial_frame_write(Serial2Dma, (uint8_t)cmd, payload, len);
 }
+
+// =============================================================================
+// Outgoing Block Senders to Mainboard
+// =============================================================================
 
 static void serial_send_adsr_block_to_mb(uint8_t cmd, uint16_t a, uint16_t d, uint16_t s, uint16_t r) {
   uint8_t payload[SERIAL_LEN_ADSR_BLOCK];
@@ -64,62 +70,88 @@ void serial_send_preset_scroll_to_mb(uint8_t slot) {
 }
 
 // =============================================================================
-// Domain Block Senders (High-Speed Preset Recall)
+// Domain Block Senders (Preset Recall Burst)
 // =============================================================================
 
 void serial_send_patch_osc_block_to_mb() {
   PatchOscBlock blk;
-  blk.wave_enables        = 0;
-  blk.osc1_interval       = octave_shift;
-  blk.osc2_interval       = OSC2_interval;
-  blk.osc3_interval       = OSC3_interval;
-  blk.osc2_detune         = OSC2_detune;
-  blk.unison_detune       = unisonDetune;
-  blk.voice_mode          = voiceMode;
-  blk.voice_alloc_mode    = 0;
-  blk.sync_mode           = syncMode;
-  blk.soft_sync           = softSyncChunks;
-  blk.subosc_divide       = subOscDivide;
-  blk.analog_drift        = analogDrift;
-  blk.analog_drift_speed  = analogDriftSpeed;
-  blk.analog_drift_spread = analogDriftSpread;
-  blk.portamento_time     = portamento_time;
-  blk.portamento_mode     = portamento_mode;
-  blk.character           = 0;
+  memset(&blk, 0, sizeof(blk));
 
-  serial_frame_write(Serial2Dma, CMD_BLOCK_OSC, (const uint8_t*)&blk, sizeof(blk));
+  uint16_t waves = 0;
+  if (presetParamShadow[PARAM_OSC1_SAW_ENABLE])   waves |= (1u << 0);
+  if (presetParamShadow[PARAM_OSC1_PULSE_ENABLE]) waves |= (1u << 1);
+  if (presetParamShadow[PARAM_OSC1_TRI_ENABLE])   waves |= (1u << 2);
+  if (presetParamShadow[PARAM_OSC2_SAW_ENABLE])   waves |= (1u << 3);
+  if (presetParamShadow[PARAM_OSC2_PULSE_ENABLE]) waves |= (1u << 4);
+  if (presetParamShadow[PARAM_OSC2_TRI_ENABLE])   waves |= (1u << 5);
+  if (presetParamShadow[PARAM_OSC3_SAW_ENABLE])   waves |= (1u << 6);
+  if (presetParamShadow[PARAM_OSC3_PULSE_ENABLE]) waves |= (1u << 7);
+  if (presetParamShadow[PARAM_OSC3_TRI_ENABLE])   waves |= (1u << 8);
+  blk.wave_enables = waves;
+
+  blk.osc1_interval       = (int8_t)presetParamShadow[PARAM_OSC1_INTERVAL];
+  blk.osc2_interval       = (int8_t)presetParamShadow[PARAM_OSC2_INTERVAL];
+  blk.osc3_interval       = (int8_t)presetParamShadow[PARAM_OSC3_INTERVAL];
+  blk.osc2_detune         = (uint16_t)presetParamShadow[PARAM_OSC2_DETUNE_VAL];
+  blk.unison_detune       = (int16_t)presetParamShadow[PARAM_UNISON_DETUNE];
+  blk.voice_mode          = (uint8_t)presetParamShadow[PARAM_VOICE_MODE];
+  blk.voice_alloc_mode    = (uint8_t)presetParamShadow[PARAM_VOICE_ALLOC_MODE];
+  blk.sync_mode           = (uint8_t)presetParamShadow[PARAM_SYNC_MODE];
+  blk.soft_sync           = (uint8_t)presetParamShadow[PARAM_SOFT_SYNC];
+  blk.subosc_divide       = (uint8_t)presetParamShadow[PARAM_SUBOSC_DIVIDE];
+  blk.analog_drift        = (int8_t)presetParamShadow[PARAM_ANALOG_DRIFT_AMOUNT];
+  blk.analog_drift_speed  = (int16_t)presetParamShadow[PARAM_ANALOG_DRIFT_SPEED];
+  blk.analog_drift_spread = (int8_t)presetParamShadow[PARAM_ANALOG_DRIFT_SPREAD];
+  blk.portamento_time     = (uint16_t)presetParamShadow[PARAM_PORTAMENTO_TIME];
+  blk.portamento_mode     = (uint8_t)presetParamShadow[PARAM_PORTAMENTO_MODE];
+  blk.character           = (uint8_t)presetParamShadow[PARAM_CHARACTER];
+
+  serial_frame_write(Serial2Dma, CMD_BLOCK_OSC, (const uint8_t*)&blk, SERIAL_LEN_BLOCK_OSC);
 }
 
 void serial_send_patch_lfo_block_to_mb() {
   PatchLfoBlock blk;
-  blk.lfo1_waveform       = LFO1Waveform;
-  blk.lfo2_waveform       = LFO2Waveform;
-  blk.lfo1_speed          = LFO1SpeedVal;
-  blk.lfo2_speed          = LFO2SpeedVal;
-  blk.lfo1_to_dco         = LFO1toDCOVal;
-  blk.lfo1_to_osc1        = 0;
-  blk.lfo1_to_osc2        = 0;
-  blk.lfo1_to_osc3        = 0;
-  blk.lfo2_to_osc2        = 0;
-  blk.lfo2_to_osc3        = 0;
-  blk.lfo2_to_osc2_coarse = 0;
-  blk.lfo2_to_osc3_coarse = 0;
-  blk.lfo2_to_pw          = LFO2toPW;
-  blk.lfo1_to_vca         = 0;
-  blk.pw_value            = PW[0] << 2;
-  blk.adsr1_to_vca        = 0;
-  blk.adsr3_to_pwm        = ADSR1toPWM;
-  blk.adsr3_to_detune1    = ADSR1toDETUNE1;
-  blk.adsr3_pitch_mode    = env_dco_pitch_centered;
-  blk.adsr3_to_osc_select = ADSR3ToOscSelect;
+  memset(&blk, 0, sizeof(blk));
 
-  serial_frame_write(Serial2Dma, CMD_BLOCK_LFO, (const uint8_t*)&blk, sizeof(blk));
+  blk.lfo1_waveform       = (uint8_t)presetParamShadow[PARAM_LFO1_WAVEFORM];
+  blk.lfo2_waveform       = (uint8_t)presetParamShadow[PARAM_LFO2_WAVEFORM];
+  blk.lfo1_speed          = (uint16_t)presetParamShadow[PARAM_LFO1_SPEED];
+  blk.lfo2_speed          = (uint16_t)presetParamShadow[PARAM_LFO2_SPEED];
+  blk.lfo1_to_dco         = (uint16_t)presetParamShadow[PARAM_LFO1_TO_DCO];
+  blk.lfo1_to_osc1        = (uint8_t)presetParamShadow[PARAM_LFO1_TO_OSC1];
+  blk.lfo1_to_osc2        = (uint8_t)presetParamShadow[PARAM_LFO1_TO_OSC2];
+  blk.lfo1_to_osc3        = (uint8_t)presetParamShadow[PARAM_LFO1_TO_OSC3];
+  blk.lfo2_to_osc2        = (uint16_t)presetParamShadow[PARAM_LFO2_TO_OSC2];
+  blk.lfo2_to_osc3        = (uint16_t)presetParamShadow[PARAM_LFO2_TO_OSC3];
+  blk.lfo2_to_osc2_coarse = (uint16_t)presetParamShadow[PARAM_LFO2_TO_OSC2_COARSE];
+  blk.lfo2_to_osc3_coarse = (uint16_t)presetParamShadow[PARAM_LFO2_TO_OSC3_COARSE];
+  blk.lfo2_to_pw          = (uint16_t)presetParamShadow[PARAM_LFO2_TO_PW];
+  blk.lfo1_to_vca         = (uint16_t)presetParamShadow[PARAM_LFO1_TO_VCA];
+  blk.pw_value            = (uint16_t)presetParamShadow[PARAM_PW_VALUE];
+  blk.adsr1_to_vca        = (int16_t)presetParamShadow[PARAM_ADSR1_TO_VCA];
+  blk.adsr3_to_pwm        = (int16_t)presetParamShadow[PARAM_ADSR3_TO_PWM];
+  blk.adsr3_to_detune1    = (int16_t)presetParamShadow[PARAM_ADSR3_TO_DETUNE1];
+  blk.adsr3_pitch_mode    = (uint8_t)presetParamShadow[PARAM_ADSR3_PITCH_MODE];
+  blk.adsr3_to_osc_select = (int8_t)presetParamShadow[PARAM_ADSR3_TO_OSC_SELECT];
+
+  serial_frame_write(Serial2Dma, CMD_BLOCK_LFO, (const uint8_t*)&blk, SERIAL_LEN_BLOCK_LFO);
 }
 
 void serial_send_patch_mod_block_to_mb() {
   PatchModBlock blk;
-  memset(&blk, 0xFF, sizeof(blk));
-  serial_frame_write(Serial2Dma, CMD_BLOCK_MOD, (const uint8_t*)&blk, sizeof(blk));
+  memset(&blk, 0, sizeof(blk));
+
+  for (uint8_t i = 0; i < MOD_SLOT_COUNT; i++) {
+    uint8_t srcId   = (uint8_t)(PARAM_MOD_SLOT0_SOURCE + i * 3);
+    uint8_t destId  = (uint8_t)(PARAM_MOD_SLOT0_DEST   + i * 3);
+    uint8_t depthId = (uint8_t)(PARAM_MOD_SLOT0_DEPTH  + i * 3);
+
+    blk.slots[i].src   = (uint8_t)presetParamShadow[srcId];
+    blk.slots[i].dest  = (uint8_t)presetParamShadow[destId];
+    blk.slots[i].depth = (int16_t)presetParamShadow[depthId];
+  }
+
+  serial_frame_write(Serial2Dma, CMD_BLOCK_MOD, (const uint8_t*)&blk, SERIAL_LEN_BLOCK_MOD);
 }
 
 // =============================================================================
@@ -163,87 +195,79 @@ void serial_echo_persistable_param16(uint8_t id, int16_t value) {
 }
 
 // =============================================================================
-// Frame Handlers
+// Inbound Frame Handlers (From Mainboard UART or USB CDC)
 // =============================================================================
 
-static void input_handle_adsr1(char cmd, const uint8_t* payload, uint8_t len) {
+static void dco_rx_handle_adsr1(char cmd, const uint8_t* payload, uint8_t len) {
   uint16_t dirty = 0, v;
   v = decode_u16_le(payload + 0); if (v != ADSR_VCA_attack)  { ADSR_VCA_attack  = v; dirty |= ADSR_DIRTY_VCA_A; }
   v = decode_u16_le(payload + 2); if (v != ADSR_VCA_decay)   { ADSR_VCA_decay   = v; dirty |= ADSR_DIRTY_VCA_D; }
   v = decode_u16_le(payload + 4); if (v != ADSR_VCA_sustain) { ADSR_VCA_sustain = v; dirty |= ADSR_DIRTY_VCA_S; }
   v = decode_u16_le(payload + 6); if (v != ADSR_VCA_release) { ADSR_VCA_release = v; dirty |= ADSR_DIRTY_VCA_R; }
   if (dirty) mark_adsr_params_dirty(dirty);
-  serial_forward_input_block_to_mb(cmd, payload, len);
+  serial_forward_usb_edit_to_mb(cmd, payload, len);
 }
 
-static void input_handle_adsr2(char cmd, const uint8_t* payload, uint8_t len) {
+static void dco_rx_handle_adsr2(char cmd, const uint8_t* payload, uint8_t len) {
   uint16_t dirty = 0, v;
   v = decode_u16_le(payload + 0); if (v != ADSR_VCF_attack)  { ADSR_VCF_attack  = v; dirty |= ADSR_DIRTY_VCF_A; }
   v = decode_u16_le(payload + 2); if (v != ADSR_VCF_decay)   { ADSR_VCF_decay   = v; dirty |= ADSR_DIRTY_VCF_D; }
   v = decode_u16_le(payload + 4); if (v != ADSR_VCF_sustain) { ADSR_VCF_sustain = v; dirty |= ADSR_DIRTY_VCF_S; }
   v = decode_u16_le(payload + 6); if (v != ADSR_VCF_release) { ADSR_VCF_release = v; dirty |= ADSR_DIRTY_VCF_R; }
   if (dirty) mark_adsr_params_dirty(dirty);
-  serial_forward_input_block_to_mb(cmd, payload, len);
+  serial_forward_usb_edit_to_mb(cmd, payload, len);
 }
 
-static void input_handle_adsr3(char, const uint8_t* payload, uint8_t len) {
+static void dco_rx_handle_adsr3(char cmd, const uint8_t* payload, uint8_t len) {
   uint16_t dirty = 0, v;
   v = decode_u16_le(payload + 0); if (v != ADSR1_attack)  { ADSR1_attack  = v; dirty |= ADSR_DIRTY_DCO_A; }
   v = decode_u16_le(payload + 2); if (v != ADSR1_decay)   { ADSR1_decay   = v; dirty |= ADSR_DIRTY_DCO_D; }
   v = decode_u16_le(payload + 4); if (v != ADSR1_sustain) { ADSR1_sustain = v; dirty |= ADSR_DIRTY_DCO_S; }
   v = decode_u16_le(payload + 6); if (v != ADSR1_release) { ADSR1_release = v; dirty |= ADSR_DIRTY_DCO_R; }
   if (dirty) mark_adsr_params_dirty(dirty);
-  serial_forward_input_block_to_mb(CMD_ADSR3_BLOCK, payload, len);
+  serial_forward_usb_edit_to_mb(cmd, payload, len);
 }
 
-static void input_handle_filter_block(char cmd, const uint8_t* payload, uint8_t len) {
+static void dco_rx_handle_filter_block(char cmd, const uint8_t* payload, uint8_t len) {
   CUTOFF     = decode_u16_le(payload + 0);
   RESONANCE  = decode_u16_le(payload + 2);
   ADSR2toVCF = decode_i16_le(payload + 4);
   LFO2toVCF  = decode_u16_le(payload + 6);
   cv_bake_adsr2_to_vcf_scale();
   cv_bake_lfo2_to_vcf_scale();
-  serial_forward_input_block_to_mb(cmd, payload, len);
+  serial_forward_usb_edit_to_mb(cmd, payload, len);
 }
 
-static void input_handle_param16(char, const uint8_t* payload, uint8_t) {
+static void dco_rx_handle_param16(char, const uint8_t* payload, uint8_t) {
   ParamFrame frame;
   decode_param_p(payload, frame);
   update_parameters(frame.id, (int16_t)frame.value);
-  if (g_param_ingress != PARAM_SRC_INPUT) {
+  if (g_param_ingress == PARAM_SRC_USB) {
     serial_echo_persistable_param16(frame.id, (int16_t)frame.value);
   }
 }
 
-static void input_handle_preset_name(char, const uint8_t* payload, uint8_t) {
+static void dco_rx_handle_preset_name(char, const uint8_t* payload, uint8_t) {
   for (int i = 0; i < 16; ++i) presetName[i] = payload[i];
 }
 
-static void usb_handle_screen_signal(char, const uint8_t* payload, uint8_t) {
-  // If the PC app sends the opening Silent signal (6), tell the Input board to disarm immediately!
+static void dco_rx_handle_screen_signal(char, const uint8_t* payload, uint8_t) {
   if (payload[0] == SCREEN_SIGNAL_SILENT) {
     serialSendParam16(ParamId::PARAM_ALL_CONTROLS_MANUAL, 0, true);
   }
-
   serial_send_screen_signal_to_mb(payload[0]);
 }
 
-static void input_handle_bulk_chunk(char, const uint8_t* payload, uint8_t len) {
+static void dco_rx_handle_bulk_chunk(char, const uint8_t* payload, uint8_t len) {
   preset_bulk_chunk(payload, len);
 }
 
-static void input_handle_bulk_commit(char, const uint8_t* payload, uint8_t len) {
+static void dco_rx_handle_bulk_commit(char, const uint8_t* payload, uint8_t len) {
   preset_bulk_commit(payload, len);
 }
 
-static void input_handle_preset_dir_request(char, const uint8_t*, uint8_t) {
+static void dco_rx_handle_preset_dir_request(char, const uint8_t*, uint8_t) {
   preset_store_send_directory_to_mb();
-}
-
-static void mb_handle_param16(char, const uint8_t* payload, uint8_t) {
-  ParamFrame frame;
-  decode_param_p(payload, frame);
-  update_parameters(frame.id, (int16_t)frame.value);
 }
 
 #define MB_BENCH_RING_CAP 2048
@@ -314,32 +338,34 @@ static void mb_handle_mod_stream(char, const uint8_t* payload, uint8_t) {
 // Tables & Init
 // =============================================================================
 
-static const SerialCommandDef inputSerialCommands[] = {
-  { CMD_ADSR1_BLOCK,   SERIAL_LEN_ADSR_BLOCK,   input_handle_adsr1        },
-  { CMD_ADSR2_BLOCK,   SERIAL_LEN_ADSR_BLOCK,   input_handle_adsr2        },
-  { CMD_ADSR3_BLOCK,   SERIAL_LEN_ADSR_BLOCK,   input_handle_adsr3        },
-  { CMD_FILTER_BLOCK,  SERIAL_LEN_FILTER_BLOCK, input_handle_filter_block },
-  { CMD_PARAM_16,      SERIAL_LEN_PARAM_16,     input_handle_param16      },
-  { CMD_PRESET_NAME,   SERIAL_LEN_PRESET_NAME,  input_handle_preset_name  },
-  { CMD_SCREEN_SIGNAL, SERIAL_LEN_SCREEN_SIGNAL,usb_handle_screen_signal  },
-  { CMD_BULK_CHUNK,    SERIAL_LEN_BULK_CHUNK,   input_handle_bulk_chunk   },
-  { CMD_BULK_COMMIT,   SERIAL_LEN_BULK_COMMIT,  input_handle_bulk_commit  },
+// USB CDC Command Table (Host PC / dco_control)
+static const SerialCommandDef usbSerialCommands[] = {
+  { CMD_ADSR1_BLOCK,   SERIAL_LEN_ADSR_BLOCK,   dco_rx_handle_adsr1        },
+  { CMD_ADSR2_BLOCK,   SERIAL_LEN_ADSR_BLOCK,   dco_rx_handle_adsr2        },
+  { CMD_ADSR3_BLOCK,   SERIAL_LEN_ADSR_BLOCK,   dco_rx_handle_adsr3        },
+  { CMD_FILTER_BLOCK,  SERIAL_LEN_FILTER_BLOCK, dco_rx_handle_filter_block },
+  { CMD_PARAM_16,      SERIAL_LEN_PARAM_16,     dco_rx_handle_param16      },
+  { CMD_PRESET_NAME,   SERIAL_LEN_PRESET_NAME,  dco_rx_handle_preset_name  },
+  { CMD_SCREEN_SIGNAL, SERIAL_LEN_SCREEN_SIGNAL,dco_rx_handle_screen_signal},
+  { CMD_BULK_CHUNK,    SERIAL_LEN_BULK_CHUNK,   dco_rx_handle_bulk_chunk   },
+  { CMD_BULK_COMMIT,   SERIAL_LEN_BULK_COMMIT,  dco_rx_handle_bulk_commit  },
 };
 
+// Mainboard UART Command Table (Serial2)
 static const SerialCommandDef mainboardSerialCommands[] = {
-  { CMD_PARAM_16,      SERIAL_LEN_PARAM_16,     mb_handle_param16         },
-  { CMD_MOD_STREAM,    SERIAL_LEN_MOD_STREAM,   mb_handle_mod_stream      },
-  { CMD_BENCH_TEXT,    SERIAL_LEN_BENCH_TEXT,   mb_handle_bench_text      },
-  { CMD_ADSR1_BLOCK,   SERIAL_LEN_ADSR_BLOCK,   input_handle_adsr1        },
-  { CMD_ADSR2_BLOCK,   SERIAL_LEN_ADSR_BLOCK,   input_handle_adsr2        },
-  { CMD_ADSR3_BLOCK,   SERIAL_LEN_ADSR_BLOCK,   input_handle_adsr3        },
-  { CMD_FILTER_BLOCK,  SERIAL_LEN_FILTER_BLOCK, input_handle_filter_block },
-  { CMD_PRESET_NAME,   SERIAL_LEN_PRESET_NAME,  input_handle_preset_name  },
-  { CMD_PRESET_DIR_REQUEST, SERIAL_LEN_PRESET_DIR_REQUEST, input_handle_preset_dir_request },
+  { CMD_PARAM_16,           SERIAL_LEN_PARAM_16,           dco_rx_handle_param16           },
+  { CMD_MOD_STREAM,         SERIAL_LEN_MOD_STREAM,         mb_handle_mod_stream            },
+  { CMD_BENCH_TEXT,         SERIAL_LEN_BENCH_TEXT,         mb_handle_bench_text            },
+  { CMD_ADSR1_BLOCK,        SERIAL_LEN_ADSR_BLOCK,         dco_rx_handle_adsr1             },
+  { CMD_ADSR2_BLOCK,        SERIAL_LEN_ADSR_BLOCK,         dco_rx_handle_adsr2             },
+  { CMD_ADSR3_BLOCK,        SERIAL_LEN_ADSR_BLOCK,         dco_rx_handle_adsr3             },
+  { CMD_FILTER_BLOCK,       SERIAL_LEN_FILTER_BLOCK,       dco_rx_handle_filter_block      },
+  { CMD_PRESET_NAME,        SERIAL_LEN_PRESET_NAME,        dco_rx_handle_preset_name       },
+  { CMD_PRESET_DIR_REQUEST, SERIAL_LEN_PRESET_DIR_REQUEST, dco_rx_handle_preset_dir_request },
 };
 
-static SerialCommandTable inputSerialLut;
-static SerialParserContext inputSerialParser = {};
+static SerialCommandTable usbSerialLut;
+static SerialParserContext usbSerialParser = {};
 static SerialCommandTable mainboardSerialLut;
 static SerialParserContext mainboardSerialParser = {};
 
@@ -358,7 +384,7 @@ void init_serial() {
   
   serial_dma_init_rp2040(0, uart1);
 
-  serial_command_table_init(inputSerialLut, inputSerialCommands, sizeof(inputSerialCommands) / sizeof(inputSerialCommands[0]));
+  serial_command_table_init(usbSerialLut, usbSerialCommands, sizeof(usbSerialCommands) / sizeof(usbSerialCommands[0]));
   serial_command_table_init(mainboardSerialLut, mainboardSerialCommands, sizeof(mainboardSerialCommands) / sizeof(mainboardSerialCommands[0]));
 }
 
@@ -383,16 +409,15 @@ void init_usb() {
 
 void __not_in_flash_func(serial_panel_task)() {
   serial_dma_poll_one(0);
-  g_param_ingress = PARAM_SRC_INPUT;
+  g_param_ingress = PARAM_SRC_MAINBOARD; // Frames from Serial2 will NOT echo back to Serial2
   serial_parser_drain(mainboardSerialParser, mainboardSerialLut, Serial2, SERIAL_DRAIN_BYTE_BUDGET);
 }
 
 #ifdef ENABLE_USB_CONTROL
-static SerialParserContext usbSerialParser = {};
 void __not_in_flash_func(serial_usb_task)() {
   if (!Serial) return;
-  g_param_ingress = PARAM_SRC_USB;
-  serial_parser_drain(usbSerialParser, inputSerialLut, Serial, SERIAL_DRAIN_BYTE_BUDGET);
+  g_param_ingress = PARAM_SRC_USB; // Frames from USB WILL mirror down to Mainboard
+  serial_parser_drain(usbSerialParser, usbSerialLut, Serial, SERIAL_DRAIN_BYTE_BUDGET);
 }
 #endif 
 

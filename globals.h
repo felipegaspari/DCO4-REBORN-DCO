@@ -203,6 +203,8 @@ static constexpr uint8_t NOISE_OUT_PIN = 2;
 static constexpr uint8_t PW_PIN_UNASSIGNED = 0xFF;
 static constexpr uint8_t PW_PINS[NUM_PW_CHANNELS] = { 3, 2, 4, 5 };
 
+extern bool pulseWaveOn;
+
 // RP2350: one sub-osc SM per voice on pio2. Pinout later (0xFF = skip gpio init).
 static constexpr uint8_t SUBOSC_PIN_UNASSIGNED = 0xFF;
 #if defined(PICO_RP2350)

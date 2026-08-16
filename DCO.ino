@@ -56,6 +56,9 @@
 #ifndef CLKDIV_MODE
 #define CLKDIV_MODE CLKDIV_FLOAT  // native Hz on float voice
 #endif
+#ifndef USE_FLOAT_CV_OUTS
+#define USE_FLOAT_CV_OUTS
+#endif
 #else
 // RP2040 / fallback: fixed voice + lean Q8 amp (no float amp tables / LUT RAM).
 // CV outs stay fixed-point (no USE_FLOAT_CV_OUTS) — soft-float would choke Core1.
@@ -312,11 +315,7 @@ void setup() {
   init_DRIFT_LFOs();
 
 
-#if (DCO_MCU_BOARD == DCO_MCU_PICO) || (DCO_MCU_BOARD == DCO_MCU_PICO2)
-  for (uint8_t i = 0; i < NUM_OSCILLATORS; i++) {
-    pinMode(RANGE_PINS[i], OUTPUT_8MA);
-  }
-#endif
+
 
   pinMode(DCO_calibration_pin, INPUT);
 
@@ -464,21 +463,18 @@ void __not_in_flash_func(loop1)() {
     BENCH_END(loop1_microsTimer);
   }
 
-  if (calibrationFlag == true) {
-    if (manualCalibrationFlag == true) {
-      // voice_task_autotune() solos by stopping every other SM, so the pairs must
-      // be unsynced first or the soloed oscillator loses its RESET pin to a
-      // stopped partner. Core 0 only books it (autotune.h); the rebuild is PIO
-      // work and this branch never reaches pio_defer_service().
+  if (calibrationFlag) {
+    if (manualCalibrationFlag) {
       if (calSyncNeutralRequested) {
         calSyncNeutralRequested = false;
         setSyncMode();
       }
 
-      // Keep currentDCO in sync so [GAP_MEASURE]/[GAP_TIMEOUT] logs match the soloed osc.
+      // Keep currentDCO in sync
       currentDCO = cal_manual_osc();
 
-      if (manualCalibrationStep == 1) {
+      // Check whether active stage is a 440 Hz anchor stage (using canonical helper)
+      if (cal_stage_is_440_n(manualCalibrationStage, NUM_OSCILLATORS) || manualCalibrationStep == 1) {
         VOICE_NOTES[0] = manual_cal_reference_note;
         DCO_calibration_current_note = manual_cal_reference_note;
         if (ampComp440[currentDCO] != 0) {
@@ -492,12 +488,11 @@ void __not_in_flash_func(loop1)() {
         DCO_calibration_current_note = manual_DCO_calibration_start_note;
         ampCompCalibrationVal = initManualAmpCompCalibrationValPreset + manualCalibrationOffset[currentDCO];
       }
+
       voice_task_autotune(0, ampCompCalibrationVal);
       update_CV_outs_manual_calibration();
       DCO_calibration_debug();
 
-      // Runs between two manual passes, so the oscillator it measures is
-      // already soloed and the next pass restores the substage's PW.
       if (pwCvProbeRequested) {
         pwCvProbeRequested = false;
         run_pw_cv_probe();

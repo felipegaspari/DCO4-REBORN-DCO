@@ -48,7 +48,7 @@ void init_waveSelector() {
 
 void update_waveSelector() {
   waveMuxBits = 0xFFFF;  // unused bits stay high (off)
-  for (uint8_t osc = 0; osc < 3; osc++) {
+  for (uint8_t osc = 0; osc < 2; osc++) {
     for (uint8_t wave = 0; wave < 3; wave++) {
       // Active-low: enabled → write 0
       waveMuxWritePin(WAVE_MUX_BIT[osc][wave], waveEnable[osc][wave] ? 0 : 1);

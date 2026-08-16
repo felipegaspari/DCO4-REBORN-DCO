@@ -6,26 +6,31 @@
 #include "../bench.h"
 #endif
 
+bool pulseWaveOn = false;
+
 // =============================================================================
 // 1. Oscillator & Voice Configuration
 // =============================================================================
 
-static void apply_param_osc1_interval(int16_t v)  { octave_shift = (int8_t)v; }
-static void apply_param_osc2_interval(int16_t v)  { OSC2_interval = (int8_t)v; }
-static void apply_param_osc3_interval(int16_t v)  { OSC3_interval = (int8_t)v; }
-static void apply_param_osc2_detune(int16_t v)    { OSC2_detune = (uint16_t)v; }
+static void apply_param_osc1_pulse_enable(int16_t v) {
+  pulseWaveOn = (v != 0);
+}
+static void apply_param_osc1_interval(int16_t v)   { octave_shift = (int8_t)v; }
+static void apply_param_osc2_interval(int16_t v)   { OSC2_interval = (int8_t)v; }
+static void apply_param_osc3_interval(int16_t v)   { OSC3_interval = (int8_t)v; }
+static void apply_param_osc2_detune(int16_t v)     { OSC2_detune = (uint16_t)v; }
 static void apply_param_osc3_detune(int16_t /*v*/) { /* DCO3 monosynth only */ }
-static void apply_param_unison_detune(int16_t v)  { unisonDetune = v; }
+static void apply_param_unison_detune(int16_t v)   { unisonDetune = v; }
 
-static void apply_param_portamento_time(int16_t v){ portamento_time = (uint16_t)v; }
-static void apply_param_portamento_mode(int16_t v){ portamento_mode = (uint8_t)v; }
+static void apply_param_portamento_time(int16_t v) { portamento_time = (uint16_t)v; }
+static void apply_param_portamento_mode(int16_t v) { portamento_mode = (uint8_t)v; }
 
 static void apply_param_voice_mode(int16_t v) { 
   voiceMode = (uint8_t)constrain(v, 0, 2);
   setVoiceMode(); 
 }
 
-static void apply_param_voice_alloc_mode(int16_t v){ 
+static void apply_param_voice_alloc_mode(int16_t v) { 
   voiceAlloc.setMode((uint8_t)constrain(v, 0, 5)); 
 }
 
@@ -34,8 +39,8 @@ static void apply_param_sync_mode(int16_t v) {
   setSyncMode(); 
 }
 
-static void apply_param_soft_sync(int16_t v)      { softSyncChunks = (uint8_t)v; }
-static void apply_param_subosc_divide(int16_t v)  { subOscDivide = (uint8_t)v; }
+static void apply_param_soft_sync(int16_t v)       { softSyncChunks = (uint8_t)v; }
+static void apply_param_subosc_divide(int16_t v)   { subOscDivide = (uint8_t)v; }
 
 // =============================================================================
 // 2. LFO Speeds, Waveforms & Pitch Depths
@@ -112,64 +117,104 @@ static void apply_param_lfo2_to_pw(int16_t v) {
 // 3. Analog Drift, Character & Pulse Width
 // =============================================================================
 
-static void apply_param_analog_drift_amount(int16_t v) {
-  analogDrift = (int8_t)v;
-}
-
-static void apply_param_analog_drift_speed(int16_t v) {
-  analogDriftSpeed = v;
-  init_DRIFT_LFOs();
-}
-
-static void apply_param_analog_drift_spread(int16_t v) {
-  analogDriftSpread = (int8_t)v;
-  init_DRIFT_LFOs();
-}
-
-static void apply_param_character(int16_t /*v*/) {
-  // Master scale hook for character/jitter
-}
-
-static void apply_param_pw_value(int16_t v) {
-  PW[0] = (uint16_t)(v >> 2);
-}
+static void apply_param_analog_drift_amount(int16_t v) { analogDrift = (int8_t)v; }
+static void apply_param_analog_drift_speed(int16_t v)  { analogDriftSpeed = v; init_DRIFT_LFOs(); }
+static void apply_param_analog_drift_spread(int16_t v) { analogDriftSpread = (int8_t)v; init_DRIFT_LFOs(); }
+static void apply_param_character(int16_t /*v*/)       { /* Character scale hook */ }
+static void apply_param_pw_value(int16_t v)            { PW[0] = (uint16_t)(v >> 2); }
 
 // =============================================================================
 // 4. Envelope Modulations
 // =============================================================================
 
-static void apply_param_adsr3_to_osc_select(int16_t v) {
-  ADSR3ToOscSelect = (int8_t)v;
-}
+static void apply_param_adsr3_to_osc_select(int16_t v) { ADSR3ToOscSelect = (int8_t)v; }
 
 static void apply_param_adsr3_to_pwm(int16_t v) {
   ADSR1toPWM = (int16_t)v - 512;
+  ADSR1toPWM_scale = ADSR1toPWM; 
 }
 
 static void apply_param_adsr3_to_detune1(int16_t v) {
   ADSR1toDETUNE1 = v;
   ADSR1toDETUNE1_scale_q24 = ((int64_t)ADSR1toDETUNE1 * (1 << 24)) / 4095;
 }
-
-static void apply_param_adsr3_pitch_mode(int16_t v) {
-  env_dco_pitch_centered = (v != 0) ? 1 : 0;
-}
+static void apply_param_adsr3_pitch_mode(int16_t v)    { env_dco_pitch_centered = (v != 0) ? 1 : 0; }
 
 // =============================================================================
 // 5. Calibration Controls & Storage Trims
 // =============================================================================
+static void dco_send_all_calibration_data() {
+  // 1. Send all Manual Offsets (Param 155, 32-bit: [oscIndex:8 | offset:8])
+  for (uint8_t i = 0; i < NUM_OSCILLATORS; i++) {
+    uint32_t packed = ((uint32_t)i << 8) | (uint8_t)manualCalibrationOffset[i];
+    serialSendParam32(PARAM_MANUAL_CALIBRATION_OFFSET_FROM_DCO, packed);
+  }
 
-static void apply_param_calibration_flag(int16_t v) {
-  calibrationFlag = (v != 0);
+  // 2. Send all 440 Hz Amp Comps (Param 159, 32-bit: [oscIndex:8 | amp440:16])
+  for (uint8_t i = 0; i < NUM_OSCILLATORS; i++) {
+    uint32_t packed = ((uint32_t)i << 16) | (uint16_t)ampComp440[i];
+    serialSendParam32(PARAM_AMP_COMP_440, packed);
+  }
+
+  // 3. Send all PW Centers (Param 162, 32-bit: [voiceChannel:8 | pwCenter:16])
+  for (uint8_t ch = 0; ch < 4; ch++) {
+    uint32_t packed = ((uint32_t)ch << 16) | (uint16_t)PW_CENTER[ch];
+    serialSendParam32(PARAM_CAL_PW_CENTER, packed);
+  }
+
+  // 4. Send all Scope 50% Duty Trims (Param 161, 32-bit: [oscIndex:8 | dutyOffset:16])
+  for (uint8_t i = 0; i < NUM_OSCILLATORS; i++) {
+    uint32_t packed = ((uint32_t)i << 16) | (uint16_t)ampCompDutyOffset[i];
+    serialSendParam32(PARAM_AMP_COMP_DUTY_OFFSET, packed);
+  }
 }
 
 static void apply_param_manual_calibration_flag(int16_t v) {
   manualCalibrationFlag = (v != 0);
   calibrationFlag = (v != 0);
+  if (v != 0) {
+    // Burst entire calibration bank to Input Controller
+    dco_send_all_calibration_data();
+  }
+}
+
+static void apply_param_calibration_flag(int16_t v) {
+  // 0 = Cancel running calibration
+  if (v == 0) {
+    calibrationCancelRequested = true;
+    calibrationFlag = false;
+    return;
+  }
+
+  // 1. Decode Precision (+4 = Fine, +8 = Fast)
+  uint8_t scopeVal = (uint8_t)v;
+  if (scopeVal >= 8) {
+    calibrationPrecision = CAL_PRECISION_FAST;
+    scopeVal -= 8;
+  } else if (scopeVal >= 4) {
+    calibrationPrecision = CAL_PRECISION_FINE;
+    scopeVal -= 4;
+  } else {
+    calibrationPrecision = CAL_PRECISION_NORMAL;
+  }
+
+  // 2. Decode Scope (1 = Amp only, 2 = PW only, 3 = Full)
+  if (scopeVal == 1) {
+    calibrationScope = CAL_SCOPE_AMP;
+  } else if (scopeVal == 2) {
+    calibrationScope = CAL_SCOPE_PW;
+  } else {
+    calibrationScope = CAL_SCOPE_FULL;
+  }
+
+  // 3. Clear cancel flag and arm auto-calibration
+  calibrationCancelRequested = false;
+  calibrationFlag = true;
 }
 
 static void apply_param_manual_calibration_stage(int16_t v) {
   manualCalibrationStage = (uint8_t)v;
+  manualCalibrationStep  = cal_stage_is_440_n(manualCalibrationStage, NUM_OSCILLATORS) ? 1 : 0;
 }
 
 static void apply_param_manual_calibration_offset(int16_t v) {
@@ -217,7 +262,7 @@ static void apply_param_manual_calibration_store(int16_t /*v*/) {
 }
 
 // =============================================================================
-// 6. Diagnostic & Debug Commands (PARAM_DEBUG_COMMAND 160)
+// 6. Diagnostic & Debug Commands (PARAM_DEBUG_COMMAND = 160)
 // =============================================================================
 
 static void apply_param_debug_command(int16_t v) {
@@ -236,57 +281,32 @@ static void apply_param_debug_command(int16_t v) {
   }
 
   switch (v) {
-    case 1:
-      pio_topology_report();
-      break;
+    case 1:  pio_topology_report(); break;
+    case 2:  pio_period_probe(0, 100); break;
+    case 3:  pio_period_probe(0, 50000); break;
 
-    case 2:
-      pio_period_probe(0, 100);
-      break;
-
-    case 3:
-      pio_period_probe(0, 50000);
-      break;
-
-    case 10:
 #ifdef RUNNING_AVERAGE
-      bench_dump_request = true;
+    case 10: bench_dump_request = true; break;
+    case 11: bench_reset_all(); break;
+    case 12: bench_periodic = !bench_periodic; break;
 #endif
-      break;
 
-    case 11:
-#ifdef RUNNING_AVERAGE
-      bench_reset_all();
-#endif
-      break;
-
-    case 12:
-#ifdef RUNNING_AVERAGE
-      bench_periodic = !bench_periodic;
-#endif
-      break;
-
-    case 13:
 #ifdef ENABLE_MEM_DIAG
-      mem_diag_request();
+    case 13: mem_diag_request(); break;
+    case 14: mem_diag_runtime_enabled = false; break;
+    case 15: mem_diag_runtime_enabled = true; break;
 #endif
-      break;
 
-    case 14:
-#ifdef ENABLE_MEM_DIAG
-      mem_diag_runtime_enabled = false;
-#endif
-      break;
-
-    case 15:
-#ifdef ENABLE_MEM_DIAG
-      mem_diag_runtime_enabled = true;
-#endif
-      break;
-
-    case 30:
-      seed_fake_calibration_tables(true);
-      break;
+    case 30: seed_fake_calibration_tables(true); break;
+    case 34: autotuneAmpMethod = 0; break;
+    case 35: autotuneAmpMethod = 1; break;
+    case 36: calibrationVerifyRequested = true; break;
+    case 37: autotuneSearchMode = 0; break;
+    case 38: autotuneSearchMode = 1; break;
+    case 39: autotuneSearchMode = 2; break;
+    case 40: autotuneAmp0Mode = 0; break;
+    case 41: autotuneAmp0Mode = 1; break;
+    case 46: pwCvProbeRequested = true; break;
 
     // Forward Mainboard-specific debug commands over Serial2
     case 42:
@@ -302,19 +322,16 @@ static void apply_param_debug_command(int16_t v) {
 }
 
 // =============================================================================
-// 7. Preset Store & Recall
+// 7. Preset Store, Calibration Dump & Recall
 // =============================================================================
 
 static void apply_param_preset_save(int16_t v)       { preset_store_save((uint8_t)v); }
 static void apply_param_preset_load(int16_t v)       { preset_store_load((uint8_t)v); }
 static void apply_param_preset_dump(int16_t v)       { preset_store_dump((int16_t)v); }
+static void apply_param_cal_dump(int16_t v)          { preset_store_cal_dump(v); }
 static void apply_param_ui_preset_scroll(int16_t v) { 
   const uint8_t slot = (uint8_t)v;
-
-  // 1. Send 'q' to update the Screen's name and slot number
   serial_send_preset_scroll_to_mb(slot); 
-
-  // 2. Send 'L' to tell the Input Controller to turn off manual controls and sync the slot!
   serial_send_preset_loaded_to_mb(slot); 
 }
 
@@ -323,6 +340,7 @@ static void apply_param_ui_preset_scroll(int16_t v) {
 // =============================================================================
 
 static const ParamDescriptorT<int16_t> paramTable[] = {
+  { PARAM_OSC1_PULSE_ENABLE,        apply_param_osc1_pulse_enable },
   { PARAM_OSC1_INTERVAL,            apply_param_osc1_interval },
   { PARAM_OSC2_INTERVAL,            apply_param_osc2_interval },
   { PARAM_OSC3_INTERVAL,            apply_param_osc3_interval },
@@ -375,6 +393,7 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
   { PARAM_PRESET_SAVE,              apply_param_preset_save },
   { PARAM_PRESET_LOAD,              apply_param_preset_load },
   { PARAM_PRESET_DUMP,              apply_param_preset_dump },
+  { PARAM_CAL_DUMP,                 apply_param_cal_dump },
   { PARAM_UI_PRESET_SCROLL,         apply_param_ui_preset_scroll },
   { PARAM_DEBUG_COMMAND,            apply_param_debug_command },
 };
