@@ -2,8 +2,8 @@
 // Analog VCA/VCF/AS2164/PWM only when ENABLE_CV_OUTS. Always-on: Q15 matrix, lerp>>12, note-60.
 // USE_FLOAT_CV_OUTS: float VCA/VCF/keytrack/drift (A/B override).
 // Else: fixed Q15 / integer path (shipping default both MCUs).
-#include "include_all.h"
 #include <string.h>
+
 
 // Panel depth 0..512 → CV units. LFO Q15 peak uses *2 (legacy HALF/CC).
 static constexpr int32_t CV_U12_MAX = 4095;           // last valid 12-bit CV code

@@ -1,6 +1,6 @@
 #include <cstddef>
 #include "project_config.h"
-#include "include_all.h"
+
 
 #ifndef __GLOBALS_H__
 #define __GLOBALS_H__
@@ -106,6 +106,8 @@ volatile uint8_t STACK_VOICES = 1;
 volatile uint8_t voiceMode = 1;
 uint8_t syncMode = 0;
 volatile uint8_t oscSync = 0;
+
+bool pulseWaveOn = false;
 
 // Voice allocation policy (PARAM_VOICE_ALLOC_MODE) lives on the voiceAlloc
 // instance in voice_alloc_state.h; VoiceAllocMode comes from the shared library.

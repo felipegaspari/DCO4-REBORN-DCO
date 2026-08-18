@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include "params_def.h"
+#include "_build_libs/DCO-PROTOCOL/params_def.h"
 #include "_build_libs/DCO-PROTOCOL/serial_input_protocol.h"
 
 
@@ -142,7 +142,6 @@ static inline bool preset_param_is_persistable(uint8_t id) {
     case PARAM_OSC3_SAW_ENABLE:
     case PARAM_OSC3_PULSE_ENABLE:
     case PARAM_OSC3_TRI_ENABLE:
-    case PARAM_ADSR3_ENABLED:
     case PARAM_PW_VALUE:
       return true;
     default:

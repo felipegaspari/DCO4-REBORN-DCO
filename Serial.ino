@@ -63,9 +63,17 @@ void serial_send_preset_loaded_to_mb(uint8_t slot) {
 void serial_send_preset_scroll_to_mb(uint8_t slot) {
   uint8_t payload[SERIAL_LEN_SCREEN_PRESET_SCROLL];
   payload[0] = slot;
-  for (uint8_t i = 0; i < 16; ++i) {
-    payload[1 + i] = presetName[i];
+  
+  // Check if there is a valid preset in RAM for this slot
+  if (presetStoreRAM[slot][PRESET_OFF_MAGIC] == PRESET_MAGIC) {
+    for (uint8_t i = 0; i < 16; ++i) {
+      payload[1 + i] = presetStoreRAM[slot][PRESET_OFF_NAME + i];
+    }
+  } else {
+    // Empty preset slot - send 16 blank characters
+    memset(payload + 1, 0, 16);
   }
+  
   serial_frame_write(Serial2Dma, (uint8_t)CMD_PRESET_NAME, payload, SERIAL_LEN_SCREEN_PRESET_SCROLL);
 }
 
@@ -135,6 +143,37 @@ void serial_send_patch_lfo_block_to_mb() {
   blk.adsr3_to_osc_select = (int8_t)presetParamShadow[PARAM_ADSR3_TO_OSC_SELECT];
 
   serial_frame_write(Serial2Dma, CMD_BLOCK_LFO, (const uint8_t*)&blk, SERIAL_LEN_BLOCK_LFO);
+}
+
+void serial_send_patch_mix_block_to_mb() {
+  PatchMixBlock blk;
+  memset(&blk, 0, sizeof(blk));
+
+  blk.osc1_level         = (uint8_t)presetParamShadow[PARAM_OSC1_LEVEL];
+  blk.osc2_level         = (uint8_t)presetParamShadow[PARAM_OSC2_LEVEL];
+  blk.osc3_level         = (uint8_t)presetParamShadow[PARAM_OSC3_LEVEL];
+  blk.sub_level          = (uint8_t)presetParamShadow[PARAM_SUB_LEVEL];
+  blk.vca_level          = (uint8_t)presetParamShadow[PARAM_VCA_LEVEL];
+  blk.filter_mode        = (uint8_t)presetParamShadow[PARAM_FILTER_MODE];
+  blk.velocity_to_vcf    = (int8_t)presetParamShadow[PARAM_VELOCITY_TO_VCF];
+  blk.velocity_to_vca    = (int8_t)presetParamShadow[PARAM_VELOCITY_TO_VCA];
+  blk.vcf_keytrack       = (int16_t)presetParamShadow[PARAM_VCF_KEYTRACK];
+  blk.adsr1_to_vca       = (int16_t)presetParamShadow[PARAM_ADSR1_TO_VCA];
+  blk.dist_drive         = (uint16_t)presetParamShadow[PARAM_DIST_DRIVE];
+  blk.dist_mix           = (uint16_t)presetParamShadow[PARAM_DIST_MIX];
+  blk.adsr1_attack_curve = (uint8_t)presetParamShadow[PARAM_ADSR1_ATTACK_CURVE];
+  blk.adsr1_decay_curve  = (uint8_t)presetParamShadow[PARAM_ADSR1_DECAY_CURVE];
+  blk.adsr2_attack_curve = (uint8_t)presetParamShadow[PARAM_ADSR2_ATTACK_CURVE];
+  blk.adsr2_decay_curve  = (uint8_t)presetParamShadow[PARAM_ADSR2_DECAY_CURVE];
+
+  // Pack boolean switches into the flag byte
+  uint8_t flags = 0;
+  if (presetParamShadow[PARAM_RESONANCE_COMPENSATION]) flags |= (1 << 0);
+  if (presetParamShadow[PARAM_VCA_ADSR_RESTART])       flags |= (1 << 1);
+  if (presetParamShadow[PARAM_VCF_ADSR_RESTART])       flags |= (1 << 2);
+  blk.misc_flags = flags;
+
+  serial_frame_write(Serial2Dma, CMD_BLOCK_MIX, (const uint8_t*)&blk, SERIAL_LEN_BLOCK_MIX);
 }
 
 void serial_send_patch_mod_block_to_mb() {

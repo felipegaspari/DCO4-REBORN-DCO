@@ -249,54 +249,95 @@
 #endif
 
 
+// =============================================================================
+// CALIBRATION — auto-cal boot defaults
+// =============================================================================
+// PW Sweep Mode: 0 FULL (DCO4: 2%..98%), 1 HALF_HIGH (DCO3: 50%..98%), 2
+// HALF_LOW (DCO3: 2%..50%)
+#ifndef PW_SWEEP_MODE_DEFAULT
+#if PROJECT_INSTRUMENT == 4
+#define PW_SWEEP_MODE_DEFAULT 0 // DCO4: FULL (default)
+#else
+#define PW_SWEEP_MODE_DEFAULT 2 // DCO3: HALF_LOW (default)
+#endif
+#endif
+
+// PW Polarity Inversion: 0 NOT INVERTED, 1 INVERTED
+#ifndef PW_POLARITY_INVERTED
+#define PW_POLARITY_INVERTED 0
+#endif
+// To manually override without PROJECT_INSTRUMENT:
+// #undef PW_SWEEP_MODE_DEFAULT
+// #define PW_SWEEP_MODE_DEFAULT PW_SWEEP_HALF_HIGH
+
+
+// =======================================================================
+// PRESETS OPTIONS
+// =======================================================================
+
+// REMEMBER_LAST_PRESET   if defined, writes in flash the number of the last preset to restore at boot
+// #define REMEMBER_LAST_PRESET
 
 #include <Adafruit_TinyUSB.h>
 #include <MIDI.h>
-//#include "tusb_config.h"
+#include <stdint.h>
+#include <math.h>
 
 #include "pico/stdlib.h"
-// #include "hardware/pio.h"
 #include "hardware/clocks.h"
-#include "pico-dco.pio.h"
 #include "hardware/pwm.h"
-// #include "hardware/spi.h"
-
+#include "hardware/watchdog.h"
 #include "LittleFS.h"
-// #include <SingleFileDrive.h>
-// #include <EEPROM.h>
+#include "pico-dco.pio.h"
 
-#include <stdint.h>
-#include "params_def.h"
+// 1. Protocol & Framework Libraries
+#include "_build_libs/DCO-PROTOCOL/params_def.h"
+#include "_build_libs/DCO-PROTOCOL/serial_param_protocol.h"
 #include "_build_libs/DCO-PROTOCOL/param_router.h"
 
+#include "_build_libs/DCO-PROTOCOL/serial_input_protocol.h"
+#include "_build_libs/DCO-PROTOCOL/serial_frame.h"
+#include "_build_libs/DCO-PROTOCOL/serial_parser.h"
+
+// 2. Base Configuration, Globals & Tables
 #include "globals.h"
-#include "amp_comp.h"
-#include "cv_state.h"
-#include "cv_out.h"
+#include "FS.h"                 // Provides chanLevelVoiceDataSize for amp_comp.h
+#include "_shared/noteList.h"   // Provides sNotePitches for autotune.h
 
-#include "FS.h"
-#include "preset_store.h"
+// 3. Amplitude Compensation (MUST be before bench.h!)
+#include "_shared/amp_comp.h"
 
-#include "_shared/noteList.h"
-
-#include "Serial.h"
-#include "midi.h"
-#include "voices.h"
-#include "state_machines.h"
-#include "PWM.h"
-#include "utils.h"
-#include "Timer_micros.h"
-#include "mem_diag.h"
-
-#include "LFO.h"
-#include "adsr.h"
-#include "bench.h"
-#include "midi_cc.h"
-#include "midi_cc_map.h"  // generated; defines midiCcMap[], so include it once, here
-#include "wave_mux.h"
-
+// 4. Autotune (MUST be before bench.h!)
 #include "autotune.h"
 
+// 5. Modulation & Drivers (MUST be before bench.h!)
+#include "noise.h"
+#include "_shared/character_jitter.h"
+#include "LFO.h"
+#include "adsr.h"
+
+// 6. Profiling & Diagnostics (MUST be AFTER amp_comp, autotune, LFO, and adsr!)
+#include "bench.h"
+#include "mem_diag.h"
+
+// 7. Subsystems, CV & Voice Pipeline (Everything else)
+
+#include "mod_matrix.h"
+#include "_shared/voice_alloc.h"
+#include "voice_alloc_state.h"
+#include "wave_mux.h"
+#include "preset_store.h"
+#include "Serial.h"
+#include "midi.h"
+#include "midi_cc.h"
+#include "midi_cc_map.h"
+#include "PWM.h"
+#include "state_machines.h"
+#include "_shared/utils.h"
+#include "Timer_micros.h"
+#include "voices.h"
+#include "cv_state.h"
+#include "cv_out.h"
 
 // ****************************************************************************************** //
 
@@ -396,9 +437,12 @@ void __not_in_flash_func(loop)() {
 #ifdef ENABLE_USB_CONTROL
       serial_usb_task();
 #endif
+
+#ifdef REMEMBER_LAST_PRESET
       // One-shot recall of the last saved/loaded preset once both cores are up.
       preset_store_boot_task();
       // One chunk of a pending 'N' directory push, paced for the Mainboard relay.
+#endif
       preset_store_dir_push_task();
     }
     BENCH_END(loop0_serial);
@@ -463,48 +507,13 @@ void __not_in_flash_func(loop1)() {
     BENCH_END(loop1_microsTimer);
   }
 
-  if (calibrationFlag) {
-    if (manualCalibrationFlag) {
-      if (calSyncNeutralRequested) {
-        calSyncNeutralRequested = false;
-        setSyncMode();
-      }
-
-      // Keep currentDCO in sync
-      currentDCO = cal_manual_osc();
-
-      // Check whether active stage is a 440 Hz anchor stage (using canonical helper)
-      if (cal_stage_is_440_n(manualCalibrationStage, NUM_OSCILLATORS) || manualCalibrationStep == 1) {
-        VOICE_NOTES[0] = manual_cal_reference_note;
-        DCO_calibration_current_note = manual_cal_reference_note;
-        if (ampComp440[currentDCO] != 0) {
-          ampCompCalibrationVal = ampComp440[currentDCO];
-        } else {
-          float scale = note_to_freq(manual_cal_reference_note) / note_to_freq(manual_DCO_calibration_start_note);
-          ampCompCalibrationVal = (uint16_t)((initManualAmpCompCalibrationValPreset + manualCalibrationOffset[currentDCO]) * scale + 0.5f);
-        }
-      } else {
-        VOICE_NOTES[0] = manual_DCO_calibration_start_note;
-        DCO_calibration_current_note = manual_DCO_calibration_start_note;
-        ampCompCalibrationVal = initManualAmpCompCalibrationValPreset + manualCalibrationOffset[currentDCO];
-      }
-
-      voice_task_autotune(0, ampCompCalibrationVal);
-      update_CV_outs_manual_calibration();
-      DCO_calibration_debug();
-
-      if (pwCvProbeRequested) {
-        pwCvProbeRequested = false;
-        run_pw_cv_probe();
-      }
-
-    } else {
-      DCO_calibration();
-    }
-  } /*else if (calibrationVerifyRequested) {
-    calibrationVerifyRequested = false;
-    run_calibration_verify_sweep();
-  } else {*/
+  // ===============================================
+  // CALIBRATION OR VOICE ENGINE TASK
+  // ===============================================
+  if (calibrationFlag || calibrationVerifyRequested) {
+    // Defer all calibration execution to the centralized manager
+    autotune_loop_task();
+  }
 
   pio_defer_service();
 

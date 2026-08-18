@@ -1,10 +1,6 @@
 #ifndef __SERIAL_H__
 #define __SERIAL_H__
 
-// DCO accepts the 36-byte 'B' bulk-restore chunk, so inner cap is 36.
-#ifndef SERIAL_INNER_MAX_PAYLOAD
-#define SERIAL_INNER_MAX_PAYLOAD 36
-#endif
 
 // Shared Protocol Includes
 #include "_build_libs/DCO-PROTOCOL/serial_param_protocol.h"

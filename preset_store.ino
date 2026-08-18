@@ -163,13 +163,14 @@ static bool preset_record_validate(const uint8_t* buf) {
 }
 
 static void preset_record_apply(const uint8_t* buf) {
-  // 1. Apply parameters locally to DCO engine (without echoing 70 individual frames)
+  // 1. Apply parameters locally to DCO engine
   for (uint16_t id = 0; id < PRESET_PARAM_COUNT; ++id) {
     if (!(buf[PRESET_OFF_BITMAP + (id >> 3)] & (1u << (id & 7u)))) continue;
     if (!preset_param_is_persistable((uint8_t)id)) continue;
     const int16_t value = (int16_t)decode_u16_le(buf + PRESET_OFF_PARAMS + id * 2);
     update_parameters(id, value);
   }
+
 
   // 2. Unpack local envelopes & filter
   const uint8_t* b = buf + PRESET_OFF_BLOCKS;
@@ -207,6 +208,7 @@ static void preset_record_apply(const uint8_t* buf) {
   serial_send_patch_osc_block_to_mb(); // 'v'
   serial_send_patch_lfo_block_to_mb(); // 'l'
   serial_send_patch_mod_block_to_mb(); // 'M'
+  serial_send_patch_mix_block_to_mb(); // 'X'  <-- Add this!
 }
 
 static void preset_store_write_last(uint8_t slot) {
@@ -269,32 +271,58 @@ void preset_store_save(uint8_t slot) {
   Serial.printf("[preset] saved slot=%u name=\"%.16s\"\n", (unsigned)slot, (const char*)presetName);
 }
 
-// PARAM_PRESET_LOAD: 0 ms Pure In-RAM Recall! Zero LittleFS reads!
+// PARAM_PRESET_LOAD: 0 ms Pure In-RAM Recall!
+// PARAM_PRESET_LOAD: Instant visual feedback first, audio blocks in background
 bool preset_store_load(uint8_t slot) {
-  const uint8_t* record = presetStoreRAM[slot];
+  if (slot >= PRESET_NUM_SLOTS) return false;
 
-  if (!preset_record_validate(record)) {
-    Serial.printf("[preset] err slot=%u reason=empty_or_corrupt\n", (unsigned)slot);
-    return false;
+  const uint8_t* record = presetStoreRAM[slot];
+  bool isValid = preset_record_validate(record);
+
+  // 1. Extract the name into RAM immediately
+  if (isValid) {
+    for (int i = 0; i < 16; ++i) {
+      presetName[i] = record[PRESET_OFF_NAME + i];
+    }
+  } else {
+    memset(presetName, ' ', 16);
+    Serial.printf("[preset] slot=%u is empty\n", (unsigned)slot);
   }
 
-  // 1. Tell Input Controller to drop manual controls BEFORE sending audio blocks
-  serial_send_preset_loaded_to_mb(slot);
+  // =========================================================================
+  // STEP 1: SEND PRESET NAME & NUMBER FIRST (0 ms Instant UI Feedback!)
+  // =========================================================================
+  serial_send_preset_scroll_to_mb(slot);  // Sends 'q' -> Screen paints title/number immediately!
+  serial_send_preset_loaded_to_mb(slot);  // Drops manual pot overrides on Input Controller
 
-  // 2. Freeze Screen display redraws
+  // =========================================================================
+  // STEP 2: FREEZE PARAMETER TOASTS SO INCOMING AUDIO BLOCKS LOAD SILENTLY
+  // =========================================================================
   serial_send_screen_signal_to_mb(SCREEN_SIGNAL_SILENT);
 
-  // 3. Apply sound locally & transmit domain blocks
-  preset_record_apply(record);
-  preset_store_write_last(slot);
+  // =========================================================================
+  // STEP 3: APPLY AUDIO ENGINE & STREAM DOMAIN BLOCKS IN THE BACKGROUND
+  // =========================================================================
+  if (isValid) {
+    preset_record_apply(record); // Streams 'v', 'l', 'M', 'X', 'a', 'b', 'd'
+  }
 
-  // 4. Update display name & unfreeze Screen
-  Serial.printf("[preset] loaded slot=%u name=\"%.16s\"\n", (unsigned)slot, (const char*)presetName);
-  serial_send_preset_scroll_to_mb(slot);
-  serial_send_screen_signal_to_mb(SCREEN_SIGNAL_PRESET_SCROLL);
-  return true;
+  // =========================================================================
+  // STEP 4: UNFREEZE SCREEN (Ready for live tweaking)
+  // =========================================================================
+  serial_send_screen_signal_to_mb(1); // 1 = SIGNAL_PRESET_LOAD_SCROLL (Unfreeze)
+
+  // =========================================================================
+  // STEP 5: WRITE LAST SLOT TO FLASH IN BACKGROUND
+  // =========================================================================
+  #ifdef REMEMBER_LAST_PRESET
+  if (isValid) {
+    preset_store_write_last(slot);
+  }
+  #endif
+
+  return isValid;
 }
-
 
 // --- In-RAM Directory Push (Streams from RAM over DMA) ---
 static uint8_t presetDirPushChunk = PRESET_CHUNK_COUNT;
