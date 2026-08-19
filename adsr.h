@@ -108,7 +108,7 @@ uint16_t ADSR1_release = 0;
 
 volatile uint16_t adsr_params_dirty = 0;
 
-static inline void mark_adsr_params_dirty(uint16_t mask) {
+static inline void __not_in_flash_func(mark_adsr_params_dirty)(uint16_t mask) {
   adsr_params_dirty |= mask;
 }
 
@@ -158,8 +158,8 @@ ADSRStruct ADSRVoices[] = {
 };
 
 void init_ADSR();
-void ADSR_update();
-void ADSR_set_parameters();
+void __not_in_flash_func(ADSR_update)();
+void __not_in_flash_func(ADSR_set_parameters)();
 void ADSR1_set_restart();
 void ADSR_VCA_set_restart();
 void ADSR_VCF_set_restart();

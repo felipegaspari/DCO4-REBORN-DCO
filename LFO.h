@@ -63,13 +63,13 @@ static constexpr int32_t DRIFT_PITCH_DEPTH_SCALE = 1000;
 static constexpr int32_t DRIFT_PITCH_UNIT_Q24 =
   (int32_t)(0.0000005f * (float)(1 << 24) + 0.5f);
 
-static inline int32_t lfo_pitch_depth_q24(float amt, int32_t depth_scale) {
+static inline int32_t __not_in_flash_func(lfo_pitch_depth_q24)(float amt, int32_t depth_scale) {
   return (int32_t)(amt * (float)depth_scale * (float)(1 << 24) + 0.5f);
 }
 
 // Synth-side helper (not mo-lfo): mod_q24 = (wave_q15 * depth_q24) >> 15.
 // 32-bit split avoids int64 mul on Cortex-M0+.
-static inline int32_t applyDepthQ24(int16_t wave_q15, int32_t depth_q24) {
+static inline int32_t __not_in_flash_func(applyDepthQ24)(int16_t wave_q15, int32_t depth_q24) {
   const int32_t w = (int32_t)wave_q15;
   const int32_t hi = depth_q24 >> 15;
   const int32_t lo = depth_q24 - (hi << 15);

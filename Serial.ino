@@ -12,7 +12,7 @@ enum ParamIngress : uint8_t {
 static ParamIngress g_param_ingress = PARAM_SRC_MAINBOARD;
 
 // Forward to Mainboard ONLY if the command originated from USB Host
-static void serial_forward_usb_edit_to_mb(char cmd, const uint8_t* payload, uint8_t len) {
+static void __not_in_flash_func(serial_forward_usb_edit_to_mb)(char cmd, const uint8_t* payload, uint8_t len) {
   if (g_param_ingress != PARAM_SRC_USB) return;
   serial_frame_write(Serial2Dma, (uint8_t)cmd, payload, len);
 }
@@ -21,7 +21,7 @@ static void serial_forward_usb_edit_to_mb(char cmd, const uint8_t* payload, uint
 // Outgoing Block Senders to Mainboard
 // =============================================================================
 
-static void serial_send_adsr_block_to_mb(uint8_t cmd, uint16_t a, uint16_t d, uint16_t s, uint16_t r) {
+static void __not_in_flash_func(serial_send_adsr_block_to_mb)(uint8_t cmd, uint16_t a, uint16_t d, uint16_t s, uint16_t r) {
   uint8_t payload[SERIAL_LEN_ADSR_BLOCK];
   encode_u16_le(payload + 0, a);
   encode_u16_le(payload + 2, d);
@@ -30,19 +30,19 @@ static void serial_send_adsr_block_to_mb(uint8_t cmd, uint16_t a, uint16_t d, ui
   serial_frame_write(Serial2Dma, cmd, payload, SERIAL_LEN_ADSR_BLOCK);
 }
 
-void serial_send_adsr_vca_block_to_mb() {
+void __not_in_flash_func(serial_send_adsr_vca_block_to_mb)() {
   serial_send_adsr_block_to_mb(CMD_ADSR1_BLOCK, ADSR_VCA_attack, ADSR_VCA_decay, ADSR_VCA_sustain, ADSR_VCA_release);
 }
 
-void serial_send_adsr_vcf_block_to_mb() {
+void __not_in_flash_func(serial_send_adsr_vcf_block_to_mb)() {
   serial_send_adsr_block_to_mb(CMD_ADSR2_BLOCK, ADSR_VCF_attack, ADSR_VCF_decay, ADSR_VCF_sustain, ADSR_VCF_release);
 }
 
-void serial_send_adsr_dco_block_to_mb() {
+void __not_in_flash_func(serial_send_adsr_dco_block_to_mb)() {
   serial_send_adsr_block_to_mb(CMD_ADSR3_BLOCK, ADSR1_attack, ADSR1_decay, ADSR1_sustain, ADSR1_release);
 }
 
-void serial_send_filter_block_to_mb() {
+void __not_in_flash_func(serial_send_filter_block_to_mb)() {
   uint8_t payload[SERIAL_LEN_FILTER_BLOCK];
   encode_u16_le(payload + 0, CUTOFF);
   encode_u16_le(payload + 2, RESONANCE);
@@ -81,7 +81,7 @@ void serial_send_preset_scroll_to_mb(uint8_t slot) {
 // Domain Block Senders (Preset Recall Burst)
 // =============================================================================
 
-void serial_send_patch_osc_block_to_mb() {
+void __not_in_flash_func(serial_send_patch_osc_block_to_mb)() {
   PatchOscBlock blk;
   memset(&blk, 0, sizeof(blk));
 
@@ -117,7 +117,7 @@ void serial_send_patch_osc_block_to_mb() {
   serial_frame_write(Serial2Dma, CMD_BLOCK_OSC, (const uint8_t*)&blk, SERIAL_LEN_BLOCK_OSC);
 }
 
-void serial_send_patch_lfo_block_to_mb() {
+void __not_in_flash_func(serial_send_patch_lfo_block_to_mb)() {
   PatchLfoBlock blk;
   memset(&blk, 0, sizeof(blk));
 
@@ -145,7 +145,7 @@ void serial_send_patch_lfo_block_to_mb() {
   serial_frame_write(Serial2Dma, CMD_BLOCK_LFO, (const uint8_t*)&blk, SERIAL_LEN_BLOCK_LFO);
 }
 
-void serial_send_patch_mix_block_to_mb() {
+void __not_in_flash_func(serial_send_patch_mix_block_to_mb)() {
   PatchMixBlock blk;
   memset(&blk, 0, sizeof(blk));
 
@@ -176,7 +176,7 @@ void serial_send_patch_mix_block_to_mb() {
   serial_frame_write(Serial2Dma, CMD_BLOCK_MIX, (const uint8_t*)&blk, SERIAL_LEN_BLOCK_MIX);
 }
 
-void serial_send_patch_mod_block_to_mb() {
+void __not_in_flash_func(serial_send_patch_mod_block_to_mb)() {
   PatchModBlock blk;
   memset(&blk, 0, sizeof(blk));
 
@@ -197,7 +197,7 @@ void serial_send_patch_mod_block_to_mb() {
 // Parameter Senders
 // =============================================================================
 
-void serialSendParam16(byte paramNumber, int16_t paramValue, bool force) {
+void __not_in_flash_func(serialSendParam16)(byte paramNumber, int16_t paramValue, bool force) {
   uint8_t payload[SERIAL_LEN_PARAM_16];
   encode_param_p(payload, (uint8_t)paramNumber, paramValue);
   
@@ -212,7 +212,7 @@ void serialSendParam16(byte paramNumber, int16_t paramValue, bool force) {
   }
 }
 
-void serialSendParam32(byte paramNumber, uint32_t paramValue, bool force) {
+void __not_in_flash_func(serialSendParam32)(byte paramNumber, uint32_t paramValue, bool force) {
   uint8_t payload[SERIAL_LEN_PARAM_32];
   encode_param32(payload, (uint8_t)paramNumber, paramValue);
   
@@ -237,7 +237,7 @@ void serial_echo_persistable_param16(uint8_t id, int16_t value) {
 // Inbound Frame Handlers (From Mainboard UART or USB CDC)
 // =============================================================================
 
-static void dco_rx_handle_adsr1(char cmd, const uint8_t* payload, uint8_t len) {
+static void __not_in_flash_func(dco_rx_handle_adsr1)(char cmd, const uint8_t* payload, uint8_t len) {
   uint16_t dirty = 0, v;
   v = decode_u16_le(payload + 0); if (v != ADSR_VCA_attack)  { ADSR_VCA_attack  = v; dirty |= ADSR_DIRTY_VCA_A; }
   v = decode_u16_le(payload + 2); if (v != ADSR_VCA_decay)   { ADSR_VCA_decay   = v; dirty |= ADSR_DIRTY_VCA_D; }
@@ -247,7 +247,7 @@ static void dco_rx_handle_adsr1(char cmd, const uint8_t* payload, uint8_t len) {
   serial_forward_usb_edit_to_mb(cmd, payload, len);
 }
 
-static void dco_rx_handle_adsr2(char cmd, const uint8_t* payload, uint8_t len) {
+static void __not_in_flash_func(dco_rx_handle_adsr2)(char cmd, const uint8_t* payload, uint8_t len) {
   uint16_t dirty = 0, v;
   v = decode_u16_le(payload + 0); if (v != ADSR_VCF_attack)  { ADSR_VCF_attack  = v; dirty |= ADSR_DIRTY_VCF_A; }
   v = decode_u16_le(payload + 2); if (v != ADSR_VCF_decay)   { ADSR_VCF_decay   = v; dirty |= ADSR_DIRTY_VCF_D; }
@@ -257,7 +257,7 @@ static void dco_rx_handle_adsr2(char cmd, const uint8_t* payload, uint8_t len) {
   serial_forward_usb_edit_to_mb(cmd, payload, len);
 }
 
-static void dco_rx_handle_adsr3(char cmd, const uint8_t* payload, uint8_t len) {
+static void __not_in_flash_func(dco_rx_handle_adsr3)(char cmd, const uint8_t* payload, uint8_t len) {
   uint16_t dirty = 0, v;
   v = decode_u16_le(payload + 0); if (v != ADSR1_attack)  { ADSR1_attack  = v; dirty |= ADSR_DIRTY_DCO_A; }
   v = decode_u16_le(payload + 2); if (v != ADSR1_decay)   { ADSR1_decay   = v; dirty |= ADSR_DIRTY_DCO_D; }
@@ -267,7 +267,7 @@ static void dco_rx_handle_adsr3(char cmd, const uint8_t* payload, uint8_t len) {
   serial_forward_usb_edit_to_mb(cmd, payload, len);
 }
 
-static void dco_rx_handle_filter_block(char cmd, const uint8_t* payload, uint8_t len) {
+static void __not_in_flash_func(dco_rx_handle_filter_block)(char cmd, const uint8_t* payload, uint8_t len) {
   CUTOFF     = decode_u16_le(payload + 0);
   RESONANCE  = decode_u16_le(payload + 2);
   ADSR2toVCF = decode_i16_le(payload + 4);
@@ -277,7 +277,7 @@ static void dco_rx_handle_filter_block(char cmd, const uint8_t* payload, uint8_t
   serial_forward_usb_edit_to_mb(cmd, payload, len);
 }
 
-static void dco_rx_handle_param16(char, const uint8_t* payload, uint8_t) {
+static void __not_in_flash_func(dco_rx_handle_param16)(char, const uint8_t* payload, uint8_t) {
   ParamFrame frame;
   decode_param_p(payload, frame);
   update_parameters(frame.id, (int16_t)frame.value);
@@ -286,22 +286,22 @@ static void dco_rx_handle_param16(char, const uint8_t* payload, uint8_t) {
   }
 }
 
-static void dco_rx_handle_preset_name(char, const uint8_t* payload, uint8_t) {
+static void __not_in_flash_func(dco_rx_handle_preset_name)(char, const uint8_t* payload, uint8_t) {
   for (int i = 0; i < 16; ++i) presetName[i] = payload[i];
 }
 
-static void dco_rx_handle_screen_signal(char, const uint8_t* payload, uint8_t) {
+static void __not_in_flash_func(dco_rx_handle_screen_signal)(char, const uint8_t* payload, uint8_t) {
   if (payload[0] == SCREEN_SIGNAL_SILENT) {
     serialSendParam16(ParamId::PARAM_ALL_CONTROLS_MANUAL, 0, true);
   }
   serial_send_screen_signal_to_mb(payload[0]);
 }
 
-static void dco_rx_handle_bulk_chunk(char, const uint8_t* payload, uint8_t len) {
+static void __not_in_flash_func(dco_rx_handle_bulk_chunk)(char, const uint8_t* payload, uint8_t len) {
   preset_bulk_chunk(payload, len);
 }
 
-static void dco_rx_handle_bulk_commit(char, const uint8_t* payload, uint8_t len) {
+static void __not_in_flash_func(dco_rx_handle_bulk_commit)(char, const uint8_t* payload, uint8_t len) {
   preset_bulk_commit(payload, len);
 }
 
@@ -349,7 +349,7 @@ void mb_bench_text_drain() {
   }
 }
 
-static void mb_handle_mod_stream(char, const uint8_t* payload, uint8_t) {
+static void __not_in_flash_func(mb_handle_mod_stream)(char, const uint8_t* payload, uint8_t) {
   LFO1Level = (int16_t)decode_u16_le(payload + 0);
   LFO2Level = (int16_t)decode_u16_le(payload + 2);
   for (uint8_t i = 0; i < 4 && i < NUM_VOICES_TOTAL; i++) {

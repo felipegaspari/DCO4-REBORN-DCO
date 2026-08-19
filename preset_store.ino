@@ -37,9 +37,43 @@ static const char* preset_bulk_target_name(uint8_t target) {
   }
 }
 
+// 256-bit (32 byte) bitmap tracking validated RAM slots
+static uint32_t presetSlotValidBitmap[PRESET_NUM_SLOTS / 32];
+
+static inline bool preset_is_slot_valid(uint8_t slot) {
+  return (presetSlotValidBitmap[slot >> 5] & (1u << (slot & 31u))) != 0;
+}
+
+static inline void preset_set_slot_valid(uint8_t slot, bool valid) {
+  if (valid) {
+    presetSlotValidBitmap[slot >> 5] |= (1u << (slot & 31u));
+  } else {
+    presetSlotValidBitmap[slot >> 5] &= ~(1u << (slot & 31u));
+  }
+}
+
+// Deferred last-slot save state
+static int16_t g_pending_last_slot = -1;
+static uint32_t g_pending_last_slot_time = 0;
+
+void preset_store_schedule_last_write(uint8_t slot) {
+  g_pending_last_slot = (int16_t)slot;
+  g_pending_last_slot_time = millis();
+}
+
+// Call this from your low-priority / idle loop (e.g., in loop() or background task)
+void preset_store_deferred_task() {
+  if (g_pending_last_slot >= 0 && (millis() - g_pending_last_slot_time > 500)) {
+    uint8_t slot = (uint8_t)g_pending_last_slot;
+    g_pending_last_slot = -1;
+    preset_store_write_last(slot);
+  }
+}
+
 // --- One-Time Boot Loader (Loads all 153 KB into RAM) ---
 void preset_store_init_ram() {
   memset(presetStoreRAM, 0, sizeof(presetStoreRAM));
+  memset(presetSlotValidBitmap, 0, sizeof(presetSlotValidBitmap));
   char fname[8];
 
   for (uint8_t chunk = 0; chunk < PRESET_CHUNK_COUNT; ++chunk) {
@@ -51,13 +85,19 @@ void preset_store_init_ram() {
       continue;
     }
     
-    // Read the whole 2392-byte chunk directly into the RAM array
     const uint8_t startSlot = chunk * PRESET_RECORDS_PER_FILE;
     f.read(&presetStoreRAM[startSlot][0], PRESET_CHUNK_SIZE);
     f.close();
+
+    // Validate CRC once on boot for each slot in this chunk
+    for (uint8_t i = 0; i < PRESET_RECORDS_PER_FILE; ++i) {
+      uint8_t s = startSlot + i;
+      if (preset_record_validate(presetStoreRAM[s])) {
+        preset_set_slot_valid(s, true);
+      }
+    }
   }
 }
-
 // --- Dump text helpers ---
 
 static void dump_print_begin(const char* target, int slot, uint32_t size) {
@@ -162,53 +202,54 @@ static bool preset_record_validate(const uint8_t* buf) {
   return decode_u32_le(buf + PRESET_OFF_CRC) == preset_crc32(buf, PRESET_OFF_CRC);
 }
 
-static void preset_record_apply(const uint8_t* buf) {
-  // 1. Apply parameters locally to DCO engine
-  for (uint16_t id = 0; id < PRESET_PARAM_COUNT; ++id) {
-    if (!(buf[PRESET_OFF_BITMAP + (id >> 3)] & (1u << (id & 7u)))) continue;
-    if (!preset_param_is_persistable((uint8_t)id)) continue;
-    const int16_t value = (int16_t)decode_u16_le(buf + PRESET_OFF_PARAMS + id * 2);
-    update_parameters(id, value);
-  }
+static void __not_in_flash_func(preset_record_apply)(const uint8_t* buf) {
+  // =========================================================================
+  // STEP 1: UNPACK RAW RECORD INTO RAM IMMEDIATELY (~1.5 µs)
+  // =========================================================================
+  memcpy(presetParamShadow, buf + PRESET_OFF_PARAMS, sizeof(presetParamShadow));
+  memcpy(presetParamSetBitmap, buf + PRESET_OFF_BITMAP, sizeof(presetParamSetBitmap));
 
-
-  // 2. Unpack local envelopes & filter
   const uint8_t* b = buf + PRESET_OFF_BLOCKS;
   ADSR_VCA_attack  = decode_u16_le(b + 0);
   ADSR_VCA_decay   = decode_u16_le(b + 2);
   ADSR_VCA_sustain = decode_u16_le(b + 4);
   ADSR_VCA_release = decode_u16_le(b + 6);
+
   ADSR_VCF_attack  = decode_u16_le(b + 8);
   ADSR_VCF_decay   = decode_u16_le(b + 10);
   ADSR_VCF_sustain = decode_u16_le(b + 12);
   ADSR_VCF_release = decode_u16_le(b + 14);
+
   ADSR1_attack     = decode_u16_le(b + 16);
   ADSR1_decay      = decode_u16_le(b + 18);
   ADSR1_sustain    = decode_u16_le(b + 20);
   ADSR1_release    = decode_u16_le(b + 22);
+
   CUTOFF           = decode_u16_le(b + 24);
   RESONANCE        = decode_u16_le(b + 26);
   ADSR2toVCF       = (int16_t)decode_u16_le(b + 28);
   LFO2toVCF        = decode_u16_le(b + 30);
-  
-  mark_adsr_params_dirty(ADSR_DIRTY_VCA_ALL | ADSR_DIRTY_VCF_ALL | ADSR_DIRTY_DCO_ALL);
-  cv_bake_adsr2_to_vcf_scale();
-  cv_bake_lfo2_to_vcf_scale();
 
-  for (int i = 0; i < 16; ++i) {
-    presetName[i] = buf[PRESET_OFF_NAME + i];
-  }
-
-  // 3. Send Domain Blocks over Serial2 (<0.45 ms total wire time!)
-  serial_send_adsr_vca_block_to_mb();
-  serial_send_adsr_vcf_block_to_mb();
-  serial_send_adsr_dco_block_to_mb();
-  serial_send_filter_block_to_mb();
+  // =========================================================================
+  // STEP 2: SEND FRESH DOMAIN BLOCKS FIRST! (Wire transmission starts NOW)
+  // =========================================================================
+  serial_send_adsr_vca_block_to_mb(); // 'a' (Fresh ADSR_VCA_*)
+  serial_send_adsr_vcf_block_to_mb(); // 'b' (Fresh ADSR_VCF_*)
+  serial_send_adsr_dco_block_to_mb(); // 'c' (Fresh ADSR1_*)
+  serial_send_filter_block_to_mb();   // 'd' (Fresh CUTOFF & RESO)
 
   serial_send_patch_osc_block_to_mb(); // 'v'
   serial_send_patch_lfo_block_to_mb(); // 'l'
   serial_send_patch_mod_block_to_mb(); // 'M'
-  serial_send_patch_mix_block_to_mb(); // 'X'  <-- Add this!
+  serial_send_patch_mix_block_to_mb(); // 'Q'
+
+  // =========================================================================
+  // STEP 3: COMPUTE LOCAL DCO ENGINE & VOICES IN PARALLEL
+  // =========================================================================
+  dco_apply_preset_shadow();
+  mark_adsr_params_dirty(ADSR_DIRTY_VCA_ALL | ADSR_DIRTY_VCF_ALL | ADSR_DIRTY_DCO_ALL);
+  cv_bake_adsr2_to_vcf_scale();
+  cv_bake_lfo2_to_vcf_scale();
 }
 
 static void preset_store_write_last(uint8_t slot) {
@@ -267,59 +308,45 @@ static bool preset_chunk_write_record(uint8_t slot, const uint8_t* record, const
 void preset_store_save(uint8_t slot) {
   preset_record_build(presetStoreRAM[slot]);
   if (!preset_chunk_write_record(slot, presetStoreRAM[slot], "preset")) return;
-  preset_store_write_last(slot);
+  preset_set_slot_valid(slot, true);
+  preset_store_schedule_last_write(slot);
   Serial.printf("[preset] saved slot=%u name=\"%.16s\"\n", (unsigned)slot, (const char*)presetName);
 }
 
-// PARAM_PRESET_LOAD: 0 ms Pure In-RAM Recall!
-// PARAM_PRESET_LOAD: Instant visual feedback first, audio blocks in background
-bool preset_store_load(uint8_t slot) {
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// PARAM_PRESET_LOAD: 0 ms Pure In-RAM Recall!      ////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool __not_in_flash_func(preset_store_load)(uint8_t slot) {
   if (slot >= PRESET_NUM_SLOTS) return false;
 
+  // O(1) Fast in-RAM validity check (single bit test)
+  const bool isValid = preset_is_slot_valid(slot);
   const uint8_t* record = presetStoreRAM[slot];
-  bool isValid = preset_record_validate(record);
-
-  // 1. Extract the name into RAM immediately
+ 
+  //////////// PRESET DEBUG PRINT ALL ////////////
+  // preset_debug_print_all(slot);
+ //////////// PRESET DEBUG PRINT ALL ////////////
+ 
+ // 1. Extract name
   if (isValid) {
-    for (int i = 0; i < 16; ++i) {
-      presetName[i] = record[PRESET_OFF_NAME + i];
-    }
+    memcpy(presetName, record + PRESET_OFF_NAME, 16);
   } else {
     memset(presetName, ' ', 16);
-    Serial.printf("[preset] slot=%u is empty\n", (unsigned)slot);
   }
-
-  // =========================================================================
-  // STEP 1: SEND PRESET NAME & NUMBER FIRST (0 ms Instant UI Feedback!)
-  // =========================================================================
-  serial_send_preset_scroll_to_mb(slot);  // Sends 'q' -> Screen paints title/number immediately!
-  serial_send_preset_loaded_to_mb(slot);  // Drops manual pot overrides on Input Controller
-
-  // =========================================================================
-  // STEP 2: FREEZE PARAMETER TOASTS SO INCOMING AUDIO BLOCKS LOAD SILENTLY
-  // =========================================================================
+  // 2. Notify Screen and Input controllers
+  serial_send_preset_scroll_to_mb(slot);  // Sends 'q'
+  serial_send_preset_loaded_to_mb(slot);  // Clears overrides
   serial_send_screen_signal_to_mb(SCREEN_SIGNAL_SILENT);
 
-  // =========================================================================
-  // STEP 3: APPLY AUDIO ENGINE & STREAM DOMAIN BLOCKS IN THE BACKGROUND
-  // =========================================================================
+  // 3. Apply Audio Engine & Stream Domain Blocks
   if (isValid) {
-    preset_record_apply(record); // Streams 'v', 'l', 'M', 'X', 'a', 'b', 'd'
+    preset_record_apply(record);
   }
 
-  // =========================================================================
-  // STEP 4: UNFREEZE SCREEN (Ready for live tweaking)
-  // =========================================================================
-  serial_send_screen_signal_to_mb(1); // 1 = SIGNAL_PRESET_LOAD_SCROLL (Unfreeze)
-
-  // =========================================================================
-  // STEP 5: WRITE LAST SLOT TO FLASH IN BACKGROUND
-  // =========================================================================
-  #ifdef REMEMBER_LAST_PRESET
-  if (isValid) {
-    preset_store_write_last(slot);
-  }
-  #endif
+  // 4. Unfreeze Screen
+  serial_send_screen_signal_to_mb(1);
 
   return isValid;
 }
@@ -449,3 +476,95 @@ void preset_store_boot_recall() {
   if (!ok) return;
   preset_store_load(slot);
 }
+
+// void preset_debug_print_all(uint8_t slot) {
+//   if (slot >= PRESET_NUM_SLOTS) return;
+  
+//   const uint8_t* record = presetStoreRAM[slot];
+//   const bool isValid = preset_record_validate(record);
+
+//   Serial.println(F("\n================================================================="));
+//   Serial.printf(" PRESET DUMP - SLOT %03u [%s]\n", (unsigned)slot, isValid ? "VALID" : "INVALID / EMPTY");
+//   Serial.println(F("================================================================="));
+
+//   char nameBuf[17];
+//   memcpy(nameBuf, record + PRESET_OFF_NAME, 16);
+//   nameBuf[16] = '\0';
+//   Serial.printf(" Name:       \"%s\"\n", nameBuf);
+//   Serial.printf(" CRC32:      0x%08lX\n", (unsigned long)decode_u32_le(record + PRESET_OFF_CRC));
+
+//   // =========================================================================
+//   // 1. Envelopes & Filter (Unpacked from PRESET_OFF_BLOCKS)
+//   // =========================================================================
+//   const uint8_t* b = record + PRESET_OFF_BLOCKS;
+//   Serial.println(F("\n--- [ ENVELOPES & FILTER ] ---"));
+//   Serial.printf(" EnvVCA (ADSR): A=%-5u D=%-5u S=%-5u R=%-5u\n",
+//                 decode_u16_le(b + 0), decode_u16_le(b + 2), decode_u16_le(b + 4), decode_u16_le(b + 6));
+//   Serial.printf(" EnvVCF (ADSR): A=%-5u D=%-5u S=%-5u R=%-5u\n",
+//                 decode_u16_le(b + 8), decode_u16_le(b + 10), decode_u16_le(b + 12), decode_u16_le(b + 14));
+//   Serial.printf(" EnvDCO (ADSR): A=%-5u D=%-5u S=%-5u R=%-5u\n",
+//                 decode_u16_le(b + 16), decode_u16_le(b + 18), decode_u16_le(b + 20), decode_u16_le(b + 22));
+//   Serial.printf(" Filter:        Cutoff=%-5u Reso=%-5u Env2Depth=%-5d LFO2Depth=%-5u\n",
+//                 decode_u16_le(b + 24), decode_u16_le(b + 26), (int16_t)decode_u16_le(b + 28), decode_u16_le(b + 30));
+
+//   // =========================================================================
+//   // 2. Oscillators, Pitch & Modes (from PRESET_OFF_PARAMS)
+//   // =========================================================================
+//   const int16_t* p = (const int16_t*)(record + PRESET_OFF_PARAMS);
+//   Serial.println(F("\n--- [ OSCILLATORS & VOICE ] ---"));
+//   Serial.printf(" OSC1: Saw=%d Pulse=%d Tri=%d | Octave=%d\n",
+//                 p[PARAM_OSC1_SAW_ENABLE], p[PARAM_OSC1_PULSE_ENABLE], p[PARAM_OSC1_TRI_ENABLE], p[PARAM_OSC1_INTERVAL]);
+//   Serial.printf(" OSC2: Saw=%d Pulse=%d Tri=%d | Interval=%d Detune=%u\n",
+//                 p[PARAM_OSC2_SAW_ENABLE], p[PARAM_OSC2_PULSE_ENABLE], p[PARAM_OSC2_TRI_ENABLE], p[PARAM_OSC2_INTERVAL], (unsigned)p[PARAM_OSC2_DETUNE_VAL]);
+//   Serial.printf(" OSC3: Saw=%d Pulse=%d Tri=%d | Interval=%d\n",
+//                 p[PARAM_OSC3_SAW_ENABLE], p[PARAM_OSC3_PULSE_ENABLE], p[PARAM_OSC3_TRI_ENABLE], p[PARAM_OSC3_INTERVAL]);
+//   Serial.printf(" Voice: Mode=%u Alloc=%u UnisonDetune=%d Sync=%u SoftSync=%u SubDiv=%u\n",
+//                 (unsigned)p[PARAM_VOICE_MODE], (unsigned)p[PARAM_VOICE_ALLOC_MODE], p[PARAM_UNISON_DETUNE],
+//                 (unsigned)p[PARAM_SYNC_MODE], (unsigned)p[PARAM_SOFT_SYNC], (unsigned)p[PARAM_SUBOSC_DIVIDE]);
+//   Serial.printf(" Portamento: Time=%u Mode=%u | PW=%u\n",
+//                 (unsigned)p[PARAM_PORTAMENTO_TIME], (unsigned)p[PARAM_PORTAMENTO_MODE], (unsigned)p[PARAM_PW_VALUE]);
+//   Serial.printf(" Drift/Char: Amount=%d Speed=%d Spread=%d | Character=%u\n",
+//                 p[PARAM_ANALOG_DRIFT_AMOUNT], p[PARAM_ANALOG_DRIFT_SPEED], p[PARAM_ANALOG_DRIFT_SPREAD], (unsigned)p[PARAM_CHARACTER]);
+
+//   // =========================================================================
+//   // 3. LFOs & Pitch Routing
+//   // =========================================================================
+//   Serial.println(F("\n--- [ LFOS ] ---"));
+//   Serial.printf(" LFO1: Wave=%u Speed=%-5u -> DCO=%-5u OSC1=%-3u OSC2=%-3u OSC3=%-3u VCA=%-5u\n",
+//                 (unsigned)p[PARAM_LFO1_WAVEFORM], (unsigned)p[PARAM_LFO1_SPEED], (unsigned)p[PARAM_LFO1_TO_DCO],
+//                 (unsigned)p[PARAM_LFO1_TO_OSC1], (unsigned)p[PARAM_LFO1_TO_OSC2], (unsigned)p[PARAM_LFO1_TO_OSC3], (unsigned)p[PARAM_LFO1_TO_VCA]);
+//   Serial.printf(" LFO2: Wave=%u Speed=%-5u -> OSC2=%-5u OSC3=%-5u Coarse2=%-3u Coarse3=%-3u PW=%-5u\n",
+//                 (unsigned)p[PARAM_LFO2_WAVEFORM], (unsigned)p[PARAM_LFO2_SPEED], (unsigned)p[PARAM_LFO2_TO_OSC2],
+//                 (unsigned)p[PARAM_LFO2_TO_OSC3], (unsigned)p[PARAM_LFO2_TO_OSC2_COARSE], (unsigned)p[PARAM_LFO2_TO_OSC3_COARSE], (unsigned)p[PARAM_LFO2_TO_PW]);
+
+//   // =========================================================================
+//   // 4. Mixer Levels, Analog CVs & Curves
+//   // =========================================================================
+//   Serial.println(F("\n--- [ MIXER & ANALOG CV ] ---"));
+//   Serial.printf(" Levels: OSC1=%-3u OSC2=%-3u OSC3=%-3u SUB=%-3u VCA=%-3u\n",
+//                 (unsigned)p[PARAM_OSC1_LEVEL], (unsigned)p[PARAM_OSC2_LEVEL], (unsigned)p[PARAM_OSC3_LEVEL], (unsigned)p[PARAM_SUB_LEVEL], (unsigned)p[PARAM_VCA_LEVEL]);
+//   Serial.printf(" Routing: FilterMode=%u Keytrack=%-5d VelToVCF=%-3d VelToVCA=%-3d EnvToVCA=%-5d\n",
+//                 (unsigned)p[PARAM_FILTER_MODE], p[PARAM_VCF_KEYTRACK], p[PARAM_VELOCITY_TO_VCF], p[PARAM_VELOCITY_TO_VCA], p[PARAM_ADSR1_TO_VCA]);
+//   Serial.printf(" Curves: VCA_Atk=%u VCA_Dec=%u VCF_Atk=%u VCF_Dec=%u\n",
+//                 (unsigned)p[PARAM_ADSR1_ATTACK_CURVE], (unsigned)p[PARAM_ADSR1_DECAY_CURVE], (unsigned)p[PARAM_ADSR2_ATTACK_CURVE], (unsigned)p[PARAM_ADSR2_DECAY_CURVE]);
+//   Serial.printf(" Distortion: Drive=%-5u Mix=%-5u | Switches: ResComp=%d VCA_Rst=%d VCF_Rst=%d\n",
+//                 (unsigned)p[PARAM_DIST_DRIVE], (unsigned)p[PARAM_DIST_MIX],
+//                 p[PARAM_RESONANCE_COMPENSATION], p[PARAM_VCA_ADSR_RESTART], p[PARAM_VCF_ADSR_RESTART]);
+
+//   // =========================================================================
+//   // 5. Modulation Matrix (Slots 0..7)
+//   // =========================================================================
+//   Serial.println(F("\n--- [ MODULATION MATRIX ] ---"));
+//   for (uint8_t i = 0; i < 8; ++i) {
+//     uint8_t src = (uint8_t)p[PARAM_MOD_SLOT0_SOURCE + i * 3];
+//     uint8_t dst = (uint8_t)p[PARAM_MOD_SLOT0_DEST   + i * 3];
+//     int16_t dep = p[PARAM_MOD_SLOT0_DEPTH  + i * 3];
+//     if (src != 0xFF && src != 0 && dep != 0) {
+//       Serial.printf("  Slot %u: Source=%-3u -> Dest=%-3u [Depth=%-5d]\n", i, src, dst, dep);
+//     } else {
+//       Serial.printf("  Slot %u: [OFF] (Src=%u Dest=%u Depth=%d)\n", i, src, dst, dep);
+//     }
+//   }
+
+//   Serial.println(F("=================================================================\n"));
+// }

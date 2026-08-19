@@ -278,6 +278,7 @@
 // REMEMBER_LAST_PRESET   if defined, writes in flash the number of the last preset to restore at boot
 // #define REMEMBER_LAST_PRESET
 
+
 #include <Adafruit_TinyUSB.h>
 #include <MIDI.h>
 #include <stdint.h>
@@ -323,7 +324,6 @@
 // 7. Subsystems, CV & Voice Pipeline (Everything else)
 
 #include "mod_matrix.h"
-#include "_shared/voice_alloc.h"
 #include "voice_alloc_state.h"
 #include "wave_mux.h"
 #include "preset_store.h"

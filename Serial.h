@@ -22,26 +22,26 @@ void serial_panel_task();
 void serial_usb_task();
 #endif
 
-void serialSendParam32(byte paramNumber, uint32_t paramValue, bool force = false);
-void serialSendParam16(byte paramNumber, int16_t paramValue, bool force = false);
-void serial_echo_persistable_param16(uint8_t id, int16_t value);
+void __not_in_flash_func(serialSendParam32)(byte paramNumber, uint32_t paramValue, bool force = false);
+void __not_in_flash_func(serialSendParam16)(byte paramNumber, int16_t paramValue, bool force = false);
+void __not_in_flash_func(serial_echo_persistable_param16)(uint8_t id, int16_t value);
 
-void serial_send_adsr_vca_block_to_mb();
-void serial_send_adsr_vcf_block_to_mb();
-void serial_send_adsr_dco_block_to_mb();
-void serial_send_filter_block_to_mb();
+void __not_in_flash_func(serial_send_adsr_vca_block_to_mb)();
+void __not_in_flash_func(serial_send_adsr_vcf_block_to_mb)();
+void __not_in_flash_func(serial_send_adsr_dco_block_to_mb)();
+void __not_in_flash_func(serial_send_filter_block_to_mb)();
 
-void serial_send_preset_loaded_to_mb(uint8_t slot);
-void serial_send_preset_scroll_to_mb(uint8_t slot);
-void serial_send_screen_signal_to_mb(uint8_t signal);
+void __not_in_flash_func(serial_send_preset_loaded_to_mb)(uint8_t slot);
+void __not_in_flash_func(serial_send_preset_scroll_to_mb)(uint8_t slot);
+void __not_in_flash_func(serial_send_screen_signal_to_mb)(uint8_t signal);
 
-void serial_send_note_on(uint8_t voice, uint8_t velocity, uint8_t note, uint8_t flags);
-void serial_send_note_off(uint8_t voice);
-void serial_send_expression();
+void __not_in_flash_func(serial_send_note_on)(uint8_t voice, uint8_t velocity, uint8_t note, uint8_t flags);
+void __not_in_flash_func(serial_send_note_off)(uint8_t voice);
+void __not_in_flash_func(serial_send_expression)();
 void mb_bench_text_drain();
 
-void serial_send_patch_osc_block_to_mb();
-void serial_send_patch_lfo_block_to_mb();
-void serial_send_patch_mod_block_to_mb();
+void __not_in_flash_func(serial_send_patch_osc_block_to_mb)();
+void __not_in_flash_func(serial_send_patch_lfo_block_to_mb)();
+void __not_in_flash_func(serial_send_patch_mod_block_to_mb)();
 
 #endif
