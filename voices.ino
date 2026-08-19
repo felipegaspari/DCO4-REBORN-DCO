@@ -7,11 +7,11 @@
 #define DCO_DEBUG_REPORT 0
 
 inline void amp_chan_levels_fixed(int64_t freq_q24_A, int64_t freq_q24_B,
-                                         uint8_t oscA, uint8_t oscB,
-                                         uint16_t *outA, uint16_t *outB);
+                                  uint8_t oscA, uint8_t oscB, uint16_t *outA,
+                                  uint16_t *outB);
 
-inline __attribute__((always_inline)) void
-voice_write_pw(uint8_t voice, uint16_t level) {
+inline __attribute__((always_inline)) void voice_write_pw(uint8_t voice,
+                                                          uint16_t level) {
   if (PW_PINS[voice] == PW_PIN_UNASSIGNED)
     return;
   pwm_set_chan_level(PW_PWM_SLICES[voice], pwm_gpio_to_channel(PW_PINS[voice]),
@@ -90,7 +90,6 @@ interpolate_live_ratio_f(float modifiers, int dcoIndex) {
          (float)multiplierTableScale;
 #endif
 }
-
 
 // Boot init: seed notes, build pitch tables, apply voice mode, run one
 // voice_task_main().
@@ -829,9 +828,10 @@ void __not_in_flash_func(voice_task_fixed_point)() {
       if (pulseWaveOn) {
         BENCH_FBEGIN(vt_pwm_calc);
 
-        const int16_t local_LFO2Level   = LFO2Level;
-        const int16_t local_LFO2toPW    = LFO2toPW;
-        const int16_t local_ADSR1toPWM  = ADSR1toPWM; // Note: ADSR1toPWM is signed (-512 .. +512)
+        const int16_t local_LFO2Level = LFO2Level;
+        const int16_t local_LFO2toPW = LFO2toPW;
+        const int16_t local_ADSR1toPWM =
+            ADSR1toPWM; // Note: ADSR1toPWM is signed (-512 .. +512)
 
         // 1. Calculate Q15 modulation deltas
         const int32_t adsr1_delta =
@@ -840,17 +840,20 @@ void __not_in_flash_func(voice_task_fixed_point)() {
             ((int32_t)local_LFO2Level * (int32_t)local_LFO2toPW) >> 15;
 
         // 2. ✅ Clean logical sum: Knob + LFO + Envelope + Jitter
-        int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr1_delta + (int32_t)character_pw_delta();
+        int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr1_delta +
+                          (int32_t)character_pw_delta();
 
         // 3. Clamp to valid 10-bit range (0 .. 1023)
-        if (pw_calc < 0) pw_calc = 0;
-        if (pw_calc > (int32_t)(DIV_COUNTER_PW - 1)) pw_calc = (int32_t)(DIV_COUNTER_PW - 1);
+        if (pw_calc < 0)
+          pw_calc = 0;
+        if (pw_calc > (int32_t)(DIV_COUNTER_PW - 1))
+          pw_calc = (int32_t)(DIV_COUNTER_PW - 1);
 
         PW_PWM[i] = (uint16_t)pw_calc;
         BENCH_FEND(vt_pwm_calc);
 
         // 4. Pass pitch (Q24) for 3-point key tracking
-        voice_write_pw(i, get_PW_level_interpolated(PW_PWM[i], i, freq_q24_A[i]));
+        voice_write_pw(i, get_PW_level_interpolated(PW_PWM[i], DCO_A, freq_q24_A));
       } else {
         voice_write_pw(i, 0);
       }
@@ -1257,9 +1260,9 @@ void __not_in_flash_func(voice_task_float)() {
       if (pulseWaveOn) {
         BENCH_FBEGIN(vt_pwm_calc);
 
-        const int16_t local_LFO2Level   = LFO2Level;
-        const int16_t local_LFO2toPW    = LFO2toPW;
-        const int16_t local_ADSR1toPWM  = ADSR1toPWM;
+        const int16_t local_LFO2Level = LFO2Level;
+        const int16_t local_LFO2toPW = LFO2toPW;
+        const int16_t local_ADSR1toPWM = ADSR1toPWM;
 
         // 1. Calculate Q15 modulation deltas
         const int32_t adsr1_delta =
@@ -1268,16 +1271,20 @@ void __not_in_flash_func(voice_task_float)() {
             ((int32_t)local_LFO2Level * (int32_t)local_LFO2toPW) >> 15;
 
         // 2. Clean logical sum: Knob + LFO + Envelope + Jitter
-        int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr1_delta + (int32_t)character_pw_delta();
+        int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr1_delta +
+                          (int32_t)character_pw_delta();
 
         // 3. Clamp to valid 10-bit range (0 .. 1023)
-        if (pw_calc < 0) pw_calc = 0;
-        if (pw_calc > (int32_t)(DIV_COUNTER_PW - 1)) pw_calc = (int32_t)(DIV_COUNTER_PW - 1);
+        if (pw_calc < 0)
+          pw_calc = 0;
+        if (pw_calc > (int32_t)(DIV_COUNTER_PW - 1))
+          pw_calc = (int32_t)(DIV_COUNTER_PW - 1);
 
         PW_PWM[i] = (uint16_t)pw_calc;
 
         // 4. Pass pitch (Hz float) for 3-point key tracking
-        voice_write_pw(i, get_PW_level_interpolated(PW_PWM[i], i, freqA_Hz));
+        voice_write_pw(i,
+                       get_PW_level_interpolated(PW_PWM[i], DCO_A, freqA_Hz));
 
         BENCH_FEND(vt_pwm_calc);
       } else {
@@ -1386,8 +1393,8 @@ void setSyncMode() {
 
 // One osc: shipping FIXED = Q24→Q8 lookup. With USE_FLOAT_AMP_COMP, non-FIXED
 // methods take Q24→Hz then get_chan_level_by_method (cmds 20–22).
-inline __attribute__((always_inline)) uint16_t
-amp_level_q24(int64_t freq_q24, uint8_t osc) {
+inline __attribute__((always_inline)) uint16_t amp_level_q24(int64_t freq_q24,
+                                                             uint8_t osc) {
 #ifdef USE_FLOAT_AMP_COMP
   if (amp_comp_method != AMP_COMP_FIXED) {
     float hz = (float)freq_q24 * (1.0f / 16777216.0f);
@@ -1400,9 +1407,11 @@ amp_level_q24(int64_t freq_q24, uint8_t osc) {
 
 // Q24 + syncMode switch + 2× lookup. SRAM so vt_chan_level is not a flash
 // caller.
-void __not_in_flash_func(amp_chan_levels_fixed)(
-    int64_t freq_q24_A, int64_t freq_q24_B, uint8_t oscA, uint8_t oscB,
-    uint16_t *outA, uint16_t *outB) {
+void __not_in_flash_func(amp_chan_levels_fixed)(int64_t freq_q24_A,
+                                                int64_t freq_q24_B,
+                                                uint8_t oscA, uint8_t oscB,
+                                                uint16_t *outA,
+                                                uint16_t *outB) {
   const uint8_t sm = syncMode;
   switch (sm) {
   case 1: {
@@ -1433,33 +1442,19 @@ void __not_in_flash_func(amp_chan_levels_fixed)(
  */
 uint16_t __not_in_flash_func(get_chan_level_lookup_fast)(int32_t x,
                                                          uint8_t voiceN) {
-  // 1. These arrays were not merged into the struct, so they stay the same
   const int32_t *freqRow = ampCompFrequencyArray[voiceN];
   const int32_t *ampRow = ampCompArray[voiceN];
-
-  // 2. REFACTORED: Get a single pointer to this voice's struct array
   const FixedQuadWindow *winRow = fixedWin[voiceN];
 
+  // Domain Floor
   if (x <= freqRow[0]) {
     BENCH_PATH_INC(amp_clamp);
     return (uint16_t)ampRow[0];
   }
 
-  // Domain ceiling: at/above AMP_COMP_MAX_HZ the cal sentinel is full RANGE.
-  // Without this, x == MAX_Q matches no window (exclusive upper bound) and the
-  // fallback window-0 path clamps t∈[0,1] to the first segment — ~12k PWM off
-  // float, which extrapolates absolute Hz on that window to ~DIV_COUNTER.
-  if (x >= AMP_COMP_MAX_HZ_Q) {
-    BENCH_PATH_INC(amp_clamp);
-    return (uint16_t)DIV_COUNTER;
-  }
-
-  // Real plateau only: precompute leaves plateauStartFreqQ at AMP_COMP_MAX_HZ_Q
-  // when none was found (same role as plateauStartIndex < 0 in the original
-  // code). Do not use plateauStartIndex here — dual-build restores that for the
-  // float path.
-  if (plateauStartFreqQ[voiceN] < AMP_COMP_MAX_HZ_Q &&
-      x >= plateauStartFreqQ[voiceN]) {
+  // Unified Domain Ceiling: at/above the true calibrated peak frequency for
+  // this oscillator
+  if (x >= ampCompMaxFreqQ[voiceN]) {
     BENCH_PATH_INC(amp_clamp);
     return (uint16_t)DIV_COUNTER;
   }
@@ -1512,7 +1507,7 @@ uint16_t __not_in_flash_func(get_chan_level_lookup_fast)(int32_t x,
     ampWinCache[voiceN] = (int16_t)window;
   }
 
-  // 3. REFACTORED: Read math variables directly from the cached struct
+  // REFACTORED: Read math variables directly from the cached struct
   int32_t dx = x - winRow[window].xBase;
   const int32_t span = winRow[window].dx;
   if (dx < 0)
@@ -1527,7 +1522,6 @@ uint16_t __not_in_flash_func(get_chan_level_lookup_fast)(int32_t x,
   const int32_t b = winRow[window].bQ_fast;
   const int32_t c = (int32_t)winRow[window].cQ;
 
-  // Math execution below remains exactly the same as before
   uint32_t t2 = (uint32_t)(((uint32_t)t_q * t_q) >> T_FRAC);
   int32_t term_a, term_b;
   if (amp_quad_muls_i32) {
@@ -1556,23 +1550,16 @@ uint16_t __not_in_flash_func(get_chan_level_lookup_fast)(int32_t x,
  */
 uint16_t __not_in_flash_func(get_chan_level_float_quad)(float freqHz,
                                                         uint8_t voiceN) {
+  // Domain Floor
   if (freqHz <= ampCompFrequencyHz[voiceN][0]) {
     BENCH_PATH_INC(amp_clamp);
     return (uint16_t)ampCompArray[voiceN][0];
   }
 
-  // Same domain ceiling as FIXED (see get_chan_level_lookup_fast).
-  if (freqHz >= (float)AMP_COMP_MAX_HZ) {
+  // Unified Domain Ceiling
+  if (freqHz >= ampCompMaxFreqHz[voiceN]) {
     BENCH_PATH_INC(amp_clamp);
     return (uint16_t)DIV_COUNTER;
-  }
-
-  if (plateauStartIndex[voiceN] >= 0) {
-    float plateauFreqHz = plateauStartFreqHz[voiceN];
-    if (freqHz >= plateauFreqHz) {
-      BENCH_PATH_INC(amp_clamp);
-      return (uint16_t)DIV_COUNTER;
-    }
   }
 
   const int maxWindow = ampCompTableSize - 2;
