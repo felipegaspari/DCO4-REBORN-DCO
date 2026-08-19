@@ -179,7 +179,7 @@
 
 #define RUNNING_AVERAGE
 // #define RUNNING_AVERAGE_FINE
-#define RUNNING_AVERAGE_PERIOD
+// #define RUNNING_AVERAGE_PERIOD
 
 // #define BENCH_PATH_STATS
 
@@ -264,12 +264,14 @@
 
 // PW Polarity Inversion: 0 NOT INVERTED, 1 INVERTED
 #ifndef PW_POLARITY_INVERTED
-#define PW_POLARITY_INVERTED 0
+#define PW_POLARITY_INVERTED 1
 #endif
 // To manually override without PROJECT_INSTRUMENT:
 // #undef PW_SWEEP_MODE_DEFAULT
 // #define PW_SWEEP_MODE_DEFAULT PW_SWEEP_HALF_HIGH
 
+// Debug level for autotune
+#define AUTOTUNE_DEBUG_LEVEL 4
 
 // =======================================================================
 // PRESETS OPTIONS

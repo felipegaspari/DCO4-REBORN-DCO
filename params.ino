@@ -582,6 +582,29 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
     {PARAM_DEBUG_COMMAND, apply_param_debug_command},
 };
 
+// =============================================================================
+// 8. Calibration Parameter Whitelist & Router Entry Point
+// =============================================================================
+
+// Checks if an incoming parameter ID is exclusively meant for calibration
+static inline bool is_calibration_parameter(uint8_t id) {
+  switch (id) {
+    case PARAM_CALIBRATION_FLAG:
+    case PARAM_MANUAL_CALIBRATION_FLAG:
+    case PARAM_MANUAL_CALIBRATION_STAGE:
+    case PARAM_MANUAL_CALIBRATION_OFFSET:
+    case PARAM_MANUAL_CALIBRATION_STORE:
+    case PARAM_MANUAL_CALIBRATION_STEP:
+    case PARAM_AMP_COMP_440:
+    case PARAM_AMP_COMP_DUTY_OFFSET:
+    case PARAM_CAL_PW_CENTER:
+    case PARAM_DEBUG_COMMAND:
+      return true;
+    default:
+      return false;
+  }
+}
+
 static void (*dcoParamJump[PARAM_ROUTER_JUMP_SIZE])(int16_t) = {nullptr};
 
 void init_param_router() {
@@ -590,6 +613,25 @@ void init_param_router() {
 }
 
 void __not_in_flash_func(update_parameters)(uint8_t id, int16_t value) {
+  // =========================================================================
+  // CALIBRATION PARAMETER GATING (Prevents pot noise, LFO, and preset leaks)
+  // =========================================================================
+  if (calibrationFlag) {
+    // 1. Auto-Calibration running: ONLY allow cancel or debug triggers
+    if (!manualCalibrationFlag) {
+      if (id == PARAM_CALIBRATION_FLAG || id == PARAM_DEBUG_COMMAND) {
+        param_router_apply(dcoParamJump, id, value);
+      }
+      return; // DROP all pot moves, preset loads, and synth controls
+    }
+
+    // 2. Manual Calibration UI active: ONLY allow calibration UI parameters
+    if (!is_calibration_parameter(id)) {
+      return; // DROP normal synth pots (PW knob, LFO rates/depths, Cutoff, etc.)
+    }
+  }
+
+  // Normal parameter execution
   param_router_apply(dcoParamJump, id, value);
   preset_shadow_capture(id, value);
 }

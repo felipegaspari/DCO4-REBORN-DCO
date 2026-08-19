@@ -91,55 +91,6 @@ interpolate_live_ratio_f(float modifiers, int dcoIndex) {
 #endif
 }
 
-// Map raw PW counter into calibrated center/limits for one oscillator. Used on
-// the 99 µs PW path.
-inline uint16_t
-get_PW_level_interpolated(uint16_t PWval, uint8_t oscN,
-                          bool invertPolarity = PW_POLARITY_INVERTED) {
-  const uint8_t ch = cal_pw_channel(oscN);
-  if (ch >= NUM_PW_CHANNELS || PW_PINS[ch] == PW_PIN_UNASSIGNED)
-    return 0;
-
-  constexpr uint16_t pwMax = DIV_COUNTER_PW - 1;
-
-  if (PWval > pwMax)
-    PWval = pwMax;
-
-  if (invertPolarity) {
-    PWval = pwMax - PWval;
-  }
-
-  const int32_t center = (int32_t)PW_CENTER[ch];
-
-  if (pwSweepMode == PW_SWEEP_HALF_LOW) {
-    const int32_t span = (int32_t)PW_LOW_LIMIT[ch] - center;
-    int32_t out = center + (span * (int32_t)PWval) / (int32_t)pwMax;
-    return (uint16_t)(out < 0 ? 0
-                              : (out > DIV_COUNTER_PW ? DIV_COUNTER_PW : out));
-  }
-
-  if (pwSweepMode == PW_SWEEP_HALF_HIGH) {
-    const int32_t span = (int32_t)PW_HIGH_LIMIT[ch] - center;
-    int32_t out = center + (span * (int32_t)PWval) / (int32_t)pwMax;
-    return (uint16_t)(out < 0 ? 0
-                              : (out > DIV_COUNTER_PW ? DIV_COUNTER_PW : out));
-  }
-
-  // DCO4 FULL SWEEP (2% -> 50% -> 98%)
-  constexpr uint16_t pwMid = DIV_COUNTER_PW / 2;
-  int32_t out;
-
-  if (PWval >= pwMid) {
-    const int32_t span = (int32_t)PW_HIGH_LIMIT[ch] - center;
-    out = center + (span * (int32_t)(PWval - pwMid)) / (int32_t)(pwMax - pwMid);
-  } else {
-    const int32_t span = center - (int32_t)PW_LOW_LIMIT[ch];
-    out = (int32_t)PW_LOW_LIMIT[ch] + (span * (int32_t)PWval) / (int32_t)pwMid;
-  }
-
-  return (uint16_t)(out < 0 ? 0
-                            : (out > DIV_COUNTER_PW ? DIV_COUNTER_PW : out));
-}
 
 // Boot init: seed notes, build pitch tables, apply voice mode, run one
 // voice_task_main().
@@ -876,23 +827,30 @@ void __not_in_flash_func(voice_task_fixed_point)() {
       BENCH_END(vt_range_pwm);
 
       if (pulseWaveOn) {
-        const int16_t local_LFO2Level = LFO2Level;
-        const int16_t local_LFO2toPW = LFO2toPW;
         BENCH_FBEGIN(vt_pwm_calc);
-        int32_t adsr1_delta =
-            ((int32_t)ADSR1Level_q15[i] * ADSR1toPWM_scale) >> 15;
-        int32_t lfo2_delta =
+
+        const int16_t local_LFO2Level   = LFO2Level;
+        const int16_t local_LFO2toPW    = LFO2toPW;
+        const int16_t local_ADSR1toPWM  = ADSR1toPWM; // Note: ADSR1toPWM is signed (-512 .. +512)
+
+        // 1. Calculate Q15 modulation deltas
+        const int32_t adsr1_delta =
+            ((int32_t)ADSR1Level_q15[i] * (int32_t)local_ADSR1toPWM) >> 15;
+        const int32_t lfo2_delta =
             ((int32_t)local_LFO2Level * (int32_t)local_LFO2toPW) >> 15;
-        int32_t pw_calc = (int32_t)DIV_COUNTER_PW - 1 - lfo2_delta - PW[0] +
-                          adsr1_delta + character_pw_delta();
-      
-          // Clamping
-          if (pw_calc < 0) pw_calc = 0;
-          if (pw_calc > (int32_t)(DIV_COUNTER_PW - 1)) pw_calc = (int32_t)(DIV_COUNTER_PW - 1);
-      
+
+        // 2. ✅ Clean logical sum: Knob + LFO + Envelope + Jitter
+        int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr1_delta + (int32_t)character_pw_delta();
+
+        // 3. Clamp to valid 10-bit range (0 .. 1023)
+        if (pw_calc < 0) pw_calc = 0;
+        if (pw_calc > (int32_t)(DIV_COUNTER_PW - 1)) pw_calc = (int32_t)(DIV_COUNTER_PW - 1);
+
         PW_PWM[i] = (uint16_t)pw_calc;
         BENCH_FEND(vt_pwm_calc);
-        voice_write_pw(i, get_PW_level_interpolated(PW_PWM[i], i));
+
+        // 4. Pass pitch (Q24) for 3-point key tracking
+        voice_write_pw(i, get_PW_level_interpolated(PW_PWM[i], i, freq_q24_A[i]));
       } else {
         voice_write_pw(i, 0);
       }
@@ -1299,32 +1257,27 @@ void __not_in_flash_func(voice_task_float)() {
       if (pulseWaveOn) {
         BENCH_FBEGIN(vt_pwm_calc);
 
-        const uint8_t pwCh = cal_pw_channel(i);
+        const int16_t local_LFO2Level   = LFO2Level;
+        const int16_t local_LFO2toPW    = LFO2toPW;
+        const int16_t local_ADSR1toPWM  = ADSR1toPWM;
 
-        const int16_t local_LFO2Level = LFO2Level;
-        const int16_t local_LFO2toPW = LFO2toPW;
-        const int16_t local_ADSR1toPWM = ADSR1toPWM;
-
-        // Fast Integer Q15 Math (Zero soft-float overhead on RP2040)
+        // 1. Calculate Q15 modulation deltas
         const int32_t adsr1_delta =
             ((int32_t)ADSR1Level_q15[i] * (int32_t)local_ADSR1toPWM) >> 15;
         const int32_t lfo2_delta =
             ((int32_t)local_LFO2Level * (int32_t)local_LFO2toPW) >> 15;
 
-        // Modulation sum
-        int32_t pw_calc = (int32_t)(DIV_COUNTER_PW - 1) - (int32_t)PW[0] -
-                          lfo2_delta + adsr1_delta +
-                          (int32_t)character_pw_delta();
-        // Clamping
-        if (pw_calc < 0)
-          pw_calc = 0;
-        if (pw_calc > (int32_t)(DIV_COUNTER_PW - 1))
-          pw_calc = (int32_t)(DIV_COUNTER_PW - 1);
+        // 2. Clean logical sum: Knob + LFO + Envelope + Jitter
+        int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr1_delta + (int32_t)character_pw_delta();
+
+        // 3. Clamp to valid 10-bit range (0 .. 1023)
+        if (pw_calc < 0) pw_calc = 0;
+        if (pw_calc > (int32_t)(DIV_COUNTER_PW - 1)) pw_calc = (int32_t)(DIV_COUNTER_PW - 1);
 
         PW_PWM[i] = (uint16_t)pw_calc;
 
-        // Apply calibrated hardware PWM level
-        voice_write_pw(i, get_PW_level_interpolated(PW_PWM[i], i));
+        // 4. Pass pitch (Hz float) for 3-point key tracking
+        voice_write_pw(i, get_PW_level_interpolated(PW_PWM[i], i, freqA_Hz));
 
         BENCH_FEND(vt_pwm_calc);
       } else {

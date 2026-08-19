@@ -6,7 +6,6 @@
 #include "_build_libs/DCO-PROTOCOL/params_def.h"
 #include "_build_libs/DCO-PROTOCOL/serial_input_protocol.h"
 
-
 // -----------------------------------------------------------------------------
 // MCU-side Full In-RAM Preset Store (RP2350) + LittleFS Backing Store.
 // All 256 presets (153 KB) stay resident in RAM for 0-latency live performance.
@@ -33,27 +32,28 @@ static constexpr uint16_t PRESET_CHUNK_SIZE  =
     (uint16_t)PRESET_RECORDS_PER_FILE * PRESET_RECORD_SIZE;  // 2392
 
 enum PresetBulkTarget : uint8_t {
-  PRESET_BULK_PRESET        = 0,
-  PRESET_BULK_VOICE_TABLES  = 1,
-  PRESET_BULK_PW_CENTER     = 2,
-  PRESET_BULK_PW_HIGH_LIMIT = 3,
-  PRESET_BULK_PW_LOW_LIMIT  = 4,
-  PRESET_BULK_MANUAL_OFFSET = 5,
-  PRESET_BULK_AMP_COMP_440  = 6,
-  PRESET_BULK_AMP_COMP_DUTY = 7,
+  PRESET_BULK_PRESET            = 0,
+  PRESET_BULK_VOICE_TABLES      = 1,
+  PRESET_BULK_PW_3PT            = 2, // 3-Point PW Calibration Bank ("PWCal3Pt")
+  PRESET_BULK_AMP_COMP_TOP_PAIR = 3, // Amp Comp Top Valid Pair Indices ("AmpCompTopPair")
+  PRESET_BULK_MANUAL_OFFSET     = 5,
+  PRESET_BULK_AMP_COMP_440      = 6,
+  PRESET_BULK_AMP_COMP_DUTY     = 7,
+
+  // Legacy aliases
+  PRESET_BULK_PW_CENTER         = 2,
 };
 
 static constexpr uint8_t  PRESET_BULK_CHUNK_DATA   = 32;
 static constexpr uint16_t PRESET_BULK_STAGING_SIZE = 1440;
 
-static constexpr int16_t CAL_DUMP_ALL           = 0;
-static constexpr int16_t CAL_DUMP_VOICE_TABLES  = 1;
-static constexpr int16_t CAL_DUMP_PW_CENTER     = 2;
-static constexpr int16_t CAL_DUMP_PW_HIGH_LIMIT = 3;
-static constexpr int16_t CAL_DUMP_PW_LOW_LIMIT  = 4;
-static constexpr int16_t CAL_DUMP_MANUAL_OFFSET = 5;
-static constexpr int16_t CAL_DUMP_AMP_COMP_440  = 6;
-static constexpr int16_t CAL_DUMP_AMP_COMP_DUTY = 7;
+static constexpr int16_t CAL_DUMP_ALL               = 0;
+static constexpr int16_t CAL_DUMP_VOICE_TABLES      = 1;
+static constexpr int16_t CAL_DUMP_PW_3PT            = 2;
+static constexpr int16_t CAL_DUMP_AMP_COMP_TOP_PAIR = 3;
+static constexpr int16_t CAL_DUMP_MANUAL_OFFSET     = 5;
+static constexpr int16_t CAL_DUMP_AMP_COMP_440      = 6;
+static constexpr int16_t CAL_DUMP_AMP_COMP_DUTY     = 7;
 
 // --- Live patch shadow & Full 153 KB In-RAM Preset Bank ---
 extern int16_t presetParamShadow[PRESET_PARAM_COUNT];
@@ -153,18 +153,16 @@ static inline void preset_shadow_capture(uint16_t id, int16_t value) {
   if (id >= PRESET_PARAM_COUNT) return;
   if (!preset_param_is_persistable((uint8_t)id)) return;
 
-  // 1. Capture into shadow RAM & mark bitmap
   presetParamShadow[id] = value;
   presetParamSetBitmap[id >> 3] |= (uint8_t)(1u << (id & 7u));
 
-  // 2. Synchronize pulseWaveOn whenever the shadow for OSC1 Pulse is captured
   if (id == (uint16_t)PARAM_OSC1_PULSE_ENABLE) {
     pulseWaveOn = (value != 0);
   }
 }
 
 // --- API Prototypes ---
-void preset_store_init_ram(); // Loads all 256 presets from Flash to RAM at boot
+void preset_store_init_ram();
 void preset_store_save(uint8_t slot);
 bool preset_store_load(uint8_t slot);
 void preset_store_dump(int16_t sel);      

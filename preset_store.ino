@@ -25,15 +25,14 @@ static inline uint16_t preset_slot_offset(uint8_t slot) {
 
 static const char* preset_bulk_target_name(uint8_t target) {
   switch (target) {
-    case PRESET_BULK_PRESET:        return "preset";
-    case PRESET_BULK_VOICE_TABLES:  return "voiceTables";
-    case PRESET_BULK_PW_CENTER:     return "PWCenter";
-    case PRESET_BULK_PW_HIGH_LIMIT: return "PWHighLimit";
-    case PRESET_BULK_PW_LOW_LIMIT:  return "PWLowLimit";
-    case PRESET_BULK_MANUAL_OFFSET: return "ManualOffset";
-    case PRESET_BULK_AMP_COMP_440:  return "AmpComp440";
-    case PRESET_BULK_AMP_COMP_DUTY: return "AmpCompDutyOffset";
-    default:                        return "unknown";
+    case PRESET_BULK_PRESET:            return "preset";
+    case PRESET_BULK_VOICE_TABLES:      return "voiceTables";
+    case PRESET_BULK_PW_3PT:            return "PWCal3Pt";
+    case PRESET_BULK_AMP_COMP_TOP_PAIR: return "AmpCompTopPair";
+    case PRESET_BULK_MANUAL_OFFSET:     return "ManualOffset";
+    case PRESET_BULK_AMP_COMP_440:      return "AmpComp440";
+    case PRESET_BULK_AMP_COMP_DUTY:     return "AmpCompDutyOffset";
+    default:                            return "unknown";
   }
 }
 
@@ -61,7 +60,6 @@ void preset_store_schedule_last_write(uint8_t slot) {
   g_pending_last_slot_time = millis();
 }
 
-// Call this from your low-priority / idle loop (e.g., in loop() or background task)
 void preset_store_deferred_task() {
   if (g_pending_last_slot >= 0 && (millis() - g_pending_last_slot_time > 500)) {
     uint8_t slot = (uint8_t)g_pending_last_slot;
@@ -89,7 +87,6 @@ void preset_store_init_ram() {
     f.read(&presetStoreRAM[startSlot][0], PRESET_CHUNK_SIZE);
     f.close();
 
-    // Validate CRC once on boot for each slot in this chunk
     for (uint8_t i = 0; i < PRESET_RECORDS_PER_FILE; ++i) {
       uint8_t s = startSlot + i;
       if (preset_record_validate(presetStoreRAM[s])) {
@@ -98,6 +95,7 @@ void preset_store_init_ram() {
     }
   }
 }
+
 // --- Dump text helpers ---
 
 static void dump_print_begin(const char* target, int slot, uint32_t size) {
@@ -203,9 +201,6 @@ static bool preset_record_validate(const uint8_t* buf) {
 }
 
 static void __not_in_flash_func(preset_record_apply)(const uint8_t* buf) {
-  // =========================================================================
-  // STEP 1: UNPACK RAW RECORD INTO RAM IMMEDIATELY (~1.5 µs)
-  // =========================================================================
   memcpy(presetParamShadow, buf + PRESET_OFF_PARAMS, sizeof(presetParamShadow));
   memcpy(presetParamSetBitmap, buf + PRESET_OFF_BITMAP, sizeof(presetParamSetBitmap));
 
@@ -230,22 +225,16 @@ static void __not_in_flash_func(preset_record_apply)(const uint8_t* buf) {
   ADSR2toVCF       = (int16_t)decode_u16_le(b + 28);
   LFO2toVCF        = decode_u16_le(b + 30);
 
-  // =========================================================================
-  // STEP 2: SEND FRESH DOMAIN BLOCKS FIRST! (Wire transmission starts NOW)
-  // =========================================================================
-  serial_send_adsr_vca_block_to_mb(); // 'a' (Fresh ADSR_VCA_*)
-  serial_send_adsr_vcf_block_to_mb(); // 'b' (Fresh ADSR_VCF_*)
-  serial_send_adsr_dco_block_to_mb(); // 'c' (Fresh ADSR1_*)
-  serial_send_filter_block_to_mb();   // 'd' (Fresh CUTOFF & RESO)
+  serial_send_adsr_vca_block_to_mb();
+  serial_send_adsr_vcf_block_to_mb();
+  serial_send_adsr_dco_block_to_mb();
+  serial_send_filter_block_to_mb();
 
-  serial_send_patch_osc_block_to_mb(); // 'v'
-  serial_send_patch_lfo_block_to_mb(); // 'l'
-  serial_send_patch_mod_block_to_mb(); // 'M'
-  serial_send_patch_mix_block_to_mb(); // 'Q'
+  serial_send_patch_osc_block_to_mb();
+  serial_send_patch_lfo_block_to_mb();
+  serial_send_patch_mod_block_to_mb();
+  serial_send_patch_mix_block_to_mb();
 
-  // =========================================================================
-  // STEP 3: COMPUTE LOCAL DCO ENGINE & VOICES IN PARALLEL
-  // =========================================================================
   dco_apply_preset_shadow();
   mark_adsr_params_dirty(ADSR_DIRTY_VCA_ALL | ADSR_DIRTY_VCF_ALL | ADSR_DIRTY_DCO_ALL);
   cv_bake_adsr2_to_vcf_scale();
@@ -304,7 +293,6 @@ static bool preset_chunk_write_record(uint8_t slot, const uint8_t* record, const
 
 // --- Public API ---
 
-// PARAM_PRESET_SAVE: builds record into RAM and persists to LittleFS
 void preset_store_save(uint8_t slot) {
   preset_record_build(presetStoreRAM[slot]);
   if (!preset_chunk_write_record(slot, presetStoreRAM[slot], "preset")) return;
@@ -313,49 +301,34 @@ void preset_store_save(uint8_t slot) {
   Serial.printf("[preset] saved slot=%u name=\"%.16s\"\n", (unsigned)slot, (const char*)presetName);
 }
 
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// PARAM_PRESET_LOAD: 0 ms Pure In-RAM Recall!      ////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 bool __not_in_flash_func(preset_store_load)(uint8_t slot) {
   if (slot >= PRESET_NUM_SLOTS) return false;
 
-  // O(1) Fast in-RAM validity check (single bit test)
   const bool isValid = preset_is_slot_valid(slot);
   const uint8_t* record = presetStoreRAM[slot];
  
-  //////////// PRESET DEBUG PRINT ALL ////////////
-  // preset_debug_print_all(slot);
- //////////// PRESET DEBUG PRINT ALL ////////////
- 
- // 1. Extract name
   if (isValid) {
     memcpy(presetName, record + PRESET_OFF_NAME, 16);
   } else {
     memset(presetName, ' ', 16);
   }
-  // 2. Notify Screen and Input controllers
-  serial_send_preset_scroll_to_mb(slot);  // Sends 'q'
-  serial_send_preset_loaded_to_mb(slot);  // Clears overrides
+
+  serial_send_preset_scroll_to_mb(slot);
+  serial_send_preset_loaded_to_mb(slot);
   serial_send_screen_signal_to_mb(SCREEN_SIGNAL_SILENT);
 
-  // 3. Apply Audio Engine & Stream Domain Blocks
   if (isValid) {
     preset_record_apply(record);
   }
 
-  // 4. Unfreeze Screen
   serial_send_screen_signal_to_mb(1);
-
   return isValid;
 }
 
-// --- In-RAM Directory Push (Streams from RAM over DMA) ---
 static uint8_t presetDirPushChunk = PRESET_CHUNK_COUNT;
 
 void preset_store_send_directory_to_mb() {
-  presetDirPushChunk = 0; // Arm the task
+  presetDirPushChunk = 0;
 }
 
 void preset_store_dir_push_task() {
@@ -368,7 +341,6 @@ void preset_store_dir_push_task() {
     const uint8_t slot = (uint8_t)((chunk << 2) | i);
     entry[0] = slot;
     
-    // Copy name directly from RAM! If magic is invalid, it stays zeroed.
     if (presetStoreRAM[slot][PRESET_OFF_MAGIC] == PRESET_MAGIC) {
       memcpy(entry + 1, &presetStoreRAM[slot][PRESET_OFF_NAME], PRESET_NAME_LEN);
     } else {
@@ -379,7 +351,6 @@ void preset_store_dir_push_task() {
   }
 }
 
-// --- Instant USB Dump directly from RAM ---
 void preset_store_dump(int16_t sel) {
   if (sel < 0) {
     Serial.println("[pdir] begin");
@@ -405,15 +376,15 @@ void preset_store_dump(int16_t sel) {
   dump_buffer("preset", sel, presetStoreRAM[sel], PRESET_RECORD_SIZE);
 }
 
+// ✅ UPGRADED: Dumps 3-Point PW and Top-Pair Data Banks
 void preset_store_cal_dump(int16_t sel) {
   const bool all = (sel <= CAL_DUMP_ALL);
-  if (all || sel == CAL_DUMP_VOICE_TABLES)  dump_fs_file("voiceTables", "voiceTables", FSBankSize);
-  if (all || sel == CAL_DUMP_PW_CENTER)     dump_fs_file("PWCenter", "PWCenter", FSPWBankSize);
-  if (all || sel == CAL_DUMP_PW_HIGH_LIMIT) dump_fs_file("PWHighLimit", "PWHighLimit", FSPWBankSize);
-  if (all || sel == CAL_DUMP_PW_LOW_LIMIT)  dump_fs_file("PWLowLimit", "PWLowLimit", FSPWBankSize);
-  if (all || sel == CAL_DUMP_MANUAL_OFFSET) dump_fs_file("ManualOffset", "ManualOffset", FSManualOffsetBankSize);
-  if (all || sel == CAL_DUMP_AMP_COMP_440)  dump_fs_file("AmpComp440", "AmpComp440", FSAmpComp440BankSize);
-  if (all || sel == CAL_DUMP_AMP_COMP_DUTY) dump_fs_file("AmpCompDutyOffset", "AmpCompDutyOffset", FSAmpCompDutyOffsetBankSize);
+  if (all || sel == CAL_DUMP_VOICE_TABLES)      dump_fs_file("voiceTables", "voiceTables", FSBankSize);
+  if (all || sel == CAL_DUMP_PW_3PT)            dump_fs_file("PWCal3Pt", "PWCal3Pt", FSPWBankSize);
+  if (all || sel == CAL_DUMP_AMP_COMP_TOP_PAIR) dump_fs_file("AmpCompTopPair", "AmpCompTopPair", FSAmpCompTopPairBankSize);
+  if (all || sel == CAL_DUMP_MANUAL_OFFSET)     dump_fs_file("ManualOffset", "ManualOffset", FSManualOffsetBankSize);
+  if (all || sel == CAL_DUMP_AMP_COMP_440)      dump_fs_file("AmpComp440", "AmpComp440", FSAmpComp440BankSize);
+  if (all || sel == CAL_DUMP_AMP_COMP_DUTY)     dump_fs_file("AmpCompDutyOffset", "AmpCompDutyOffset", FSAmpCompDutyOffsetBankSize);
 }
 
 void preset_bulk_chunk(const uint8_t* payload, uint8_t len) {
@@ -423,6 +394,7 @@ void preset_bulk_chunk(const uint8_t* payload, uint8_t len) {
   memcpy(presetBulkStaging + offset, payload + 4, PRESET_BULK_CHUNK_DATA);
 }
 
+// ✅ UPGRADED: Commits 3-Point PW and Top-Pair Restores
 void preset_bulk_commit(const uint8_t* payload, uint8_t len) {
   if (len != SERIAL_LEN_BULK_COMMIT) return;
   const uint8_t  target = payload[0];
@@ -436,11 +408,8 @@ void preset_bulk_commit(const uint8_t* payload, uint8_t len) {
 
   if (target == PRESET_BULK_PRESET) {
     if (!preset_record_validate(presetBulkStaging)) return;
-    
-    // Copy into RAM store and commit to LittleFS
     memcpy(presetStoreRAM[slot], presetBulkStaging, PRESET_RECORD_SIZE);
     if (!preset_chunk_write_record(slot, presetStoreRAM[slot], "bulk")) return;
-    
     Serial.printf("[bulk] ok target=%s slot=%u\n", tname, (unsigned)slot);
     return;
   }
@@ -448,13 +417,12 @@ void preset_bulk_commit(const uint8_t* payload, uint8_t len) {
   uint16_t want = 0;
   const char* calFile = nullptr;
   switch (target) {
-    case PRESET_BULK_VOICE_TABLES:  want = FSBankSize;             calFile = "voiceTables"; break;
-    case PRESET_BULK_PW_CENTER:     want = FSPWBankSize;           calFile = "PWCenter"; break;
-    case PRESET_BULK_PW_HIGH_LIMIT: want = FSPWBankSize;           calFile = "PWHighLimit"; break;
-    case PRESET_BULK_PW_LOW_LIMIT:  want = FSPWBankSize;           calFile = "PWLowLimit"; break;
-    case PRESET_BULK_MANUAL_OFFSET: want = FSManualOffsetBankSize; calFile = "ManualOffset"; break;
-    case PRESET_BULK_AMP_COMP_440:  want = FSAmpComp440BankSize;   calFile = "AmpComp440"; break;
-    case PRESET_BULK_AMP_COMP_DUTY: want = FSAmpCompDutyOffsetBankSize; calFile = "AmpCompDutyOffset"; break;
+    case PRESET_BULK_VOICE_TABLES:      want = FSBankSize;                  calFile = "voiceTables"; break;
+    case PRESET_BULK_PW_3PT:            want = FSPWBankSize;                calFile = "PWCal3Pt"; break;
+    case PRESET_BULK_AMP_COMP_TOP_PAIR: want = FSAmpCompTopPairBankSize;    calFile = "AmpCompTopPair"; break;
+    case PRESET_BULK_MANUAL_OFFSET:     want = FSManualOffsetBankSize;      calFile = "ManualOffset"; break;
+    case PRESET_BULK_AMP_COMP_440:      want = FSAmpComp440BankSize;        calFile = "AmpComp440"; break;
+    case PRESET_BULK_AMP_COMP_DUTY:     want = FSAmpCompDutyOffsetBankSize; calFile = "AmpCompDutyOffset"; break;
     default: return;
   }
   if (size != want) return;
@@ -477,6 +445,8 @@ void preset_store_boot_recall() {
   preset_store_load(slot);
 }
 
+
+//// DEBUG - do  not delete this function
 // void preset_debug_print_all(uint8_t slot) {
 //   if (slot >= PRESET_NUM_SLOTS) return;
   
