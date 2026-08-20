@@ -150,7 +150,7 @@
                   5
                 ],
                 "target": "midi:dco4",
-                "default": 0,
+                "default": 64,
                 "expand": true,
                 "html": "OSC B detune",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
@@ -189,7 +189,7 @@
                   8
                 ],
                 "target": "midi:dco4",
-                "default": 0,
+                "default": 64,
                 "expand": true,
                 "html": "OSC3 detune",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
@@ -361,14 +361,14 @@
                   69
                 ],
                 "target": "midi:dco4",
-                "default": 0,
+                "default": 1,
                 "expand": true,
                 "html": "Voice mode",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
-                  "0 - mono ": 0,
-                  "1 - poly ": 1,
-                  "2 - stack ": 2
+                  "0 - MONO ": 0,
+                  "1 - POLY ": 1,
+                  "2 - UNISON ": 2
                 }
               }
             ]
@@ -396,12 +396,12 @@
                 "html": "Voice alloc / note priority",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
-                  "0 - round-robin / last note ": 0,
-                  "1 - oldest / first note ": 1,
-                  "2 - quietest / last note ": 2,
-                  "3 - quietest, keep lowest / low note ": 3,
-                  "4 - quietest, keep highest / high note ": 4,
-                  "5 - no stealing / first note, deny ": 5
+                  "0 - ROUND ROBIN ": 0,
+                  "1 - OLDEST ": 1,
+                  "2 - QUIETEST ": 2,
+                  "3 - QUIETEST LOW ": 3,
+                  "4 - QUIETEST HIGH ": 4,
+                  "5 - NO STEAL ": 5
                 }
               }
             ]
@@ -507,8 +507,8 @@
                 "html": "Portamento mode",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
-                  "0 - fixed time (same duration any interval) ": 0,
-                  "1 - slew rate (time scales with interval; knob = time per octave) ": 1
+                  "0 - fixed time ": 0,
+                  "1 - slew rate ": 1
                 }
               }
             ]
@@ -1339,11 +1339,11 @@
                   "0 - EXP ": 0,
                   "1 - SOFT ": 1,
                   "2 - STEEP ": 2,
-                  "3 - CONVEX ": 3,
-                  "4 - FAST START S ": 4,
+                  "3 - CONCAVE ": 3,
+                  "4 - FAST S ": 4,
                   "5 - SLOW THEN LIN ": 5,
-                  "6 - FAST THEN LIN ": 6,
-                  "7 - ALMOST LIN ": 7
+                  "6 - ALMOST LIN ": 6,
+                  "7 - LINEAR ": 7
                 }
               }
             ]
@@ -1409,11 +1409,11 @@
                   "0 - EXP ": 0,
                   "1 - SOFT ": 1,
                   "2 - STEEP ": 2,
-                  "3 - CONVEX ": 3,
-                  "4 - FAST START S ": 4,
+                  "3 - CONCAVE ": 3,
+                  "4 - FAST S ": 4,
                   "5 - SLOW THEN LIN ": 5,
-                  "6 - FAST THEN LIN ": 6,
-                  "7 - ALMOST LIN ": 7
+                  "6 - ALMOST LIN ": 6,
+                  "7 - LINEAR ": 7
                 }
               }
             ]
@@ -2487,35 +2487,6 @@
                 "css": "font-size: 95%; opacity: 0.65;"
               }
             ]
-          },
-          {
-            "type": "panel",
-            "id": "cell_cc58_pwm_pots_manual",
-            "layout": "vertical",
-            "scroll": false,
-            "innerPadding": false,
-            "padding": 4,
-            "css": "grid-row: span 5;",
-            "widgets": [
-              {
-                "type": "switch",
-                "id": "cc58_pwm_pots_manual",
-                "address": "/control",
-                "preArgs": [
-                  1,
-                  58
-                ],
-                "target": "midi:dco4",
-                "default": 127,
-                "expand": true,
-                "html": "PWM pots manual",
-                "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
-                "values": {
-                  "Off ": 0,
-                  "On ": 127
-                }
-              }
-            ]
           }
         ]
       },
@@ -2553,11 +2524,16 @@
                 "html": "LFO1 waveform",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
-                  "0 - off ": 0,
-                  "1 - saw ": 1,
-                  "2 - triangle ": 2,
-                  "3 - sine ": 3,
-                  "4 - square ": 4
+                  "0 - Off ": 0,
+                  "1 - Saw ": 1,
+                  "2 - Tri Slewed ": 2,
+                  "3 - Sine ": 3,
+                  "4 - Square ": 4,
+                  "5 - Sharktooth ": 5,
+                  "6 - Trapezoid ": 6,
+                  "7 - Linear Tri ": 7,
+                  "8 - Staircase ": 8,
+                  "9 - Folded Sine ": 9
                 }
               }
             ]
@@ -2585,11 +2561,16 @@
                 "html": "LFO2 waveform",
                 "css": "> .html { white-space: normal; line-height: 1.15em; font-size: 85%; }",
                 "values": {
-                  "0 - off ": 0,
-                  "1 - saw ": 1,
-                  "2 - triangle ": 2,
-                  "3 - sine ": 3,
-                  "4 - square ": 4
+                  "0 - Off ": 0,
+                  "1 - Saw ": 1,
+                  "2 - Tri Slewed ": 2,
+                  "3 - Sine ": 3,
+                  "4 - Square ": 4,
+                  "5 - Sharktooth ": 5,
+                  "6 - Trapezoid ": 6,
+                  "7 - Linear Tri ": 7,
+                  "8 - Staircase ": 8,
+                  "9 - Folded Sine ": 9
                 }
               }
             ]

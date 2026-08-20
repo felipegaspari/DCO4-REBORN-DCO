@@ -1,18 +1,16 @@
 #ifndef __ADSR_H__
 #define __ADSR_H__
 
-#define ADSR_1_DACSIZE 4096
 
+// =================================================================
+// ADSR BEZIER CONFIGURATION MACROS
+// =================================================================
+#define ADSR_1_DACSIZE 4096
 #define ARRAY_SIZE 512
 
-// ADSR Bezier library (provides curve tables and ADSR class).
-// Hot path: Q24 phase A/B (uint64) / Q16 amp; native Q15 (ADSR_BEZIER_NATIVE_Q15=1).
-// Set ADSR_BEZIER_PHASE_SHIFT 22 for fast uint32 path after listen A/B.
 #ifndef ADSR_BEZIER_PHASE_SHIFT
 #define ADSR_BEZIER_PHASE_SHIFT 22
 #endif
-// RP2040: keep FLOAT=0 (no FPU; soft-float index would be slower).
-// Each getWave() uses its own micros(); EnvVCF2 is sampled (reserved for later).
 
 #ifndef ADSR_BEZIER_USE_FLOAT
 #if defined(PICO_RP2350)
@@ -30,12 +28,10 @@
 #define ADSR_BEZIER_NATIVE_Q15 1
 #endif
 
-// NATIVE=1: internal peak 32768 (dyadic setter scales). Set 0 to A/B peak=32767.
 #ifndef ADSR_BEZIER_Q15_DYADIC
 #define ADSR_BEZIER_Q15_DYADIC 1
 #endif
 
-// Ignored when NATIVE_Q15=1 (primary output is already Q15).
 #ifndef ADSR_BEZIER_UPDATE_Q15_CACHE
 #define ADSR_BEZIER_UPDATE_Q15_CACHE 1
 #endif
@@ -44,57 +40,91 @@
 #define ADSR_BEZIER_SRAM_HOT 1
 #endif
 
+//------------------------------------------------------------------//
+// ADSR Envelope Subsystem & Voice Routing
+// Manages per-voice DCO/VCA envelopes and shared VCF paraphonic envelopes.
+//------------------------------------------------------------------//
+
 #include "_build_libs/ADSR_Bezier/ADSR_Bezier.h"
+// =================================================================
+// EXTERNAL VARIABLES (from cv_state.h)
+// =================================================================
+extern uint16_t ADSR_VCA_attack;
+extern uint16_t ADSR_VCA_decay;
+extern uint16_t ADSR_VCA_sustain;
+extern uint16_t ADSR_VCA_release;
 
+extern uint16_t ADSR_VCF_attack;
+extern uint16_t ADSR_VCF_decay;
+extern uint16_t ADSR_VCF_sustain;
+extern uint16_t ADSR_VCF_release;
 
-volatile byte noteStart[NUM_VOICES_TOTAL];
-volatile byte noteEnd[NUM_VOICES_TOTAL];
+extern bool VCAADSRRestart;
+extern bool VCFADSRRestart;
 
-// Legacy u12/DAC mirrors (optional; consumers use *_q15). Not refreshed under NATIVE_Q15.
-uint16_t ADSR3Level[NUM_VOICES_TOTAL];
-uint16_t ADSR_VCA_Level[NUM_VOICES_TOTAL];
-uint16_t ADSR_VCF_Level;
-uint16_t ADSR_VCF2_Level;
-// Primary mod taps (0..ADSR_Q15_ONE).
-int16_t ADSR3Level_q15[NUM_VOICES_TOTAL];
-int16_t ADSR_VCA_Level_q15[NUM_VOICES_TOTAL];
-int16_t ADSR_VCF_Level_q15;
-int16_t ADSR_VCF2_Level_q15;
+// =================================================================
+// TRIGGER & LEVEL ARRAYS
+// =================================================================
+extern volatile byte noteStart[NUM_VOICES_TOTAL];
+extern volatile byte noteEnd[NUM_VOICES_TOTAL];
 
-volatile int16_t ADSR3Level_q15_volatile[NUM_VOICES_TOTAL];
-volatile int16_t ADSR_VCA_Level_q15_volatile[NUM_VOICES_TOTAL];
-volatile int16_t ADSR_VCF_Level_q15_volatile;
-volatile int16_t ADSR_VCF2_Level_q15_volatile;
+/** @brief Paraphonic gate tracker for shared filter envelopes */
+extern volatile uint8_t vcf_active_gates;
 
+// Legacy u12/DAC mirrors
+extern uint16_t ADSR3Level[NUM_VOICES_TOTAL];
+extern uint16_t ADSR_VCA_Level[NUM_VOICES_TOTAL];
+extern uint16_t ADSR_VCF_Level;
+extern uint16_t ADSR_VCF2_Level;
+
+// Primary mod taps (0..ADSR_Q15_ONE)
+extern int16_t ADSR3Level_q15[NUM_VOICES_TOTAL];
+extern int16_t ADSR_VCA_Level_q15[NUM_VOICES_TOTAL];
+extern int16_t ADSR_VCF_Level_q15;
+extern int16_t ADSR_VCF2_Level_q15;
+
+extern volatile int16_t ADSR3Level_q15_volatile[NUM_VOICES_TOTAL];
+extern volatile int16_t ADSR_VCA_Level_q15_volatile[NUM_VOICES_TOTAL];
+extern volatile int16_t ADSR_VCF_Level_q15_volatile;
+extern volatile int16_t ADSR_VCF2_Level_q15_volatile;
+
+// =================================================================
+// SCALES & CV LIMITS
+// =================================================================
 static constexpr uint16_t ADSR_1_CC = 4095;
-// Max CV code / levelDac export for EnvVCA/EnvVCF (legal u12 peak).
 static constexpr uint16_t ADSR_CV_CC = 4095;
-// Panel→Q15 divisor (1<<12); use with >>12 — not a storable CV level.
 static constexpr uint16_t ADSR_CV_SCALE = 4096;
 
-float ADSRMaxLevel = ADSR_1_CC;
+extern float ADSRMaxLevel;
+extern uint16_t ADSRMinLevel;
 
-uint16_t ADSRMinLevel = 0;
-
-// 0=OSC1, 1=OSC2, 2=OSC1+OSC2, 3=OSC3, 4=all
-int8_t ADSR3ToOscSelect = 2;
-
-// EnvDCO → pitch: 0 = unipolar env×depth (default); 1 = centered ((env−16384)<<1; mid S ≈ note, ±2 oct @ full CW).
-uint8_t env_dco_pitch_centered = 0;
+// =================================================================
+// ENV 3 (DCO) ROUTING VARIABLES
+// =================================================================
+extern int8_t ADSR3ToOscSelect; // 0=OSC1, 1=OSC2, 2=OSC1+2, 3=OSC3, 4=all
+extern uint8_t env_dco_pitch_centered;
 static constexpr int16_t ENV_DCO_PITCH_CENTER_Q15 = 16384;
 
+/** @brief Shifts unipolar EnvDCO tap to centered pitch domain if enabled. */
 static inline int16_t env_dco_pitch_wave_q15(int16_t env_q15) {
-  if (!env_dco_pitch_centered)
-    return env_q15;
+  if (!env_dco_pitch_centered) return env_q15;
   return (int16_t)(((int32_t)env_q15 - ENV_DCO_PITCH_CENTER_Q15) << 1);
 }
 
-uint16_t ADSR3_attack = 0;
-uint16_t ADSR3_decay = 0;
-uint16_t ADSR3_sustain = 4095;
-uint16_t ADSR3_release = 0;
+extern uint16_t ADSR3_attack;
+extern uint16_t ADSR3_decay;
+extern uint16_t ADSR3_sustain;
+extern uint16_t ADSR3_release;
+extern bool ADSRRestart;
 
-// Core 0 marks dirty on write; Core 1 applies to voices every ~5 ms.
+extern int16_t ADSR3toDETUNE1;
+extern int32_t ADSR3toDETUNE1_scale_q24;
+extern int16_t ADSR3toPWM;
+extern int32_t ADSR3toPWM_scale;
+
+// =================================================================
+// DIRTY FLAGS (Core 0 write -> Core 1 apply)
+// =================================================================
 #define ADSR_DIRTY_DCO_A   (1u << 0)
 #define ADSR_DIRTY_DCO_D   (1u << 1)
 #define ADSR_DIRTY_DCO_S   (1u << 2)
@@ -107,69 +137,122 @@ uint16_t ADSR3_release = 0;
 #define ADSR_DIRTY_VCF_D   (1u << 9)
 #define ADSR_DIRTY_VCF_S   (1u << 10)
 #define ADSR_DIRTY_VCF_R   (1u << 11)
+
 #define ADSR_DIRTY_DCO_ALL (ADSR_DIRTY_DCO_A | ADSR_DIRTY_DCO_D | ADSR_DIRTY_DCO_S | ADSR_DIRTY_DCO_R)
 #define ADSR_DIRTY_VCA_ALL (ADSR_DIRTY_VCA_A | ADSR_DIRTY_VCA_D | ADSR_DIRTY_VCA_S | ADSR_DIRTY_VCA_R)
 #define ADSR_DIRTY_VCF_ALL (ADSR_DIRTY_VCF_A | ADSR_DIRTY_VCF_D | ADSR_DIRTY_VCF_S | ADSR_DIRTY_VCF_R)
 
-volatile uint16_t adsr_params_dirty = 0;
+extern volatile uint16_t adsr_params_dirty;
 
+/** @brief Flag parameters for Core 1 deferred update */
 static inline void __not_in_flash_func(mark_adsr_params_dirty)(uint16_t mask) {
   adsr_params_dirty |= mask;
 }
 
-byte ADSR3_curve2Val = 0;
+/**
+ * @enum VcfTriggerMode
+ * @brief Selects the triggering and release behavior for shared filter envelopes.
+ */
+ enum VcfTriggerMode : uint8_t {
+  /** @brief Single-trigger: Attack on 1st note only; Release when all notes released. */
+  VCF_TRIGGER_PARAPHONIC_LEGATO = 0,
 
-bool ADSRRestart = true;
+  /** @brief Multi-trigger: Attack on EVERY new note; Release when all notes released. */
+  VCF_TRIGGER_PARAPHONIC_MULTI  = 1,
 
-int16_t ADSR3toDETUNE1;
-// Q24 pitch depth: exp-baked to ADSR_PITCH_MAX_OCTAVES at full CW (see LFO.h / LFO.md).
-int32_t ADSR3toDETUNE1_scale_q24;
+  /** @brief Direct: Raw trigger on any noteStart/noteEnd (Legacy behavior). */
+  VCF_TRIGGER_DIRECT_PER_VOICE  = 2
+};
 
-int16_t ADSR3toPWM;
-// Full-scale PW delta (PWM counts) for (ADSR3Level_q15 * scale) >> 15.
-int32_t ADSR3toPWM_scale = 0;
+/** @brief Active trigger mode for shared filter envelopes (Default: Paraphonic Multi-Trigger) */
+extern uint8_t vcf_trigger_mode;
 
-adsr adsr3_voice_0(ADSR_1_CC, 7, 7, 7);
-adsr adsr3_voice_1(ADSR_1_CC, 7, 7, 7);
-adsr adsr3_voice_2(ADSR_1_CC, 7, 7, 7);
-adsr adsr3_voice_3(ADSR_1_CC, 7, 7, 7);
+/**
+* @brief Set the triggering mode for the shared filter envelopes.
+* 
+* ### Mode Options:
+* - `0` / **`VCF_TRIGGER_PARAPHONIC_LEGATO`** : Single-trigger (Legato)
+* - `1` / **`VCF_TRIGGER_PARAPHONIC_MULTI`**  : Multi-trigger (Punchy per-note attack)
+* - `2` / **`VCF_TRIGGER_DIRECT_PER_VOICE`**  : Direct per-voice (Legacy)
+* 
+* @param mode Trigger mode index (0, 1, or 2) or VcfTriggerMode.
+*/
+void set_vcf_trigger_mode(uint8_t mode);
+// =================================================================
+// ADSR INSTANCES
+// =================================================================
+extern adsr adsr3_voice_0;
+extern adsr adsr3_voice_1;
+extern adsr adsr3_voice_2;
+extern adsr adsr3_voice_3;
 
-adsr adsr_vca_voice_0(ADSR_CV_CC, 1, 2, 1);
-adsr adsr_vca_voice_1(ADSR_CV_CC, 1, 2, 1);
-adsr adsr_vca_voice_2(ADSR_CV_CC, 1, 2, 1);
-adsr adsr_vca_voice_3(ADSR_CV_CC, 1, 2, 1);
+extern adsr adsr_vca_voice_0;
+extern adsr adsr_vca_voice_1;
+extern adsr adsr_vca_voice_2;
+extern adsr adsr_vca_voice_3;
 
-// Shared filter envelopes (VCF1 + VCF2); not per voice.
-adsr adsr_vcf_voice(ADSR_CV_CC, 4, 6, 1);
-adsr adsr_vcf2_voice(ADSR_CV_CC, 4, 6, 1);
+extern adsr adsr_vcf_voice;
+extern adsr adsr_vcf2_voice;
 
+/** @brief Groups per-voice envelopes for array iteration */
 struct ADSRStruct {
-  adsr adsr3_voice;   // EnvDCO → pitch/PW
-  adsr adsr_vca_voice;
+  adsr& adsr3_voice;   // EnvDCO → pitch/PW
+  adsr& adsr_vca_voice;// EnvVCA → volume
 };
 
-ADSRStruct ADSRVoices[] = {
-  { adsr3_voice_0, adsr_vca_voice_0 },
-  { adsr3_voice_1, adsr_vca_voice_1 },
-  { adsr3_voice_2, adsr_vca_voice_2 },
-  { adsr3_voice_3, adsr_vca_voice_3 },
-};
+extern ADSRStruct ADSRVoices[];
 
+// =================================================================
+// FUNCTION PROTOTYPES
+// =================================================================
 void init_ADSR();
 void __not_in_flash_func(ADSR_update)();
 void __not_in_flash_func(ADSR_set_parameters)();
+
 void ADSR3_set_restart();
 void ADSR_VCA_set_restart();
 void ADSR_VCF_set_restart();
+void ADSR_VCF2_set_restart();
+
 void ADSR_VCA_change_attack_curve(uint8_t adsrCurveAttack);
 void ADSR_VCA_change_decay_curve(uint8_t adsrCurveDecay);
 void ADSR_VCA_change_release_curve(uint8_t adsrCurveRelease);
+
 void ADSR_VCF_change_attack_curve(uint8_t adsrCurveAttack);
 void ADSR_VCF_change_decay_curve(uint8_t adsrCurveDecay);
 void ADSR_VCF_change_release_curve(uint8_t adsrCurveRelease);
+
 void ADSR_VCF2_change_attack_curve(uint8_t adsrCurveAttack);
 void ADSR_VCF2_change_decay_curve(uint8_t adsrCurveDecay);
 void ADSR_VCF2_change_release_curve(uint8_t adsrCurveRelease);
-void ADSR3_change_curves(uint8_t adsrCurveAttack, uint8_t adsrCurveDecay, uint8_t adsrCurveRelease);
 
+/**
+ * @brief Set the Attack curve shape for all DCO pitch/PWM envelopes (ADSR3).
+ * 
+ * ### Curve Options:
+ * - `0` / **`ADSR_CURVE_EXP_NATURAL`**   : "Natural Exp" (Classic analog ramp)
+ * - `1` / **`ADSR_CURVE_EXP_SMOOTH`**    : "Smooth Exp" (Soft exponential knee)
+ * - `2` / **`ADSR_CURVE_PERCUSSIVE`**    : "Percussive" (Sharp punchy drop)
+ * - `3` / **`ADSR_CURVE_LOG_CONVEX`**    : "Log / Convex" (High sustain before drop)
+ * - `4` / **`ADSR_CURVE_S_CURVE_SOFT`**  : "Soft S-Curve" (Smooth sigmoidal)
+ * - `5` / **`ADSR_CURVE_S_CURVE_STEEP`** : "Steep S-Curve" (Aggressive inflection)
+ * - `6` / **`ADSR_CURVE_ROUNDED`**       : "Rounded" (Gentle convex slope)
+ * - `7` / **`ADSR_CURVE_LINEAR`**        : "Linear" (Constant straight ramp)
+ * 
+ * @param adsrCurveAttack Curve preset index (0 to 7) or ADSRCurveType.
+ */
+ void ADSR3_change_attack_curve(uint8_t adsrCurveAttack);
+
+ /**
+  * @brief Set the Decay curve shape for all DCO pitch/PWM envelopes (ADSR3).
+  * @param adsrCurveDecay Curve preset index (0 to 7) or ADSRCurveType.
+  */
+ void ADSR3_change_decay_curve(uint8_t adsrCurveDecay);
+ 
+ /**
+  * @brief Set the Release curve shape for all DCO pitch/PWM envelopes (ADSR3).
+  * @param adsrCurveRelease Curve preset index (0 to 7) or ADSRCurveType.
+  */
+ void ADSR3_change_release_curve(uint8_t adsrCurveRelease);
+ 
 #endif

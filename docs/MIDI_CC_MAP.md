@@ -12,8 +12,6 @@ value = lo + ((hi - lo) * cc + 63) / 127
 
 so CC 0 lands on `CC 0` below and CC 127 on `CC 127`. Envelope attack, decay and release then go through `linearToExponential(value, 50, 25000)`, the same curve the Input board applies to its faders, because the `'a'`-`'c'` block frames carry those values already exp-mapped.
 
-Menu-style parameters use a 0..127 range so the scaling is an identity and a menu entry can pick an exact native value. Switches scale to 0..1, so under 64 is off and 64 or over is on.
-
 ## Map
 
 | CC | Control | Group | Target | CC 0 | CC 127 | Curve |
@@ -85,7 +83,6 @@ Menu-style parameters use a 0..127 range so the scaling is an identity and a men
 | 59 | Pulse width | PWM | `PARAM_PW_VALUE` | 0 | 4095 | linear |
 | 56 | LFO2 to PW | PWM | `PARAM_LFO2_TO_PW` | 0 | 511 | linear |
 | 57 | ADSR3 to PWM | PWM | `PARAM_ADSR3_TO_PWM` | 0 | 1023 | linear |
-| 58 | PWM pots manual | PWM | `PARAM_PWM_POTS_CONTROL_MANUAL` | 0 | 1 | linear |
 | 60 | LFO1 waveform | LFOs | `PARAM_LFO1_WAVEFORM` | 0 | 127 | linear |
 | 61 | LFO2 waveform | LFOs | `PARAM_LFO2_WAVEFORM` | 0 | 127 | linear |
 | 62 | LFO1 speed | LFOs | `PARAM_LFO1_SPEED` | 0 | 4095 | linear |
@@ -135,22 +132,18 @@ These parameters take discrete values; the CC number to send is the value itself
 - **CC 22, Sub-oscillator divide**: Off = 0, Divide by 2 = 2, Divide by 4 = 4
   - output on GP8, needs a mixer input on the carrier to be audible
 - **CC 23, Osc sync / phase align OSC B**: Off - free running (no note-on sync) = 0, Sync at note-on (0 deg) = 1, Sync + 30 deg = 15, Sync + 45 deg = 2, Sync + 60 deg = 30, Sync + 90 deg = 3, Sync + 120 deg = 60, Sync + 135 deg = 4, Sync + 150 deg = 75, Sync + 180 deg = 5, Sync + 210 deg = 105, Sync + 225 deg = 6, Sync + 240 deg = 120, Sync + 270 deg = 7, Sync + 315 deg = 8
-  - Off leaves the oscillators running through note-on; every other setting restarts OSC1 and OSC2 together there, the degree entries delaying OSC2's first flyback (EXACT_Y). Changing this retriggers all notes.
   - out of 7-bit reach, use the serial bench app instead: Sync + 300 deg (150), Sync + 330 deg (165)
-- **CC 69, Voice mode**: 0 - mono = 0, 1 - poly = 1, 2 - stack = 2
-  - Mono (`0`) keeps a held-note stack, so overlapping keys fall back and retrigger porta on release; which of the held keys sounds is 'Voice alloc / note priority' below. See [`REFERENCE_AI.md`](REFERENCE_AI.md) (`note_on` / `note_off`).
-- **CC 78, Voice alloc / note priority**: 0 - round-robin / last note = 0, 1 - oldest / first note = 1, 2 - quietest / last note = 2, 3 - quietest, keep lowest / low note = 3, 4 - quietest, keep highest / high note = 4, 5 - no stealing / first note, deny = 5
-  - One setting, two jobs. In poly/para it is the steal policy used when every voice is busy; in mono it is which held key sounds. Every stealing mode takes an idle voice first, then the quietest release tail, and only steals a held note as a last resort. `5` drops the note-on instead of stealing. See [`REFERENCE_AI.md`](REFERENCE_AI.md) (`voice_alloc`).
-- **CC 72, Portamento mode**: 0 - fixed time (same duration any interval) = 0, 1 - slew rate (time scales with interval; knob = time per octave) = 1
+- **CC 69, Voice mode**: 0 - MONO = 0, 1 - POLY = 1, 2 - UNISON = 2
+- **CC 78, Voice alloc / note priority**: 0 - ROUND ROBIN = 0, 1 - OLDEST = 1, 2 - QUIETEST = 2, 3 - QUIETEST LOW = 3, 4 - QUIETEST HIGH = 4, 5 - NO STEAL = 5
+- **CC 72, Portamento mode**: 0 - fixed time = 0, 1 - slew rate = 1
 - **CC 25, ADSR3 to osc select**: 0 - OSC A = 0, 1 - OSC B = 1, 2 - OSC A+B = 2, 3 - OSC3 = 3, 4 - all = 4
 - **CC 27, ADSR1 attack curve**: 0 - EXP = 0, 1 - SOFT = 1, 2 - STEEP = 2, 3 - CONCAVE = 3, 4 - FAST S = 4, 5 - SLOW THEN LIN = 5, 6 - ALMOST LIN = 6, 7 - LINEAR = 7
-- **CC 28, ADSR1 decay curve**: 0 - EXP = 0, 1 - SOFT = 1, 2 - STEEP = 2, 3 - CONVEX = 3, 4 - FAST START S = 4, 5 - SLOW THEN LIN = 5, 6 - FAST THEN LIN = 6, 7 - ALMOST LIN = 7
+- **CC 28, ADSR1 decay curve**: 0 - EXP = 0, 1 - SOFT = 1, 2 - STEEP = 2, 3 - CONCAVE = 3, 4 - FAST S = 4, 5 - SLOW THEN LIN = 5, 6 - ALMOST LIN = 6, 7 - LINEAR = 7
 - **CC 29, ADSR2 attack curve**: 0 - EXP = 0, 1 - SOFT = 1, 2 - STEEP = 2, 3 - CONCAVE = 3, 4 - FAST S = 4, 5 - SLOW THEN LIN = 5, 6 - ALMOST LIN = 6, 7 - LINEAR = 7
-- **CC 30, ADSR2 decay curve**: 0 - EXP = 0, 1 - SOFT = 1, 2 - STEEP = 2, 3 - CONVEX = 3, 4 - FAST START S = 4, 5 - SLOW THEN LIN = 5, 6 - FAST THEN LIN = 6, 7 - ALMOST LIN = 7
+- **CC 30, ADSR2 decay curve**: 0 - EXP = 0, 1 - SOFT = 1, 2 - STEEP = 2, 3 - CONCAVE = 3, 4 - FAST S = 4, 5 - SLOW THEN LIN = 5, 6 - ALMOST LIN = 6, 7 - LINEAR = 7
 - **CC 118, Filter mode**: 0 - LP24 = 0, 1 - BP12 = 1, 2 - HP6/LP18 = 2, 3 - alt = 3
-  - AS3320 multimode (PARAM_FILTER_MODE); GPIO via voice-aux or solo ENABLE_CV_OUTS
-- **CC 60, LFO1 waveform**: 0 - off = 0, 1 - saw = 1, 2 - triangle = 2, 3 - sine = 3, 4 - square = 4
-- **CC 61, LFO2 waveform**: 0 - off = 0, 1 - saw = 1, 2 - triangle = 2, 3 - sine = 3, 4 - square = 4
+- **CC 60, LFO1 waveform**: 0 - Off = 0, 1 - Saw = 1, 2 - Tri Slewed = 2, 3 - Sine = 3, 4 - Square = 4, 5 - Sharktooth = 5, 6 - Trapezoid = 6, 7 - Linear Tri = 7, 8 - Staircase = 8, 9 - Folded Sine = 9
+- **CC 61, LFO2 waveform**: 0 - Off = 0, 1 - Saw = 1, 2 - Tri Slewed = 2, 3 - Sine = 3, 4 - Square = 4, 5 - Sharktooth = 5, 6 - Trapezoid = 6, 7 - Linear Tri = 7, 8 - Staircase = 8, 9 - Folded Sine = 9
 - **CC 84, Mod slot 0 source**: 0 ADSR3 (EnvDCO) = 0, 1 ADSR4 (stub) = 1, 2 LFO3 (stub) = 2, 3 LFO4 (stub) = 3, 4 Velocity = 4, 5 Keytrack = 5, 6 Random = 6, 7 Aftertouch = 7, 8 LFO1 = 8, 9 LFO2 = 9, 10 Pitch bend = 10, 11 Mod wheel = 11, 12 Noise 0 = 12, 13 Noise 1 = 13, 14 Noise 2 (reserved) = 14, 15 Noise 3 (reserved) = 15
   - out of 7-bit reach, use the serial bench app instead: Off / empty (255)
 - **CC 85, Mod slot 0 dest**: 0 OSC1 level = 0, 1 OSC2 level = 1, 2 OSC3 level = 2, 3 Sub level = 3, 4 VCF1 reso = 4, 5 VCF2 reso = 5, 6 Dist Drive = 6, 7 VCF cutoff = 7, 8 Dist Mix = 8, 9 Pitch (±1 oct @ ±1023) = 9
@@ -189,6 +182,10 @@ These parameters take discrete values; the CC number to send is the value itself
 These parameters stay panel/serial only:
 
 - **EnvDCO pitch centered** (parameter 223)
+- **ADSR3 attack curve** (parameter 54)
+- **ADSR3 decay curve** (parameter 55)
+- **ADSR3 restart** (parameter 214)
+- **PWM pots manual** (parameter 124)
 - **LFO2 to OSC3 coarse** (parameter 220)
 - **Character** (parameter 221)
 - **Run calibration** (parameter 150)
