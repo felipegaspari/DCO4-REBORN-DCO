@@ -110,7 +110,7 @@ void mod_matrix_set_mod_wheel(uint8_t value) {
 static int32_t mod_matrix_read_source_q15(uint8_t src, int16_t lfo1_q15, int16_t lfo2_q15) {
   switch (src) {
     case MOD_SRC_ADSR3:
-      return (int32_t)ADSR1Level_q15[0];
+      return (int32_t)ADSR3Level_q15[0];
     case MOD_SRC_ADSR4:
     case MOD_SRC_LFO3:
     case MOD_SRC_LFO4:

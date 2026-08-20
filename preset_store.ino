@@ -184,7 +184,7 @@ static void preset_record_build(uint8_t* buf) {
   const uint16_t blocks[PRESET_BLOCK_FIELDS] = {
     ADSR_VCA_attack, ADSR_VCA_decay, ADSR_VCA_sustain, ADSR_VCA_release,
     ADSR_VCF_attack, ADSR_VCF_decay, ADSR_VCF_sustain, ADSR_VCF_release,
-    ADSR1_attack,    ADSR1_decay,    ADSR1_sustain,    ADSR1_release,
+    ADSR3_attack,    ADSR3_decay,    ADSR3_sustain,    ADSR3_release,
     CUTOFF,          RESONANCE,      (uint16_t)ADSR2toVCF, LFO2toVCF,
   };
   for (uint8_t i = 0; i < PRESET_BLOCK_FIELDS; ++i) {
@@ -215,10 +215,10 @@ static void __not_in_flash_func(preset_record_apply)(const uint8_t* buf) {
   ADSR_VCF_sustain = decode_u16_le(b + 12);
   ADSR_VCF_release = decode_u16_le(b + 14);
 
-  ADSR1_attack     = decode_u16_le(b + 16);
-  ADSR1_decay      = decode_u16_le(b + 18);
-  ADSR1_sustain    = decode_u16_le(b + 20);
-  ADSR1_release    = decode_u16_le(b + 22);
+  ADSR3_attack     = decode_u16_le(b + 16);
+  ADSR3_decay      = decode_u16_le(b + 18);
+  ADSR3_sustain    = decode_u16_le(b + 20);
+  ADSR3_release    = decode_u16_le(b + 22);
 
   CUTOFF           = decode_u16_le(b + 24);
   RESONANCE        = decode_u16_le(b + 26);

@@ -39,7 +39,7 @@ void __not_in_flash_func(serial_send_adsr_vcf_block_to_mb)() {
 }
 
 void __not_in_flash_func(serial_send_adsr_dco_block_to_mb)() {
-  serial_send_adsr_block_to_mb(CMD_ADSR3_BLOCK, ADSR1_attack, ADSR1_decay, ADSR1_sustain, ADSR1_release);
+  serial_send_adsr_block_to_mb(CMD_ADSR3_BLOCK, ADSR3_attack, ADSR3_decay, ADSR3_sustain, ADSR3_release);
 }
 
 void __not_in_flash_func(serial_send_filter_block_to_mb)() {
@@ -259,10 +259,10 @@ static void __not_in_flash_func(dco_rx_handle_adsr2)(char cmd, const uint8_t* pa
 
 static void __not_in_flash_func(dco_rx_handle_adsr3)(char cmd, const uint8_t* payload, uint8_t len) {
   uint16_t dirty = 0, v;
-  v = decode_u16_le(payload + 0); if (v != ADSR1_attack)  { ADSR1_attack  = v; dirty |= ADSR_DIRTY_DCO_A; }
-  v = decode_u16_le(payload + 2); if (v != ADSR1_decay)   { ADSR1_decay   = v; dirty |= ADSR_DIRTY_DCO_D; }
-  v = decode_u16_le(payload + 4); if (v != ADSR1_sustain) { ADSR1_sustain = v; dirty |= ADSR_DIRTY_DCO_S; }
-  v = decode_u16_le(payload + 6); if (v != ADSR1_release) { ADSR1_release = v; dirty |= ADSR_DIRTY_DCO_R; }
+  v = decode_u16_le(payload + 0); if (v != ADSR3_attack)  { ADSR3_attack  = v; dirty |= ADSR_DIRTY_DCO_A; }
+  v = decode_u16_le(payload + 2); if (v != ADSR3_decay)   { ADSR3_decay   = v; dirty |= ADSR_DIRTY_DCO_D; }
+  v = decode_u16_le(payload + 4); if (v != ADSR3_sustain) { ADSR3_sustain = v; dirty |= ADSR_DIRTY_DCO_S; }
+  v = decode_u16_le(payload + 6); if (v != ADSR3_release) { ADSR3_release = v; dirty |= ADSR_DIRTY_DCO_R; }
   if (dirty) mark_adsr_params_dirty(dirty);
   serial_forward_usb_edit_to_mb(cmd, payload, len);
 }
@@ -353,7 +353,7 @@ static void __not_in_flash_func(mb_handle_mod_stream)(char, const uint8_t* paylo
   LFO1Level = (int16_t)decode_u16_le(payload + 0);
   LFO2Level = (int16_t)decode_u16_le(payload + 2);
   for (uint8_t i = 0; i < 4 && i < NUM_VOICES_TOTAL; i++) {
-    ADSR1Level_q15[i] = (int16_t)decode_u16_le(payload + 4 + i * 2);
+    ADSR3Level_q15[i] = (int16_t)decode_u16_le(payload + 4 + i * 2);
   }
   matrix_pitch_mod_q24 = (int32_t)decode_u32_le(payload + 12);
 #ifdef ENABLE_MB_MOD_STREAM

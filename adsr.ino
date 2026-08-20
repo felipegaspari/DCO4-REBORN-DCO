@@ -22,11 +22,11 @@ void init_ADSR() {
 #endif
 
   for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
-    ADSRVoices[i].adsr1_voice.setAttack(ADSR1_attack);
-    ADSRVoices[i].adsr1_voice.setDecay(ADSR1_decay);
-    ADSRVoices[i].adsr1_voice.setSustain(adsr_sustain_for_set(ADSR1_sustain, ADSR_CV_SCALE));
-    ADSRVoices[i].adsr1_voice.setRelease(ADSR1_release);
-    ADSRVoices[i].adsr1_voice.setResetAttack(ADSRRestart);
+    ADSRVoices[i].adsr3_voice.setAttack(ADSR3_attack);
+    ADSRVoices[i].adsr3_voice.setDecay(ADSR3_decay);
+    ADSRVoices[i].adsr3_voice.setSustain(adsr_sustain_for_set(ADSR3_sustain, ADSR_CV_SCALE));
+    ADSRVoices[i].adsr3_voice.setRelease(ADSR3_release);
+    ADSRVoices[i].adsr3_voice.setResetAttack(ADSRRestart);
 
     ADSRVoices[i].adsr_vca_voice.setAttack(ADSR_VCA_attack);
     ADSRVoices[i].adsr_vca_voice.setDecay(ADSR_VCA_decay);
@@ -69,13 +69,13 @@ void __not_in_flash_func(ADSR_update)() {
     // Pass 1: processes voices 1, 3, ...
     for (int i = phase; i < NUM_VOICES; i += 2) {
       if (noteEnd[i] == 1) {
-        ADSRVoices[i].adsr1_voice.noteOff();
+        ADSRVoices[i].adsr3_voice.noteOff();
         ADSRVoices[i].adsr_vca_voice.noteOff();
         adsr_vcf_voice.noteOff();
         adsr_vcf2_voice.noteOff();
         noteEnd[i] = 0;
       } else if (noteStart[i] == 1) {
-        ADSRVoices[i].adsr1_voice.noteOn();
+        ADSRVoices[i].adsr3_voice.noteOn();
         ADSRVoices[i].adsr_vca_voice.noteOn();
         adsr_vcf_voice.noteOn();
         adsr_vcf2_voice.noteOn();
@@ -83,11 +83,11 @@ void __not_in_flash_func(ADSR_update)() {
         noteStart[i] = 0;
       }
   #if ADSR_BEZIER_NATIVE_Q15
-      ADSR1Level_q15_volatile[i] = (int16_t)ADSRVoices[i].adsr1_voice.getWave();
+      ADSR3Level_q15_volatile[i] = (int16_t)ADSRVoices[i].adsr3_voice.getWave();
       ADSR_VCA_Level_q15_volatile[i] = (int16_t)ADSRVoices[i].adsr_vca_voice.getWave();
   #else
-      ADSR1Level[i] = ADSRVoices[i].adsr1_voice.getWave();
-      ADSR1Level_q15_volatile[i] = ADSRVoices[i].adsr1_voice.levelQ15();
+      ADSR3Level[i] = ADSRVoices[i].adsr3_voice.getWave();
+      ADSR3Level_q15_volatile[i] = ADSRVoices[i].adsr3_voice.levelQ15();
       ADSR_VCA_Level[i] = ADSRVoices[i].adsr_vca_voice.getWave();
       ADSR_VCA_Level_q15_volatile[i] = ADSRVoices[i].adsr_vca_voice.levelQ15();
   #endif
@@ -117,20 +117,20 @@ inline void ADSR_set_parameters() {
 
   if (ch & ADSR_DIRTY_DCO_A) {
     for (int i = 0; i < NUM_VOICES; i++)
-      ADSRVoices[i].adsr1_voice.setAttack(ADSR1_attack);
+      ADSRVoices[i].adsr3_voice.setAttack(ADSR3_attack);
   }
   if (ch & ADSR_DIRTY_DCO_D) {
     for (int i = 0; i < NUM_VOICES; i++)
-      ADSRVoices[i].adsr1_voice.setDecay(ADSR1_decay);
+      ADSRVoices[i].adsr3_voice.setDecay(ADSR3_decay);
   }
   if (ch & ADSR_DIRTY_DCO_S) {
-    const int s = adsr_sustain_for_set(ADSR1_sustain, ADSR_CV_SCALE);
+    const int s = adsr_sustain_for_set(ADSR3_sustain, ADSR_CV_SCALE);
     for (int i = 0; i < NUM_VOICES; i++)
-      ADSRVoices[i].adsr1_voice.setSustain(s);
+      ADSRVoices[i].adsr3_voice.setSustain(s);
   }
   if (ch & ADSR_DIRTY_DCO_R) {
     for (int i = 0; i < NUM_VOICES; i++)
-      ADSRVoices[i].adsr1_voice.setRelease(ADSR1_release);
+      ADSRVoices[i].adsr3_voice.setRelease(ADSR3_release);
   }
 
   if (ch & ADSR_DIRTY_VCA_A) {
@@ -170,9 +170,9 @@ inline void ADSR_set_parameters() {
   }
 }
 
-void ADSR1_set_restart() {
+void ADSR3_set_restart() {
   for (int i = 0; i < NUM_VOICES; i++) {
-    ADSRVoices[i].adsr1_voice.setResetAttack(ADSRRestart);
+    ADSRVoices[i].adsr3_voice.setResetAttack(ADSRRestart);
   }
 }
 
@@ -184,6 +184,9 @@ void ADSR_VCA_set_restart() {
 
 void ADSR_VCF_set_restart() {
   adsr_vcf_voice.setResetAttack(VCFADSRRestart);
+}
+
+void ADSR_VCF2_set_restart() {
   adsr_vcf2_voice.setResetAttack(VCFADSRRestart);
 }
 
@@ -231,6 +234,17 @@ void ADSR_VCF_change_attack_curve(uint8_t adsrCurveAttack) {
   adsr_vcf2_voice.setResetAttack(VCFADSRRestart);
 }
 
+// EnvVCF attack curve → engine.
+void ADSR_VCF2_change_attack_curve(uint8_t adsrCurveAttack) {
+  const int s = adsr_sustain_for_set(ADSR_VCF2_sustain, ADSR_CV_SCALE);
+  adsr_vcf2_voice.adsrCurveAttack(adsrCurveAttack);
+  adsr_vcf2_voice.setAttack(ADSR_VCF2_attack);
+  adsr_vcf2_voice.setDecay(ADSR_VCF2_decay);
+  adsr_vcf2_voice.setSustain(s);
+  adsr_vcf2_voice.setRelease(ADSR_VCF2_release);
+  adsr_vcf2_voice.setResetAttack(VCFADSRRestart);
+}
+
 // EnvVCF decay curve → engine.
 void ADSR_VCF_change_decay_curve(uint8_t adsrCurveDecay) {
   const int s = adsr_sustain_for_set(ADSR_VCF_sustain, ADSR_CV_SCALE);
@@ -240,7 +254,11 @@ void ADSR_VCF_change_decay_curve(uint8_t adsrCurveDecay) {
   adsr_vcf_voice.setSustain(s);
   adsr_vcf_voice.setRelease(ADSR_VCF_release);
   adsr_vcf_voice.setResetAttack(VCFADSRRestart);
+}
 
+// EnvVCF decay curve → engine.
+void ADSR_VCF2_change_decay_curve(uint8_t adsrCurveDecay) {
+  const int s = adsr_sustain_for_set(ADSR_VCF2_sustain, ADSR_CV_SCALE);
   adsr_vcf2_voice.adsrCurveDecay(adsrCurveDecay);
   adsr_vcf2_voice.setAttack(ADSR_VCF_attack);
   adsr_vcf2_voice.setDecay(ADSR_VCF_decay);
@@ -249,13 +267,16 @@ void ADSR_VCF_change_decay_curve(uint8_t adsrCurveDecay) {
   adsr_vcf2_voice.setResetAttack(VCFADSRRestart);
 }
 
-void ADSR1_change_curves() {
-  const int s = adsr_sustain_for_set(ADSR1_sustain, ADSR_CV_SCALE);
+void ADSR3_change_curves( uint8_t adsrCurveAttack, uint8_t adsrCurveDecay,uint8_t adsrCurveRelease) {
+  const int s = adsr_sustain_for_set(ADSR3_sustain, ADSR_CV_SCALE);
   for (int i = 0; i < NUM_VOICES; i++) {
-    ADSRVoices[i].adsr1_voice.setAttack(ADSR1_attack);
-    ADSRVoices[i].adsr1_voice.setDecay(ADSR1_decay);
-    ADSRVoices[i].adsr1_voice.setSustain(s);
-    ADSRVoices[i].adsr1_voice.setRelease(ADSR1_release);
-    ADSRVoices[i].adsr1_voice.setResetAttack(ADSRRestart);
+    ADSRVoices[i].adsr3_voice.adsrCurveAttack(adsrCurveAttack);
+    ADSRVoices[i].adsr3_voice.adsrCurveDecay(adsrCurveDecay);
+    ADSRVoices[i].adsr3_voice.adsrCurveRelease(adsrCurveRelease);
+    ADSRVoices[i].adsr3_voice.setAttack(ADSR3_attack);
+    ADSRVoices[i].adsr3_voice.setDecay(ADSR3_decay);
+    ADSRVoices[i].adsr3_voice.setSustain(s);
+    ADSRVoices[i].adsr3_voice.setRelease(ADSR3_release);
+    ADSRVoices[i].adsr3_voice.setResetAttack(ADSRRestart);
   }
 }

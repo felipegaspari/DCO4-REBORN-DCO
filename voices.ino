@@ -615,9 +615,9 @@ void __not_in_flash_func(voice_task_fixed_point)() {
 
     BENCH_BEGIN(vt_adsr_mod);
     int32_t ADSRModifier_q24 = 0;
-    if (ADSR1toDETUNE1_scale_q24 != 0) {
+    if (ADSR3toDETUNE1_scale_q24 != 0) {
       ADSRModifier_q24 = applyDepthQ24(
-          env_dco_pitch_wave_q15(ADSR1Level_q15[i]), ADSR1toDETUNE1_scale_q24);
+          env_dco_pitch_wave_q15(ADSR3Level_q15[i]), ADSR3toDETUNE1_scale_q24);
     }
     // ADSR3→pitch: 0=A, 1=B, 2=A+B (legacy), 3/4 ignored or map 4→A+B
     int32_t ADSRModifierOSC1_q24 =
@@ -830,17 +830,17 @@ void __not_in_flash_func(voice_task_fixed_point)() {
 
         const int16_t local_LFO2Level = LFO2Level;
         const int16_t local_LFO2toPW = LFO2toPW;
-        const int16_t local_ADSR1toPWM =
-            ADSR1toPWM; // Note: ADSR1toPWM is signed (-512 .. +512)
+        const int16_t local_ADSR3toPWM =
+            ADSR3toPWM; // Note: ADSR3toPWM is signed (-512 .. +512)
 
         // 1. Calculate Q15 modulation deltas
-        const int32_t adsr1_delta =
-            ((int32_t)ADSR1Level_q15[i] * (int32_t)local_ADSR1toPWM) >> 15;
+        const int32_t adsr3_delta =
+            ((int32_t)ADSR3Level_q15[i] * (int32_t)local_ADSR3toPWM) >> 15;
         const int32_t lfo2_delta =
             ((int32_t)local_LFO2Level * (int32_t)local_LFO2toPW) >> 15;
 
         // 2. ✅ Clean logical sum: Knob + LFO + Envelope + Jitter
-        int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr1_delta +
+        int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr3_delta +
                           (int32_t)character_pw_delta();
 
         // 3. Clamp to valid 10-bit range (0 .. 1023)
@@ -1070,9 +1070,9 @@ void __not_in_flash_func(voice_task_float)() {
 
     BENCH_BEGIN(vt_adsr_mod);
     float ADSRModifier = 0.0f;
-    if (ADSR1toDETUNE1_scale_q24 != 0) {
+    if (ADSR3toDETUNE1_scale_q24 != 0) {
       ADSRModifier = q24_to_float(applyDepthQ24(
-          env_dco_pitch_wave_q15(ADSR1Level_q15[i]), ADSR1toDETUNE1_scale_q24));
+          env_dco_pitch_wave_q15(ADSR3Level_q15[i]), ADSR3toDETUNE1_scale_q24));
     }
     float ADSRModifierOSC1 = (ADSR3ToOscSelect == 0 || ADSR3ToOscSelect == 2 ||
                               ADSR3ToOscSelect == 4)
@@ -1262,16 +1262,16 @@ void __not_in_flash_func(voice_task_float)() {
 
         const int16_t local_LFO2Level = LFO2Level;
         const int16_t local_LFO2toPW = LFO2toPW;
-        const int16_t local_ADSR1toPWM = ADSR1toPWM;
+        const int16_t local_ADSR3toPWM = ADSR3toPWM;
 
         // 1. Calculate Q15 modulation deltas
-        const int32_t adsr1_delta =
-            ((int32_t)ADSR1Level_q15[i] * (int32_t)local_ADSR1toPWM) >> 15;
+        const int32_t adsr3_delta =
+            ((int32_t)ADSR3Level_q15[i] * (int32_t)local_ADSR3toPWM) >> 15;
         const int32_t lfo2_delta =
             ((int32_t)local_LFO2Level * (int32_t)local_LFO2toPW) >> 15;
 
         // 2. Clean logical sum: Knob + LFO + Envelope + Jitter
-        int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr1_delta +
+        int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr3_delta +
                           (int32_t)character_pw_delta();
 
         // 3. Clamp to valid 10-bit range (0 .. 1023)

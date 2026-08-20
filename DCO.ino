@@ -529,7 +529,7 @@ void __not_in_flash_func(loop1)() {
     // BENCH_END(loop1_cv_outs);
 
     for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
-      ADSR1Level_q15[i] = ADSR1Level_q15_volatile[i];
+      ADSR3Level_q15[i] = ADSR3Level_q15_volatile[i];
       ADSR_VCA_Level_q15[i] = ADSR_VCA_Level_q15_volatile[i];
       }
       ADSR_VCF_Level_q15 = ADSR_VCF_Level_q15_volatile;

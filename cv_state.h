@@ -31,8 +31,8 @@ uint16_t ADSR_VCF_release = 0;
 bool VCAADSRRestart = true;
 bool VCFADSRRestart = true;
 
-uint8_t ADSR1AttackCurveVal = 0;
-uint8_t ADSR1DecayCurveVal = 0;
+uint8_t ADSR3AttackCurveVal = 0;
+uint8_t ADSR3DecayCurveVal = 0;
 uint8_t ADSR2AttackCurveVal = 0;
 uint8_t ADSR2DecayCurveVal = 0;
 
@@ -41,7 +41,7 @@ uint16_t CUTOFF = 0;
 uint16_t RESONANCE = 0;
 int16_t ADSR2toVCF = 0;
 uint16_t LFO2toVCF = 0;
-int16_t ADSR1toVCA = 0;
+int16_t ADSR3toVCA = 0;
 uint16_t VCALevel = 0;
 uint16_t LFO1toVCA = 0;
 

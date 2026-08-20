@@ -84,10 +84,10 @@ void __not_in_flash_func(dco_apply_preset_shadow)() {
   // 5. Envelope Modulations
   // =========================================================================
   ADSR3ToOscSelect         = (int8_t)presetParamShadow[PARAM_ADSR3_TO_OSC_SELECT];
-  ADSR1toPWM               = (int16_t)presetParamShadow[PARAM_ADSR3_TO_PWM] - 512;
-  ADSR1toPWM_scale         = ADSR1toPWM;
-  ADSR1toDETUNE1           = presetParamShadow[PARAM_ADSR3_TO_DETUNE1];
-  ADSR1toDETUNE1_scale_q24 = (int32_t)presetParamShadow[PARAM_ADSR3_TO_DETUNE1] * 4097;
+  ADSR3toPWM               = (int16_t)presetParamShadow[PARAM_ADSR3_TO_PWM] - 512;
+  ADSR3toPWM_scale         = ADSR3toPWM;
+  ADSR3toDETUNE1           = presetParamShadow[PARAM_ADSR3_TO_DETUNE1];
+  ADSR3toDETUNE1_scale_q24 = (int32_t)presetParamShadow[PARAM_ADSR3_TO_DETUNE1] * 4097;
   env_dco_pitch_centered   = (presetParamShadow[PARAM_ADSR3_PITCH_MODE] != 0) ? 1 : 0;
 }
 
@@ -314,15 +314,15 @@ static void apply_param_adsr3_to_osc_select(int16_t v) {
 }
 
 static void apply_param_adsr3_to_pwm(int16_t v) {
-  ADSR1toPWM = (int16_t)v - 512;
-  ADSR1toPWM_scale = ADSR1toPWM;
+  ADSR3toPWM = (int16_t)v - 512;
+  ADSR3toPWM_scale = ADSR3toPWM;
 }
 
 static void apply_param_adsr3_to_detune1(int16_t v) {
-  ADSR1toDETUNE1 = v;
+  ADSR3toDETUNE1 = v;
   // (1 << 24) / 4095 is practically 4097. 
   // Eliminates 64-bit cast & expensive division!
-  ADSR1toDETUNE1_scale_q24 = (int32_t)v * 4097; 
+  ADSR3toDETUNE1_scale_q24 = (int32_t)v * 4097; 
 }
 
 static void apply_param_adsr3_pitch_mode(int16_t v) {

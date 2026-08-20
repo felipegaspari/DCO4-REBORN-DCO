@@ -13,8 +13,13 @@
 #endif
 // RP2040: keep FLOAT=0 (no FPU; soft-float index would be slower).
 // Each getWave() uses its own micros(); EnvVCF2 is sampled (reserved for later).
+
 #ifndef ADSR_BEZIER_USE_FLOAT
+#if defined(PICO_RP2350)
+#define ADSR_BEZIER_USE_FLOAT 1
+#else
 #define ADSR_BEZIER_USE_FLOAT 0
+#endif
 #endif
 
 #ifndef ADSR_BEZIER_USE_MICROS
@@ -46,17 +51,17 @@ volatile byte noteStart[NUM_VOICES_TOTAL];
 volatile byte noteEnd[NUM_VOICES_TOTAL];
 
 // Legacy u12/DAC mirrors (optional; consumers use *_q15). Not refreshed under NATIVE_Q15.
-uint16_t ADSR1Level[NUM_VOICES_TOTAL];
+uint16_t ADSR3Level[NUM_VOICES_TOTAL];
 uint16_t ADSR_VCA_Level[NUM_VOICES_TOTAL];
 uint16_t ADSR_VCF_Level;
 uint16_t ADSR_VCF2_Level;
 // Primary mod taps (0..ADSR_Q15_ONE).
-int16_t ADSR1Level_q15[NUM_VOICES_TOTAL];
+int16_t ADSR3Level_q15[NUM_VOICES_TOTAL];
 int16_t ADSR_VCA_Level_q15[NUM_VOICES_TOTAL];
 int16_t ADSR_VCF_Level_q15;
 int16_t ADSR_VCF2_Level_q15;
 
-volatile int16_t ADSR1Level_q15_volatile[NUM_VOICES_TOTAL];
+volatile int16_t ADSR3Level_q15_volatile[NUM_VOICES_TOTAL];
 volatile int16_t ADSR_VCA_Level_q15_volatile[NUM_VOICES_TOTAL];
 volatile int16_t ADSR_VCF_Level_q15_volatile;
 volatile int16_t ADSR_VCF2_Level_q15_volatile;
@@ -84,10 +89,10 @@ static inline int16_t env_dco_pitch_wave_q15(int16_t env_q15) {
   return (int16_t)(((int32_t)env_q15 - ENV_DCO_PITCH_CENTER_Q15) << 1);
 }
 
-uint16_t ADSR1_attack = 0;
-uint16_t ADSR1_decay = 0;
-uint16_t ADSR1_sustain = 4095;
-uint16_t ADSR1_release = 0;
+uint16_t ADSR3_attack = 0;
+uint16_t ADSR3_decay = 0;
+uint16_t ADSR3_sustain = 4095;
+uint16_t ADSR3_release = 0;
 
 // Core 0 marks dirty on write; Core 1 applies to voices every ~5 ms.
 #define ADSR_DIRTY_DCO_A   (1u << 0)
@@ -112,60 +117,59 @@ static inline void __not_in_flash_func(mark_adsr_params_dirty)(uint16_t mask) {
   adsr_params_dirty |= mask;
 }
 
-byte ADSR1_curve2Val = 0;
-
-float ADSR1_curve1 = 0.999;
-float ADSR1_curve2 = 0.997;
-float ADSR_VCA_curve1 = 0.9995f;
-float ADSR_VCA_curve2 = 0.9995f;
-float ADSR_VCF_curve1 = 0.997f;
-float ADSR_VCF_curve2 = 0.997f;
+byte ADSR3_curve2Val = 0;
 
 bool ADSRRestart = true;
 
-int16_t ADSR1toDETUNE1;
+int16_t ADSR3toDETUNE1;
 // Q24 pitch depth: exp-baked to ADSR_PITCH_MAX_OCTAVES at full CW (see LFO.h / LFO.md).
-int32_t ADSR1toDETUNE1_scale_q24;
+int32_t ADSR3toDETUNE1_scale_q24;
 
-int16_t ADSR1toPWM;
-// Full-scale PW delta (PWM counts) for (ADSR1Level_q15 * scale) >> 15.
-int32_t ADSR1toPWM_scale = 0;
+int16_t ADSR3toPWM;
+// Full-scale PW delta (PWM counts) for (ADSR3Level_q15 * scale) >> 15.
+int32_t ADSR3toPWM_scale = 0;
 
-adsr adsr1_voice_0(ADSR_1_CC, ADSR1_curve1, ADSR1_curve2, false, 7, 7, 7);
-adsr adsr1_voice_1(ADSR_1_CC, ADSR1_curve1, ADSR1_curve2, false, 7, 7, 7);
-adsr adsr1_voice_2(ADSR_1_CC, ADSR1_curve1, ADSR1_curve2, false, 7, 7, 7);
-adsr adsr1_voice_3(ADSR_1_CC, ADSR1_curve1, ADSR1_curve2, false, 7, 7, 7);
+adsr adsr3_voice_0(ADSR_1_CC, 7, 7, 7);
+adsr adsr3_voice_1(ADSR_1_CC, 7, 7, 7);
+adsr adsr3_voice_2(ADSR_1_CC, 7, 7, 7);
+adsr adsr3_voice_3(ADSR_1_CC, 7, 7, 7);
 
-adsr adsr_vca_voice_0(ADSR_CV_CC, ADSR_VCA_curve1, ADSR_VCA_curve2, false, 1, 2, 1);
-adsr adsr_vca_voice_1(ADSR_CV_CC, ADSR_VCA_curve1, ADSR_VCA_curve2, false, 1, 2, 1);
-adsr adsr_vca_voice_2(ADSR_CV_CC, ADSR_VCA_curve1, ADSR_VCA_curve2, false, 1, 2, 1);
-adsr adsr_vca_voice_3(ADSR_CV_CC, ADSR_VCA_curve1, ADSR_VCA_curve2, false, 1, 2, 1);
+adsr adsr_vca_voice_0(ADSR_CV_CC, 1, 2, 1);
+adsr adsr_vca_voice_1(ADSR_CV_CC, 1, 2, 1);
+adsr adsr_vca_voice_2(ADSR_CV_CC, 1, 2, 1);
+adsr adsr_vca_voice_3(ADSR_CV_CC, 1, 2, 1);
 
 // Shared filter envelopes (VCF1 + VCF2); not per voice.
-adsr adsr_vcf_voice(ADSR_CV_CC, ADSR_VCF_curve1, ADSR_VCF_curve2, false, 4, 6, 1);
-adsr adsr_vcf2_voice(ADSR_CV_CC, ADSR_VCF_curve1, ADSR_VCF_curve2, false, 4, 6, 1);
+adsr adsr_vcf_voice(ADSR_CV_CC, 4, 6, 1);
+adsr adsr_vcf2_voice(ADSR_CV_CC, 4, 6, 1);
 
 struct ADSRStruct {
-  adsr adsr1_voice;   // EnvDCO → pitch/PW
+  adsr adsr3_voice;   // EnvDCO → pitch/PW
   adsr adsr_vca_voice;
 };
 
 ADSRStruct ADSRVoices[] = {
-  { adsr1_voice_0, adsr_vca_voice_0 },
-  { adsr1_voice_1, adsr_vca_voice_1 },
-  { adsr1_voice_2, adsr_vca_voice_2 },
-  { adsr1_voice_3, adsr_vca_voice_3 },
+  { adsr3_voice_0, adsr_vca_voice_0 },
+  { adsr3_voice_1, adsr_vca_voice_1 },
+  { adsr3_voice_2, adsr_vca_voice_2 },
+  { adsr3_voice_3, adsr_vca_voice_3 },
 };
 
 void init_ADSR();
 void __not_in_flash_func(ADSR_update)();
 void __not_in_flash_func(ADSR_set_parameters)();
-void ADSR1_set_restart();
+void ADSR3_set_restart();
 void ADSR_VCA_set_restart();
 void ADSR_VCF_set_restart();
 void ADSR_VCA_change_attack_curve(uint8_t adsrCurveAttack);
 void ADSR_VCA_change_decay_curve(uint8_t adsrCurveDecay);
+void ADSR_VCA_change_release_curve(uint8_t adsrCurveRelease);
 void ADSR_VCF_change_attack_curve(uint8_t adsrCurveAttack);
 void ADSR_VCF_change_decay_curve(uint8_t adsrCurveDecay);
+void ADSR_VCF_change_release_curve(uint8_t adsrCurveRelease);
+void ADSR_VCF2_change_attack_curve(uint8_t adsrCurveAttack);
+void ADSR_VCF2_change_decay_curve(uint8_t adsrCurveDecay);
+void ADSR_VCF2_change_release_curve(uint8_t adsrCurveRelease);
+void ADSR3_change_curves(uint8_t adsrCurveAttack, uint8_t adsrCurveDecay, uint8_t adsrCurveRelease);
 
 #endif
