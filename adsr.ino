@@ -230,10 +230,10 @@
    adsr_vcf_voice.setResetAttack(VCFADSRRestart);
  
    // Initialize shared filter envelope 2 (VCF2)
-   adsr_vcf2_voice.setAttack(ADSR_VCF_attack);
-   adsr_vcf2_voice.setDecay(ADSR_VCF_decay);
-   adsr_vcf2_voice.setSustain(adsr_sustain_for_set(ADSR_VCF_sustain, ADSR_CV_SCALE));
-   adsr_vcf2_voice.setRelease(ADSR_VCF_release);
+   adsr_vcf2_voice.setAttack(ADSR_VCF2_attack);
+   adsr_vcf2_voice.setDecay(ADSR_VCF2_decay);
+   adsr_vcf2_voice.setSustain(adsr_sustain_for_set(ADSR_VCF2_sustain, ADSR_CV_SCALE));
+   adsr_vcf2_voice.setRelease(ADSR_VCF2_release);
    adsr_vcf2_voice.setResetAttack(VCFADSRRestart);
  }
  
