@@ -99,7 +99,7 @@ static inline bool preset_param_is_persistable(uint8_t id) {
     case PARAM_OSC2_INTERVAL:
     case PARAM_OSC2_DETUNE_VAL:
     case PARAM_LFO2_TO_OSC2:
-    case PARAM_OSC_SYNC_MODE:
+    case PARAM_OSC_PHASE_SYNC:
     case PARAM_PORTAMENTO_TIME:
     case PARAM_VCF_KEYTRACK:
     case PARAM_VELOCITY_TO_VCF:

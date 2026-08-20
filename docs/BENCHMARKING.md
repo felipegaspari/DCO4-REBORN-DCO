@@ -219,7 +219,7 @@ Probes (MAIN; rare hits keep steady-state tax small):
 |-------|--------|------|
 | `retrig period split` | `voice_task` | EXACT_Y note-on frames, next to `phase align` |
 | `retrig SM apply` | `note-on retrigger` | EXACT_Y: disable + fused noclear load + jmp + enable; SYNC_JMP: jmp only |
-| `retrig RANGE PWM` | `note-on retrigger` | every note-on flag (even if `oscSync == 0`) |
+| `retrig RANGE PWM` | `note-on retrigger` | every note-on flag (even if `oscPhaseSync == 0`) |
 
 Do **not** split SM apply into disable/load/jmp/enable — cold XIP on the rare note-on block
 slides between those children and mis-ranks them (e.g. fake slow `jmp` after a faster load).

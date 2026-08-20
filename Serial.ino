@@ -454,11 +454,11 @@ void __not_in_flash_func(serial_panel_task)() {
 
 #ifdef ENABLE_USB_CONTROL
 void __not_in_flash_func(serial_usb_task)() {
-  if (!Serial) return;
+  if (Serial.available() <= 0) return;
   g_param_ingress = PARAM_SRC_USB; // Frames from USB WILL mirror down to Mainboard
   serial_parser_drain(usbSerialParser, usbSerialLut, Serial, SERIAL_DRAIN_BYTE_BUDGET);
 }
-#endif 
+#endif
 
 void serial_send_note_on(uint8_t voice, uint8_t velocity, uint8_t note, uint8_t flags) {
   uint8_t payload[SERIAL_LEN_NOTE_ON] = { voice, velocity, note, flags };

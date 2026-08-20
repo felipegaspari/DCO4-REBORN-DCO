@@ -103,11 +103,94 @@ static void apply_param_osc2_detune(int16_t v) { OSC2_detune = (uint16_t)v; }
 static void apply_param_osc3_detune(int16_t /*v*/) { /* DCO3 monosynth only */ }
 static void apply_param_unison_detune(int16_t v) { unisonDetune = v; }
 
+// =============================================================================
+// Portamento Time & Mode (Bake-on-Write)
+// =============================================================================
+
 static void apply_param_portamento_time(int16_t v) {
-  portamento_time = (uint16_t)v;
+  const uint32_t val = (uint32_t)constrain(v, 0, 255);
+  portamento_parameter_value = (uint8_t)val;
+
+  if (val == 0) {
+    portamento_time_fixed = 0;
+    portamento_time_slew  = 0;
+    portamento_time       = 0;
+    return;
+  }
+
+  // Fast integer response curve:
+  // (val * 60) + (val^2 * 3) + (val^3 * 200 >> 10)
+  // Yields ~15ms at val=32, ~280ms at val=128, ~3.8s at val=255
+  const uint32_t val2 = val * val;
+  const uint32_t val3 = val2 * val;
+  const uint32_t t    = (val * 60u) + (val2 * 3u) + ((val3 * 200u) >> 10);
+
+  portamento_time_fixed = t;
+  portamento_time_slew  = t; // Slew time per octave matches fixed time baseline
+
+  // Active gate & comparison tracking for voices.ino
+  portamento_time = (portamento_mode == PORTA_MODE_TIME)
+                        ? portamento_time_fixed
+                        : portamento_time_slew;
 }
+
 static void apply_param_portamento_mode(int16_t v) {
   portamento_mode = (uint8_t)v;
+  portamento_time = (portamento_mode == PORTA_MODE_TIME)
+                        ? portamento_time_fixed
+                        : portamento_time_slew;
+}
+
+static void bake_drift_lfo_frequencies() {
+  const uint32_t now_us = micros();
+
+  // 1. Calculate the base speed ONCE outside the loop
+#if __has_builtin(__builtin_exp) || defined(USE_FLOAT_VOICE_TASK)
+  const float base_speed = fast_exp_speed_5000(analogDriftSpeed);
+#else
+  const float base_speed = (float)expConverterFloat((float)analogDriftSpeed, 5000);
+#endif
+
+  // 2. Pre-calculate the linear slope coefficients outside the loop:
+  //    base = (1.0 - spread * 0.005) * base_speed
+  //    step = (spread * 0.00125) * base_speed
+  const float spread_f   = (float)analogDriftSpread;
+  const float base_freq  = (1.00f - (spread_f * 0.005f)) * base_speed;
+  const float step_freq  = (spread_f * 0.00125f) * base_speed;
+
+  // 3. Ultra-lean loop: 1 single multiply-add per oscillator
+  for (int i = 0; i < NUM_OSCILLATORS; i++) {
+    const float freq = base_freq + ((float)i * step_freq);
+    LFO_DRIFT_SPEED_OFFSET[i] = freq;
+    LFO_DRIFT_CLASS[i].setMode0Freq(freq, now_us);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Appliers
+// -----------------------------------------------------------------------------
+
+static void apply_param_analog_drift_amount(int16_t v) {
+  analogDrift = v;
+  
+  // Single-cycle 32-bit Q24 scaling (constant folded at compile-time)
+  static constexpr int32_t DRIFT_SCALE_MULT =
+      (int32_t)(DRIFT_PITCH_UNIT_Q24 * DRIFT_PITCH_DEPTH_SCALE);
+  drift_pitch_scale_q24 = (int32_t)((int32_t)analogDrift * DRIFT_SCALE_MULT);
+
+#ifndef USE_FLOAT_CV_OUTS
+  vcf_drift_scale_q15 = (int32_t)analogDrift;
+#endif
+}
+
+static void apply_param_analog_drift_speed(int16_t v) {
+  analogDriftSpeed = v;
+  bake_drift_lfo_frequencies();
+}
+
+static void apply_param_analog_drift_spread(int16_t v) {
+  analogDriftSpread = v;
+  bake_drift_lfo_frequencies();
 }
 
 static void apply_param_voice_mode(int16_t v) {
@@ -124,6 +207,31 @@ static void apply_param_sync_mode(int16_t v) {
   setSyncMode();
 }
 
+static void apply_param_phase_align(int16_t v) {
+  oscPhaseSync = v;
+  if (oscPhaseSync < 2) {
+    phaseAlignOSC2 = 0;
+    pio_defer_request_reset_pulse_all();
+  } else {
+    if (oscPhaseSync > 8) {
+      phaseAlignOSC2 = oscPhaseSync * 2;
+    } else {
+      switch (oscPhaseSync) {
+        case 2: phaseAlignOSC2 = 45;  break;
+        case 3: phaseAlignOSC2 = 90;  break;
+        case 4: phaseAlignOSC2 = 135; break;
+        case 5: phaseAlignOSC2 = 180; break;
+        case 6: phaseAlignOSC2 = 225; break;
+        case 7: phaseAlignOSC2 = 270; break;
+        case 8: phaseAlignOSC2 = 315; break;
+        default: break;
+      }
+    }
+  }
+  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
+    note_on_flag[i] = 1;
+  }
+}
 static void apply_param_soft_sync(int16_t v) { softSyncChunks = (uint8_t)v; }
 static void apply_param_subosc_divide(int16_t v) { subOscDivide = (uint8_t)v; }
 
@@ -194,17 +302,6 @@ static void apply_param_lfo2_to_pw(int16_t v) { LFO2toPW = (uint16_t)v; }
 // 3. Analog Drift, Character & Pulse Width
 // =============================================================================
 
-static void apply_param_analog_drift_amount(int16_t v) {
-  analogDrift = (int8_t)v;
-}
-static void apply_param_analog_drift_speed(int16_t v) {
-  analogDriftSpeed = v;
-  init_DRIFT_LFOs();
-}
-static void apply_param_analog_drift_spread(int16_t v) {
-  analogDriftSpread = (int8_t)v;
-  init_DRIFT_LFOs();
-}
 static void apply_param_character(int16_t /*v*/) { /* Character scale hook */ }
 static void apply_param_pw_value(int16_t v) { PW[0] = (uint16_t)(v >> 2); }
 
@@ -535,6 +632,7 @@ static const ParamDescriptorT<int16_t> paramTable[] = {
     {PARAM_PORTAMENTO_MODE, apply_param_portamento_mode},
     {PARAM_VOICE_MODE, apply_param_voice_mode},
     {PARAM_VOICE_ALLOC_MODE, apply_param_voice_alloc_mode},
+    {PARAM_OSC_PHASE_SYNC, apply_param_phase_align},
     {PARAM_SYNC_MODE, apply_param_sync_mode},
     {PARAM_SOFT_SYNC, apply_param_soft_sync},
     {PARAM_SUBOSC_DIVIDE, apply_param_subosc_divide},

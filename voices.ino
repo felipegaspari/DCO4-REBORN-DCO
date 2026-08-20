@@ -725,12 +725,12 @@ void __not_in_flash_func(voice_task_fixed_point)() {
     uint32_t phaseHoldX = 0;
     PioPeriod retrig_p1{};
     PioPeriod retrig_p2{};
-    if (note_on_flag_flag[i] && oscSync > 1 && phaseAlignOSC2 != 0) {
+    if (note_on_flag_flag[i] && oscPhaseSync > 1) {
       BENCH_BEGIN(vt_phase_align);
       phaseHoldX = osc_phase_hold_x(total_cycles2, phaseAlignOSC2);
       BENCH_END(vt_phase_align);
     }
-    if (note_on_flag_flag[i] && oscSync >= 1 &&
+    if (note_on_flag_flag[i] && oscPhaseSync >= 1 &&
         note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
       BENCH_BEGIN(vt_retrig_split);
       retrig_p1 = pio_period_split(total_cycles1, wA, kA);
@@ -787,7 +787,7 @@ void __not_in_flash_func(voice_task_fixed_point)() {
       Serial.println("----------------------------------------------------\n");
 #endif
 
-      if (oscSync >= 1) {
+      if (oscPhaseSync >= 1) {
         BENCH_BEGIN(vt_retrig_sm_apply);
         if (note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
           uint32_t maskAB = (1u << smAN) | (1u << smBN);
@@ -1170,12 +1170,12 @@ void __not_in_flash_func(voice_task_float)() {
     uint32_t phaseHoldX = 0;
     PioPeriod retrig_p1{};
     PioPeriod retrig_p2{};
-    if (note_on_flag_flag[i] && oscSync > 1 && phaseAlignOSC2 != 0) {
+    if (note_on_flag_flag[i] && oscPhaseSync > 1) {
       BENCH_BEGIN(vt_phase_align);
       phaseHoldX = osc_phase_hold_x(total_cycles2, phaseAlignOSC2);
       BENCH_END(vt_phase_align);
     }
-    if (note_on_flag_flag[i] && oscSync >= 1 &&
+    if (note_on_flag_flag[i] && oscPhaseSync >= 1 &&
         note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
       BENCH_BEGIN(vt_retrig_split);
       retrig_p1 = pio_period_split(total_cycles1, wA, kA);
@@ -1221,7 +1221,7 @@ void __not_in_flash_func(voice_task_float)() {
 
     if (note_on_flag_flag[i]) {
       BENCH_BEGIN(vt_note_retrig);
-      if (oscSync >= 1) {
+      if (oscPhaseSync >= 1) {
         BENCH_BEGIN(vt_retrig_sm_apply);
         if (note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
           uint32_t maskAB = (1u << sm1N) | (1u << sm2N);

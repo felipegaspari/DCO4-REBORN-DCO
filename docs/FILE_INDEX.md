@@ -316,9 +316,9 @@ PIO load, SM setup, sync topology and diagnostics. **All three oscillators live 
 - `osc_phase_align_hold_stopped()` — `static inline` in `state_machines.h`: preload X, restore
   clk_div, `set pins, 0`, jmp `loop_final` (one-shot delay until OSC2's first flyback).
   - **Called from:** both engine note-on EXACT_Y paths when `phaseHoldX != 0`.
-  - **When:** Mono note-on, `oscSync > 1`, EXACT_Y. SM already stopped after noclear load.
+  - **When:** Mono note-on, `oscPhaseSync > 1`, EXACT_Y. SM already stopped after noclear load.
 - `osc_set_reset_pulse()` — Change only Y, reusing `osc_last_clk_div[]`.
-  - **Called from:** `apply_param_osc_sync_mode()`.
+  - **Called from:** `apply_PARAM_OSC_PHASE_SYNC()`.
 - `pio_topology_report()` — Print sync roles and assert every RESET pin reads back as PIO0.
   - **Called from:** Bench/diagnostic use.
 - `pio_period_probe()` / `pio_solve_period_model()` — Bench helpers for confirming the
@@ -1095,7 +1095,7 @@ Non-blocking inner-frame parser. RAW: cmd LUT + fixed payload. COBS (`SERIAL_FRA
 - `apply_param_lfo2_to_osc2()` — LFO2→OSC2 fine pitch depth (0..255, `expConverterFloat`).
 - `apply_param_lfo2_to_osc3()` — LFO2→OSC3 fine pitch depth (0..255).
 - `apply_param_lfo2_to_osc2/3_coarse()` — LFO2 coarse pitch (0..511; LFO1 curve + amp scale at apply time).
-- `apply_param_osc_sync_mode()` — Osc sync / phase-align: sets `oscSync` + `phaseAlignOSC2`, retriggers notes.
+- `apply_PARAM_OSC_PHASE_SYNC()` — Osc sync / phase-align: sets `oscPhaseSync`
 - `apply_param_portamento_time()` — Porta time (uses `expConverter`).
 - `apply_param_portamento_mode()` — Time vs slew porta.
 - `apply_param_calibration_value()` — Reserved / no-op.
@@ -1283,7 +1283,7 @@ separate symlink so `--libraries` never scans it:
 | Mono note priority / held notes | `midi.ino` mono stack (`mono_note_stack_*`); porta still via `note_on_flag` → `voices.ino` |
 | MIDI CC assignments | `tools/dco_control/params.py` `cc=` field → `gen_midi_map.py` → `midi_cc_map.h` + [`MIDI_CC_MAP.md`](MIDI_CC_MAP.md) |
 | Play audio path | `loop1` → `ADSR_update` + `voice_task_main` |
-| OSC2 note-on phase align | `PARAM_OSC_SYNC_MODE` → `oscSync` / `phaseAlignOSC2`; EXACT_Y in `voices.ino` → `osc_phase_align_hold_stopped` ([`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §8) |
+| OSC2 note-on phase align | `PARAM_OSC_PHASE_SYNC` → `oscPhaseSync`; EXACT_Y in `voices.ino` → `osc_phase_align_hold_stopped` ([`PIO_OSCILLATORS.md`](PIO_OSCILLATORS.md) §8) |
 | Measure where the time goes | `RUNNING_AVERAGE` in `DCO.ino` → probe table in `bench.h` → debug command 10 |
 | Measure SRAM / heap / stack | dump cmd **13** → [`MEMORY.md`](MEMORY.md) / `mem_diag.ino`; `ENABLE_MEM_DIAG` + runtime 14/15; pin policy there |
 | RANGE PWM wrap / amplitude resolution vs carrier | `RANGE_PWM_WRAP` in [`../../project_config.h`](../../project_config.h) (`DIV_COUNTER` aliases it). After a change, re-seed or re-calibrate: LittleFS `voiceTables` / `AmpComp440` store absolute PWM counts. |

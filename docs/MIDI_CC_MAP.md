@@ -26,7 +26,7 @@ Menu-style parameters use a 0..127 range so the scaling is an identity and a men
 | 20 | Hard sync topology | Oscillators | `PARAM_SYNC_MODE` | 0 | 127 | linear |
 | 21 | Soft sync | Oscillators | `PARAM_SOFT_SYNC` | 0 | 127 | linear |
 | 22 | Sub-oscillator divide | Oscillators | `PARAM_SUBOSC_DIVIDE` | 0 | 127 | linear |
-| 23 | Osc sync / phase align OSC B | Oscillators | `PARAM_OSC_SYNC_MODE` | 0 | 127 | linear |
+| 23 | Osc sync / phase align OSC B | Oscillators | `PARAM_OSC_PHASE_SYNC` | 0 | 127 | linear |
 | 69 | Voice mode | Oscillators | `PARAM_VOICE_MODE` | 0 | 127 | linear |
 | 78 | Voice alloc / note priority | Oscillators | `PARAM_VOICE_ALLOC_MODE` | 0 | 127 | linear |
 | 70 | Unison detune | Oscillators | `PARAM_UNISON_DETUNE` | 0 | 127 | linear |

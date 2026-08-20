@@ -526,21 +526,21 @@ leaves the current poll image resident unused.
 
 ## 8. Phase align
 
-`phaseAlignOSC2` (degrees, via `PARAM_OSC_SYNC_MODE`) offsets **DCO_B**’s first flyback relative
-to **DCO_A** at note-on (per voice pair). It applies only when `oscSync > 1`. Heard DCO "phase" is that reset edge,
+`oscPhaseSync` (degrees, via `PARAM_OSC_PHASE_SYNC`) offsets **DCO_B**’s first flyback relative
+to **DCO_A** at note-on (per voice pair). It applies only when `oscPhaseSync > 1`. Heard DCO "phase" is that reset edge,
 not the analog ramp start. Mono only (`voiceMode == 0`).
 
-That one parameter carries three regimes, because `oscSync` also gates the note-on restart
+That one parameter carries three regimes, because `oscPhaseSync` also gates the note-on restart
 itself in [`voices.ino`](../voices.ino):
 
-| `oscSync` | At note-on |
+| `oscPhaseSync` | At note-on |
 |-----------|------------|
 | 0 | Nothing. The oscillators run straight through, so their phase relationship at note-on is whatever it happens to be — free running |
 | 1 | OSC1 and OSC2 are stopped and restarted together, with no offset |
 | 2..8 | The same restart, plus a fixed OSC2 offset of 45 to 315 degrees in 45 degree steps |
-| >8 | The same restart, with the offset in degrees being `oscSync * 2` |
+| >8 | The same restart, with the offset in degrees being `oscPhaseSync * 2` |
 
-When `oscSync >= 1`, `note_retrig_mode` selects how that restart loads period state (`PARAM_DEBUG_COMMAND` **26** / **27**, or `NOTE_RETRIG_MODE_DEFAULT` in `DCO.ino`):
+When `oscPhaseSync >= 1`, `note_retrig_mode` selects how that restart loads period state (`PARAM_DEBUG_COMMAND` **26** / **27**, or `NOTE_RETRIG_MODE_DEFAULT` in `DCO.ino`):
 
 | Mode | Value | Behavior |
 |------|------:|----------|
@@ -654,7 +654,7 @@ carrier has mixer inputs.
 | `osc_load_period_stopped(osc, y, clk_div)` | Push Y then `clk_div` (with FJOIN clear) | `start_voice_sms()`, `osc_set_reset_pulse()` | **SM must already be stopped.** |
 | `osc_load_periods_stopped_noclear(...)` | Dual-osc Y + clk_div, no FJOIN | Both engine note-on EXACT_Y paths | After frame put+pull (TX empty); caller disable/enable |
 | `osc_phase_align_hold_stopped(osc, x)` | Preload X, restore clk_div, `set pins, 0`, jmp `loop_final` | Both engine note-on EXACT_Y paths when deg ≠ 0 | **SM must already be stopped**; after noclear load |
-| `osc_set_reset_pulse(osc, y)` | Change only Y, restoring `osc_last_clk_div[osc]` | `apply_param_osc_sync_mode()` | Stops and restarts the SM itself; parameter path, not audio path |
+| `osc_set_reset_pulse(osc, y)` | Change only Y, restoring `osc_last_clk_div[osc]` | `apply_PARAM_PHASE_ALIGN()` | Stops and restarts the SM itself; parameter path, not audio path |
 | `pio_topology_report()` | Print sync roles and verify each RESET pin’s function select matches `VOICE_TO_PIO[]` | Bench / diagnostics | Serial up |
 | `pio_period_probe(osc, clk_div)` | Park an oscillator at a fixed divider and print the predicted period | Bench | Disturbs the oscillator |
 | `pio_solve_period_model(...)` | Back-solve weight and overhead from two frequency readings | Bench | Two distinct dividers, same Y |

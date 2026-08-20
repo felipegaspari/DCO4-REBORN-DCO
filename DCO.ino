@@ -73,7 +73,7 @@
 #endif
 #endif
 
-// Note-on sync retrigger (oscSync >= 1): 0 = EXACT_Y (Y load + phase hold), 1 = SYNC_JMP
+// Note-on sync retrigger (oscPhaseSync >= 1): 0 = EXACT_Y (Y load + phase hold), 1 = SYNC_JMP
 // (restart jmp only; degree offsets need EXACT_Y). Runtime: cmds 26/27.
 #ifndef NOTE_RETRIG_MODE_DEFAULT
 #define NOTE_RETRIG_MODE_DEFAULT 0

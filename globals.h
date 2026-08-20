@@ -105,7 +105,7 @@ volatile uint8_t STACK_VOICES = 1;
 
 volatile uint8_t voiceMode = 1;
 uint8_t syncMode = 0;
-volatile uint8_t oscSync = 0;
+volatile uint8_t oscPhaseSync = 0;
 
 bool pulseWaveOn = false;
 
@@ -113,7 +113,6 @@ bool pulseWaveOn = false;
 // instance in voice_alloc_state.h; VoiceAllocMode comes from the shared library.
 
 volatile uint16_t phaseAlignOSC2 = 0;
-// (removed) phaseAlignScale_Q16; use direct computation at call-site
 
 uint8_t unisonDetune = 0;
 uint8_t analogDrift = 0;
@@ -335,7 +334,7 @@ uint32_t osc_last_clk_div[NUM_OSCILLATORS] = { 200, 200, 200, 200, 200, 200, 200
 // Only one poll program image is resident at a time; changing 1..3 reloads it.
 uint8_t softSyncChunks = 0;
 
-// Note-on OSC1/OSC2 restart when oscSync >= 1 (A/B listen + profiler).
+// Note-on OSC1/OSC2 restart when oscPhaseSync >= 1 (A/B listen + profiler).
 // 0 EXACT_Y: disable + period_split + load Y + jmp + enable_in_sync (default).
 // 1 SYNC_JMP: jmp only on running SMs (keep last Y; no disable / enable_in_sync).
 #ifndef NOTE_RETRIG_MODE_DEFAULT
