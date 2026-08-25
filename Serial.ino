@@ -47,26 +47,36 @@ void serial_send_screen_signal_to_mb(uint8_t signal) {
   serial_frame_write(Serial2Dma, CMD_SCREEN_SIGNAL, &signal, SERIAL_LEN_SCREEN_SIGNAL);
 }
 
+// =============================================================================
+// Preset Senders to Mainboard / Screen
+// =============================================================================
+
+/**
+ * @brief Sends the 16-character ASCII name for a slot to the Mainboard ('q').
+ * @param slot Preset slot index (0..255).
+ */
+ void serial_send_preset_scroll_to_mb(uint8_t slot) {
+  uint8_t payload[SERIAL_LEN_SCREEN_PRESET_SCROLL]; // 17 bytes total
+  payload[0] = slot;                                // Byte 0 = Preset Number
+  
+  // If a valid preset exists in RAM for this slot, copy its 16-character name
+  if (slot < PRESET_RAM_SLOTS && presetStoreRAM[slot][PRESET_OFF_MAGIC] == PRESET_MAGIC) {
+    memcpy(payload + 1, &presetStoreRAM[slot][PRESET_OFF_NAME], 16);
+  } else {
+    // Empty preset slot - fill name with 16 space characters (0x20)
+    memset(payload + 1, ' ', 16);
+  }
+  
+  // Transmit 17 bytes [slot][name:16] across Serial2 to Mainboard
+  serial_frame_write(Serial2Dma, (uint8_t)CMD_PRESET_NAME, payload, SERIAL_LEN_SCREEN_PRESET_SCROLL);
+}
+/**
+ * @brief Sends the active preset slot number to the Mainboard ('L').
+ * @param slot Preset slot index (0..255).
+ */
 void serial_send_preset_loaded_to_mb(uint8_t slot) {
   uint8_t payload[SERIAL_LEN_PRESET_LOADED] = { slot };
   serial_frame_write(Serial2Dma, CMD_PRESET_LOADED, payload, SERIAL_LEN_PRESET_LOADED);
-}
-
-void serial_send_preset_scroll_to_mb(uint8_t slot) {
-  uint8_t payload[SERIAL_LEN_SCREEN_PRESET_SCROLL];
-  payload[0] = slot;
-  
-  // Check if there is a valid preset in RAM for this slot
-  if (presetStoreRAM[slot][PRESET_OFF_MAGIC] == PRESET_MAGIC) {
-    for (uint8_t i = 0; i < 16; ++i) {
-      payload[1 + i] = presetStoreRAM[slot][PRESET_OFF_NAME + i];
-    }
-  } else {
-    // Empty preset slot - send 16 blank characters
-    memset(payload + 1, 0, 16);
-  }
-  
-  serial_frame_write(Serial2Dma, (uint8_t)CMD_PRESET_NAME, payload, SERIAL_LEN_SCREEN_PRESET_SCROLL);
 }
 
 // =============================================================================
@@ -311,8 +321,18 @@ static void __not_in_flash_func(dco_rx_handle_param16)(char, const uint8_t* payl
   }
 }
 
-static void __not_in_flash_func(dco_rx_handle_preset_name)(char, const uint8_t* payload, uint8_t) {
+
+static void __not_in_flash_func(dco_rx_handle_preset_name)(char cmd, const uint8_t* payload, uint8_t len) {
+  // 1. Store 16-byte name in DCO local RAM
   for (int i = 0; i < 16; ++i) presetName[i] = payload[i];
+
+  // 2. Forward to Mainboard as 17-byte [slot][name:16] frame if originating from USB
+  if (g_param_ingress == PARAM_SRC_USB) {
+    uint8_t mb_payload[SERIAL_LEN_SCREEN_PRESET_SCROLL];
+    mb_payload[0] = (uint8_t)presetParamShadow[PARAM_UI_PRESET_SCROLL]; // Current active slot
+    memcpy(mb_payload + 1, presetName, 16);
+    serial_frame_write(Serial2Dma, (uint8_t)CMD_PRESET_NAME, mb_payload, SERIAL_LEN_SCREEN_PRESET_SCROLL);
+  }
 }
 
 static void __not_in_flash_func(dco_rx_handle_screen_signal)(char, const uint8_t* payload, uint8_t) {
