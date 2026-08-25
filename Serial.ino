@@ -93,11 +93,13 @@ void __not_in_flash_func(serial_send_patch_osc_block_to_mb)() {
   blk.osc2_interval       = (int8_t)presetParamShadow[PARAM_OSC2_INTERVAL];
   blk.osc3_interval       = (int8_t)presetParamShadow[PARAM_OSC3_INTERVAL];
   blk.osc2_detune         = (uint16_t)presetParamShadow[PARAM_OSC2_DETUNE_VAL];
+  blk.osc3_detune         = (uint16_t)presetParamShadow[PARAM_OSC3_DETUNE_VAL];
   blk.unison_detune       = (int16_t)presetParamShadow[PARAM_UNISON_DETUNE];
   blk.voice_mode          = (uint8_t)presetParamShadow[PARAM_VOICE_MODE];
   blk.voice_alloc_mode    = (uint8_t)presetParamShadow[PARAM_VOICE_ALLOC_MODE];
   blk.sync_mode           = (uint8_t)presetParamShadow[PARAM_SYNC_MODE];
   blk.soft_sync           = (uint8_t)presetParamShadow[PARAM_SOFT_SYNC];
+  blk.osc_phase_sync      = (uint16_t)presetParamShadow[PARAM_OSC_PHASE_SYNC];
   blk.subosc_divide       = (uint8_t)presetParamShadow[PARAM_SUBOSC_DIVIDE];
   blk.analog_drift        = (int8_t)presetParamShadow[PARAM_ANALOG_DRIFT_AMOUNT];
   blk.analog_drift_speed  = (int16_t)presetParamShadow[PARAM_ANALOG_DRIFT_SPEED];
@@ -115,8 +117,10 @@ void __not_in_flash_func(serial_send_patch_lfo_block_to_mb)() {
 
   blk.lfo1_waveform       = (uint8_t)presetParamShadow[PARAM_LFO1_WAVEFORM];
   blk.lfo2_waveform       = (uint8_t)presetParamShadow[PARAM_LFO2_WAVEFORM];
+  blk.lfo3_waveform       = (uint8_t)presetParamShadow[PARAM_LFO3_WAVEFORM];
   blk.lfo1_speed          = (uint16_t)presetParamShadow[PARAM_LFO1_SPEED];
   blk.lfo2_speed          = (uint16_t)presetParamShadow[PARAM_LFO2_SPEED];
+  blk.lfo3_speed          = (uint16_t)presetParamShadow[PARAM_LFO3_SPEED];
   blk.lfo1_to_dco         = (uint16_t)presetParamShadow[PARAM_LFO1_TO_DCO];
   blk.lfo1_to_osc1        = (uint8_t)presetParamShadow[PARAM_LFO1_TO_OSC1];
   blk.lfo1_to_osc2        = (uint8_t)presetParamShadow[PARAM_LFO1_TO_OSC2];
@@ -131,7 +135,7 @@ void __not_in_flash_func(serial_send_patch_lfo_block_to_mb)() {
   blk.adsr1_to_vca        = (int16_t)presetParamShadow[PARAM_ADSR1_TO_VCA];
   blk.adsr3_to_pwm        = (int16_t)presetParamShadow[PARAM_ADSR3_TO_PWM];
   blk.adsr3_to_detune1    = (int16_t)presetParamShadow[PARAM_ADSR3_TO_DETUNE1];
-  blk.adsr3_pitch_mode    = (uint8_t)presetParamShadow[PARAM_ADSR3_PITCH_MODE];
+  blk.adsr3_mode          = (uint8_t)presetParamShadow[PARAM_ADSR3_MODE];
   blk.adsr3_to_osc_select = (int8_t)presetParamShadow[PARAM_ADSR3_TO_OSC_SELECT];
 
   serial_frame_write(Serial2Dma, CMD_BLOCK_LFO, (const uint8_t*)&blk, SERIAL_LEN_BLOCK_LFO);
@@ -166,15 +170,17 @@ void __not_in_flash_func(serial_send_patch_mix_block_to_mb)() {
   blk.adsr3_attack_curve  = (uint8_t)presetParamShadow[PARAM_ADSR3_ATTACK_CURVE];
   blk.adsr3_decay_curve   = (uint8_t)presetParamShadow[PARAM_ADSR3_DECAY_CURVE];
   blk.adsr3_release_curve = (uint8_t)presetParamShadow[PARAM_ADSR3_RELEASE_CURVE];
+  blk.adsr2_mode          = (uint8_t)presetParamShadow[PARAM_ADSR2_MODE];
+  blk.adsr1_mode          = (uint8_t)presetParamShadow[PARAM_ADSR1_MODE];
 
   blk.vcf_trigger_mode    = (uint8_t)presetParamShadow[PARAM_VCF_TRIGGER_MODE];
 
   // Pack boolean switches
   uint8_t flags = 0;
   if (presetParamShadow[PARAM_RESONANCE_COMPENSATION]) flags |= (1 << 0);
-  if (presetParamShadow[PARAM_VCA_ADSR_RESTART])       flags |= (1 << 1);
-  if (presetParamShadow[PARAM_VCF_ADSR_RESTART])       flags |= (1 << 2);
-  if (presetParamShadow[PARAM_ADSR3_ENABLED])          flags |= (1 << 3);
+  if (presetParamShadow[PARAM_ADSR1_RESTART])       flags |= (1 << 1);
+  if (presetParamShadow[PARAM_ADSR2_RESTART])       flags |= (1 << 2);
+  if (presetParamShadow[PARAM_ADSR3_RESTART])          flags |= (1 << 3);
   blk.misc_flags = flags;
 
   serial_frame_write(Serial2Dma, CMD_BLOCK_MIX, (const uint8_t*)&blk, SERIAL_LEN_BLOCK_MIX);
@@ -374,7 +380,10 @@ static void __not_in_flash_func(mb_handle_mod_stream)(char, const uint8_t* paylo
   for (uint8_t i = 0; i < 4 && i < NUM_VOICES_TOTAL; i++) {
     ADSR3Level_q15[i] = (int16_t)decode_u16_le(payload + 4 + i * 2);
   }
-  matrix_pitch_mod_q24 = (int32_t)decode_u32_le(payload + 12);
+  int32_t mb_pitch_mod = (int32_t)decode_u32_le(payload + 12);
+  for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
+    matrix_pitch_mod_q24[v] = mb_pitch_mod;
+  }
 #ifdef ENABLE_MB_MOD_STREAM
   if (LFO1toOSC1_q24 == 0 && LFO1toOSC2_q24 == 0 && LFO1toOSC3_q24 == 0) {
     const int32_t m = applyDepthQ24(LFO1Level, LFO1toDCO_q24);

@@ -19,29 +19,29 @@ void init_usb();
 void serial_panel_task();
 
 #ifdef ENABLE_USB_CONTROL
-void serial_usb_task();
+void SRAM_HOT(serial_usb_task)();
 #endif
 
-void __not_in_flash_func(serialSendParam32)(byte paramNumber, uint32_t paramValue, bool force = false);
-void __not_in_flash_func(serialSendParam16)(byte paramNumber, int16_t paramValue, bool force = false);
-void __not_in_flash_func(serial_echo_persistable_param16)(uint8_t id, int16_t value);
+void SRAM_HOT(serialSendParam32)(byte paramNumber, uint32_t paramValue, bool force = false);
+void SRAM_HOT(serialSendParam16)(byte paramNumber, int16_t paramValue, bool force = false);
+void SRAM_HOT(serial_echo_persistable_param16)(uint8_t id, int16_t value);
 
-void __not_in_flash_func(serial_send_adsr_vca_block_to_mb)();
-void __not_in_flash_func(serial_send_adsr_vcf_block_to_mb)();
-void __not_in_flash_func(serial_send_adsr_dco_block_to_mb)();
-void __not_in_flash_func(serial_send_filter_block_to_mb)();
+void SRAM_HOT(serial_send_adsr_vca_block_to_mb)();
+void SRAM_HOT(serial_send_adsr_vcf_block_to_mb)();
+void SRAM_HOT(serial_send_adsr_dco_block_to_mb)();
+void SRAM_HOT(serial_send_filter_block_to_mb)();
 
-void __not_in_flash_func(serial_send_preset_loaded_to_mb)(uint8_t slot);
-void __not_in_flash_func(serial_send_preset_scroll_to_mb)(uint8_t slot);
-void __not_in_flash_func(serial_send_screen_signal_to_mb)(uint8_t signal);
+void SRAM_HOT(serial_send_preset_loaded_to_mb)(uint8_t slot);
+void SRAM_HOT(serial_send_preset_scroll_to_mb)(uint8_t slot);
+void SRAM_HOT(serial_send_screen_signal_to_mb)(uint8_t signal);
 
-void __not_in_flash_func(serial_send_note_on)(uint8_t voice, uint8_t velocity, uint8_t note, uint8_t flags);
-void __not_in_flash_func(serial_send_note_off)(uint8_t voice);
-void __not_in_flash_func(serial_send_expression)();
+void SRAM_HOT(serial_send_note_on)(uint8_t voice, uint8_t velocity, uint8_t note, uint8_t flags);
+void SRAM_HOT(serial_send_note_off)(uint8_t voice);
+void SRAM_HOT(serial_send_expression)();
 void mb_bench_text_drain();
 
-void __not_in_flash_func(serial_send_patch_osc_block_to_mb)();
-void __not_in_flash_func(serial_send_patch_lfo_block_to_mb)();
-void __not_in_flash_func(serial_send_patch_mod_block_to_mb)();
+void SRAM_HOT(serial_send_patch_osc_block_to_mb)();
+void SRAM_HOT(serial_send_patch_lfo_block_to_mb)();
+void SRAM_HOT(serial_send_patch_mod_block_to_mb)();
 
 #endif

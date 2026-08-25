@@ -41,12 +41,17 @@ enum Lfo2PitchSlot : uint8_t {
 //       amt = expConverterFloat(panel) / 275000  (octave-fraction unit)
 // Larger SCALE → deeper mod at the same panel setting.
 // =============================================================================
+/**
+ * @brief LFO1 -> Pitch Depth Scale (Full knob = +/-1.0 Octave / 12 Semitones).
+ * @details 67200 * (4095 / 275000) * (1 << 24) = 1.0 * (1 << 24) in Q24.
+ */
+static constexpr int32_t LFO1_PITCH_DEPTH_SCALE = 67200;
 
-// LFO1 → pitch (LFO1toDCO + per-osc). Also used for LFO2 coarse (same travel as LFO1).
-static constexpr int32_t LFO1_PITCH_DEPTH_SCALE = 1700;
-
-// LFO2 → fine pitch (OSC2 / OSC3).
-static constexpr int32_t LFO2_PITCH_DEPTH_SCALE = 512;
+/**
+ * @brief LFO2 -> Fine Pitch Depth Scale (Full knob = +/-2.0 Semitones).
+ * @details 11200 * (4095 / 275000) * (1 << 24) = (2 / 12) * (1 << 24) in Q24.
+ */
+ static constexpr int32_t LFO2_PITCH_DEPTH_SCALE = 11200;
 
 // EnvDCO (ADSR3) → pitch. Tune max travel here (docs/LFO.md).
 // Full env × full |PARAM_ADSR3_TO_DETUNE1| (511) → this many octaves in Q24
@@ -55,21 +60,27 @@ static constexpr int32_t LFO2_PITCH_DEPTH_SCALE = 512;
 // Mid-knob is quieter than the old linear /1080000 bake; env is linear Q15 (no linToLog).
 static constexpr float ADSR_PITCH_MAX_OCTAVES = 2.0f;
 static constexpr uint16_t ADSR_PITCH_DEPTH_PANEL_FULL = 511;
-
-// Analog drift → pitch:
-//   drift_pitch_scale_q24 = analogDrift * DRIFT_PITCH_UNIT_Q24 * DRIFT_PITCH_DEPTH_SCALE
-// Hot: (LFO_DRIFT_LEVEL_q15 * drift_pitch_scale_q24) >> 15
 static constexpr int32_t DRIFT_PITCH_DEPTH_SCALE = 1000;
 static constexpr int32_t DRIFT_PITCH_UNIT_Q24 =
-  (int32_t)(0.0000005f * (float)(1 << 24) + 0.5f);
+   (int32_t)(0.0000005f * (float)(1 << 24) + 0.5f);
 
-static inline int32_t __not_in_flash_func(lfo_pitch_depth_q24)(float amt, int32_t depth_scale) {
+/**
+ * @brief Converts an exponential depth fraction to a Q24 pitch modifier.
+ * @param amt         Exponential normalized curve amount (0.0 .. 0.01489).
+ * @param depth_scale Calibrated integer scale multiplier.
+ * @return Signed Q24 fixed-point pitch modifier.
+ */
+ static inline int32_t SRAM_HOT(lfo_pitch_depth_q24)(float amt, int32_t depth_scale) {
   return (int32_t)(amt * (float)depth_scale * (float)(1 << 24) + 0.5f);
-}
-
-// Synth-side helper (not mo-lfo): mod_q24 = (wave_q15 * depth_q24) >> 15.
-// 32-bit split avoids int64 mul on Cortex-M0+.
-static inline int32_t __not_in_flash_func(applyDepthQ24)(int16_t wave_q15, int32_t depth_q24) {
+ }
+ 
+/**
+ * @brief Applies a Q15 waveform level to a Q24 modulation depth.
+ * @param wave_q15  Bipolar waveform value (-32768..32767).
+ * @param depth_q24 Modulation depth in Q24.
+ * @return Scaled Q24 modulation output.
+ */
+ static inline int32_t SRAM_HOT(applyDepthQ24)(int16_t wave_q15, int32_t depth_q24) {
   const int32_t w = (int32_t)wave_q15;
   const int32_t hi = depth_q24 >> 15;
   const int32_t lo = depth_q24 - (hi << 15);
@@ -86,6 +97,7 @@ int32_t drift_pitch_scale_q24 = 0;
 
 lfo LFO1_class(LFO_DAC_SIZE_UNUSED);
 lfo LFO2_class(LFO_DAC_SIZE_UNUSED);
+lfo LFO3_class(LFO_DAC_SIZE_UNUSED);
 
 lfo LFO_DRIFT_CLASS[NUM_OSCILLATORS] = {
   lfo(LFO_DAC_SIZE_UNUSED),
@@ -140,6 +152,7 @@ uint16_t LFO1toDCOVal;
 
 void LFO1();
 void LFO2();
+void LFO3();
 void DRIFT_LFOs();
 
 

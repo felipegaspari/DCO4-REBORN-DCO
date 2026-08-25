@@ -177,6 +177,9 @@
 // Dump window (1 s gate) always uses bench_us_now(). BENCH_PERIOD_MAX_US: discard PERIOD
 // samples longer than this (autotune / wrap-looking stalls).
 
+#define BENCHMARKING_ENABLED
+
+#ifdef BENCHMARKING_ENABLED
 #define RUNNING_AVERAGE
 // #define RUNNING_AVERAGE_FINE
  #define RUNNING_AVERAGE_PERIOD
@@ -203,6 +206,7 @@
 #ifdef AMP_COMP_BENCHMARK
 #define USE_FLOAT_AMP_COMP
 #endif
+#endif 
 // =============================================================================
 // BOARD / IO
 // =============================================================================
@@ -281,10 +285,19 @@
 // #define REMEMBER_LAST_PRESET
 
 
+////////////////////////////////////////////////
+//==========================
+// MOVE THINGS TO RAM TO MAKE IT FASTER:
+#define SRAM_HOT_ENABLE 1
+#define SRAM_DATA_ENABLE 1
+//============================================
+
 #include <Adafruit_TinyUSB.h>
 #include <MIDI.h>
 #include <stdint.h>
 #include <math.h>
+
+#include "_shared/memory_port.h"
 
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
@@ -295,10 +308,9 @@
 
 // 1. Protocol & Framework Libraries
 #include "_build_libs/DCO-PROTOCOL/params_def.h"
-#include "_build_libs/DCO-PROTOCOL/serial_param_protocol.h"
 #include "_build_libs/DCO-PROTOCOL/param_router.h"
 
-#include "_build_libs/DCO-PROTOCOL/serial_input_protocol.h"
+#include "_build_libs/DCO-PROTOCOL/serial_param_protocol.h"
 #include "_build_libs/DCO-PROTOCOL/serial_frame.h"
 #include "_build_libs/DCO-PROTOCOL/serial_parser.h"
 
@@ -357,7 +369,12 @@ void setup() {
   init_LFOs();
   init_DRIFT_LFOs();
 
-
+  #ifdef REMEMBER_LAST_PRESET
+  // One-shot recall of the last saved/loaded preset once both cores are up.
+  preset_store_boot_task();
+  // One chunk of a pending 'N' directory push, paced for the Mainboard relay.
+  preset_store_dir_push_task();
+#endif
 
 
   pinMode(DCO_calibration_pin, INPUT);
@@ -403,7 +420,7 @@ void setup1() {
 }
 
 // Core 0 forever loop: MIDI every iter; Serial2 + USB CDC on 1 ms; ~50 µs LFO1 + LFO2 + drift.
-void __not_in_flash_func(loop)() {
+void SRAM_HOT(loop)() {
   BENCH_PERIOD(loop0_period);
   BENCH_SAMPLE_TICK();
 
@@ -440,16 +457,15 @@ void __not_in_flash_func(loop)() {
       serial_usb_task();
 #endif
 
-#ifdef REMEMBER_LAST_PRESET
-      // One-shot recall of the last saved/loaded preset once both cores are up.
-      preset_store_boot_task();
-      // One chunk of a pending 'N' directory push, paced for the Mainboard relay.
-#endif
       preset_store_dir_push_task();
     }
     BENCH_END(loop0_serial);
   }
 
+  if (timer5msFlag2 == 1) {
+    ADSR_set_parameters();
+  }
+ 
     BENCH_BEGIN(loop0_lfo1);
     LFO1();
     BENCH_END(loop0_lfo1);
@@ -460,12 +476,9 @@ void __not_in_flash_func(loop)() {
 
 
   if (timer50microsFlag == 1) {
-#ifndef ENABLE_MB_MOD_STREAM
-
     BENCH_BEGIN(loop1_cv_outs);
     update_CV_outs();
     BENCH_END(loop1_cv_outs);
-#endif
   }
   if (timer51microsFlag == 1) {
     BENCH_BEGIN(loop0_drift);
@@ -499,7 +512,7 @@ void __not_in_flash_func(loop)() {
 }
 
 // Core 1 forever loop: soft timers; auto/manual calibration OR ADSR + voice_task_main.
-void __not_in_flash_func(loop1)() {
+void SRAM_HOT(loop1)() {
   BENCH_PERIOD(loop1_period);
   BENCH_SAMPLE_TICK();
 
@@ -518,10 +531,6 @@ void __not_in_flash_func(loop1)() {
   }
 
   pio_defer_service();
-
-  if (timer5msFlag2 == 1) {
-    ADSR_set_parameters();
-  }
 
   if (timer50microsFlag2 == 1) {
     // BENCH_BEGIN(loop1_cv_outs);

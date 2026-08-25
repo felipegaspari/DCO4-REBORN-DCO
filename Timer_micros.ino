@@ -34,7 +34,7 @@ void init_micros_timers() {
 }
 
 // Core 0 — unrolled µs timers. Called every loop().
-void __not_in_flash_func(microsTimer)() {
+void SRAM_HOT(microsTimer)() {
   const unsigned long now = micros();
 
   timer49microsFlag = 0;  if (now - timer49micros > kTimer49us) { timer49micros = now; timer49microsFlag = 1; }
@@ -55,7 +55,7 @@ void __not_in_flash_func(microsTimer)() {
 }
 
 // Core 1 — same periods, separate state (*2). Called every loop1().
-void __not_in_flash_func(microsTimer2)() {
+void SRAM_HOT(microsTimer2)() {
   const unsigned long now = micros();
 
   timer50microsFlag2 = 0;  if (now - timer50micros2 > kTimer50us) { timer50micros2 = now; timer50microsFlag2 = 1; }

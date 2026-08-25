@@ -7,8 +7,8 @@ int16_t presetParamShadow[PRESET_PARAM_COUNT];
 uint8_t presetParamSetBitmap[PRESET_PARAM_COUNT / 8];
 bool presetBootPending = true;
 
-// --- FULL 153 KB IN-RAM PRESET STORE ---
-uint8_t presetStoreRAM[PRESET_NUM_SLOTS][PRESET_RECORD_SIZE];
+// --- IN-RAM PRESET STORE ---
+uint8_t presetStoreRAM[PRESET_RAM_SLOTS][PRESET_RECORD_SIZE];
 static uint8_t presetBulkStaging[PRESET_BULK_STAGING_SIZE];
 
 static void preset_chunk_filename(uint8_t chunkIndex, char* out, size_t cap) {
@@ -37,13 +37,16 @@ static const char* preset_bulk_target_name(uint8_t target) {
 }
 
 // 256-bit (32 byte) bitmap tracking validated RAM slots
-static uint32_t presetSlotValidBitmap[PRESET_NUM_SLOTS / 32];
+// Bitmap tracking validated RAM slots
+static uint32_t presetSlotValidBitmap[PRESET_RAM_SLOTS / 32];
 
 static inline bool preset_is_slot_valid(uint8_t slot) {
+  if (slot >= PRESET_RAM_SLOTS) return false;
   return (presetSlotValidBitmap[slot >> 5] & (1u << (slot & 31u))) != 0;
 }
 
 static inline void preset_set_slot_valid(uint8_t slot, bool valid) {
+  if (slot >= PRESET_RAM_SLOTS) return;
   if (valid) {
     presetSlotValidBitmap[slot >> 5] |= (1u << (slot & 31u));
   } else {
@@ -69,12 +72,13 @@ void preset_store_deferred_task() {
 }
 
 // --- One-Time Boot Loader (Loads all 153 KB into RAM) ---
+// --- One-Time Boot Loader ---
 void preset_store_init_ram() {
   memset(presetStoreRAM, 0, sizeof(presetStoreRAM));
   memset(presetSlotValidBitmap, 0, sizeof(presetSlotValidBitmap));
   char fname[8];
 
-  for (uint8_t chunk = 0; chunk < PRESET_CHUNK_COUNT; ++chunk) {
+  for (uint8_t chunk = 0; chunk < PRESET_RAM_CHUNK_COUNT; ++chunk) {
     preset_chunk_filename(chunk, fname, sizeof(fname));
     if (!LittleFS.exists(fname)) continue;
     File f = LittleFS.open(fname, "r");
@@ -294,6 +298,7 @@ static bool preset_chunk_write_record(uint8_t slot, const uint8_t* record, const
 // --- Public API ---
 
 void preset_store_save(uint8_t slot) {
+  if (slot >= PRESET_RAM_SLOTS) return;
   preset_record_build(presetStoreRAM[slot]);
   if (!preset_chunk_write_record(slot, presetStoreRAM[slot], "preset")) return;
   preset_set_slot_valid(slot, true);
@@ -302,7 +307,7 @@ void preset_store_save(uint8_t slot) {
 }
 
 bool __not_in_flash_func(preset_store_load)(uint8_t slot) {
-  if (slot >= PRESET_NUM_SLOTS) return false;
+  if (slot >= PRESET_RAM_SLOTS) return false;
 
   const bool isValid = preset_is_slot_valid(slot);
   const uint8_t* record = presetStoreRAM[slot];
@@ -341,7 +346,8 @@ void preset_store_dir_push_task() {
     const uint8_t slot = (uint8_t)((chunk << 2) | i);
     entry[0] = slot;
     
-    if (presetStoreRAM[slot][PRESET_OFF_MAGIC] == PRESET_MAGIC) {
+    // Slots in RAM report their stored name; slots above PRESET_RAM_SLOTS report empty
+    if (slot < PRESET_RAM_SLOTS && presetStoreRAM[slot][PRESET_OFF_MAGIC] == PRESET_MAGIC) {
       memcpy(entry + 1, &presetStoreRAM[slot][PRESET_OFF_NAME], PRESET_NAME_LEN);
     } else {
       memset(entry + 1, 0, PRESET_NAME_LEN);
@@ -355,7 +361,7 @@ void preset_store_dump(int16_t sel) {
   if (sel < 0) {
     Serial.println("[pdir] begin");
     uint16_t count = 0;
-    for (uint16_t slot = 0; slot < PRESET_NUM_SLOTS; ++slot) {
+    for (uint16_t slot = 0; slot < PRESET_RAM_SLOTS; ++slot) {
       if (presetStoreRAM[slot][PRESET_OFF_MAGIC] == PRESET_MAGIC) {
         char name[PRESET_NAME_LEN + 1];
         memcpy(name, &presetStoreRAM[slot][PRESET_OFF_NAME], PRESET_NAME_LEN);
@@ -368,7 +374,7 @@ void preset_store_dump(int16_t sel) {
     return;
   }
 
-  if (sel >= (int16_t)PRESET_NUM_SLOTS) return;
+  if (sel >= (int16_t)PRESET_RAM_SLOTS) return;
   if (presetStoreRAM[sel][PRESET_OFF_MAGIC] != PRESET_MAGIC) {
     dump_print_err("preset", "empty");
     return;
@@ -407,6 +413,7 @@ void preset_bulk_commit(const uint8_t* payload, uint8_t len) {
   if (preset_crc32(presetBulkStaging, size) != crc) return;
 
   if (target == PRESET_BULK_PRESET) {
+    if (slot >= PRESET_RAM_SLOTS) return;
     if (!preset_record_validate(presetBulkStaging)) return;
     memcpy(presetStoreRAM[slot], presetBulkStaging, PRESET_RECORD_SIZE);
     if (!preset_chunk_write_record(slot, presetStoreRAM[slot], "bulk")) return;

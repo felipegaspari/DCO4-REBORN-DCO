@@ -11,6 +11,9 @@
  #include <stddef.h>
  #include "_build_libs/DCO-PROTOCOL/params_def.h"
  #include "_build_libs/DCO-PROTOCOL/serial_input_protocol.h"
+
+ uint8_t presetName[PRESET_NAME_LEN] = { 32, 32, 32, 32, 32, 32, 32, 32,
+                               32, 32, 32, 32, 32, 32, 32, 32 };
  
  // PRESET_NUM_SLOTS (256) and PRESET_NAME_LEN (16) come from serial_input_protocol.h
  static constexpr uint8_t  PRESET_RECORDS_PER_FILE  = 4;
@@ -18,7 +21,21 @@
  static constexpr uint8_t  PRESET_MAGIC             = 0xA5;
  static constexpr uint8_t  PRESET_VERSION           = 1;
  
- // Record layout (all little-endian). CRC32 covers bytes [0 .. PRESET_OFF_CRC).
+ // Sizing: RP2040 (264 KB RAM) caches 128 presets in RAM (75 KB).
+// RP2350 (520 KB RAM) caches all 256 presets in RAM (150 KB).
+#if defined(PICO_RP2350) && PICO_RP2350
+static constexpr uint16_t PRESET_RAM_SLOTS = 256;
+#elif defined(PICO_RP2040) && PICO_RP2040
+static constexpr uint16_t PRESET_RAM_SLOTS = 128;
+#elif defined(__ARM_ARCH_6M__) // Cortex-M0+ (RP2040)
+static constexpr uint16_t PRESET_RAM_SLOTS = 128;
+#else
+static constexpr uint16_t PRESET_RAM_SLOTS = 256;
+#endif
+
+static constexpr uint8_t PRESET_RAM_CHUNK_COUNT = PRESET_RAM_SLOTS / PRESET_RECORDS_PER_FILE; // 32 on RP2040, 64 on RP2350
+
+// Record layout (all little-endian). CRC32 covers bytes [0 .. PRESET_OFF_CRC).
  static constexpr uint16_t PRESET_PARAM_COUNT  = 256;  
  static constexpr uint8_t  PRESET_BLOCK_FIELDS = 16;   
  static constexpr uint16_t PRESET_OFF_MAGIC   = 0;
@@ -56,10 +73,10 @@
  static constexpr int16_t CAL_DUMP_AMP_COMP_440      = 6;
  static constexpr int16_t CAL_DUMP_AMP_COMP_DUTY     = 7;
  
- // --- Live patch shadow & Full 153 KB In-RAM Preset Bank ---
- extern int16_t presetParamShadow[PRESET_PARAM_COUNT];
- extern uint8_t presetParamSetBitmap[PRESET_PARAM_COUNT / 8];
- extern uint8_t presetStoreRAM[PRESET_NUM_SLOTS][PRESET_RECORD_SIZE]; // 153,088 bytes
+// --- Live patch shadow & In-RAM Preset Bank ---
+extern int16_t presetParamShadow[PRESET_PARAM_COUNT];
+extern uint8_t presetParamSetBitmap[PRESET_PARAM_COUNT / 8];
+extern uint8_t presetStoreRAM[PRESET_RAM_SLOTS][PRESET_RECORD_SIZE]; // 76,544 B on RP2040 / 153,088 B on RP2350
  
  extern bool presetBootPending;
  static constexpr uint32_t PRESET_BOOT_RECALL_MS = 1500;

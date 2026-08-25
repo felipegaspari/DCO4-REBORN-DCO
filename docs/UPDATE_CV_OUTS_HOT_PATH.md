@@ -129,7 +129,7 @@ vca_pre = env_u12 + LFO1_current
 if velocityToVCAVal == 0:
   vca_vel_q15 = 32768
 else:
-  vca_vel_q15 = max(0, 32768 - velocityToVCA_q15 * (127 - midi_velocity[i]))
+  vca_vel_q15 = max(0, 32768 - velocityToVCA_q15 * (127 - velocity[i]))
 
 VCA_Calculated = clamp_u12( (vca_pre * vca_vel_q15) >> 15 )
 
@@ -145,7 +145,7 @@ VCA_PWM[i] = lerp_0_4095(
 if velocityToVCFVal == 0:
   vcf_vel_q15 = 32768
 else:
-  vcf_vel_q15 = max(0, 32768 - velocityToVCF_q15 * (127 - midi_velocity[0]))
+  vcf_vel_q15 = max(0, 32768 - velocityToVCF_q15 * (127 - velocity[0]))
 
 combined0 = ADSR_mod  + LFO2_mod + CUTOFF + VCF_DRIFT[0] + matrix_cutoff
 combined1 = ADSR2_mod + LFO2_mod + CUTOFF + VCF_DRIFT[0] + matrix_cutoff

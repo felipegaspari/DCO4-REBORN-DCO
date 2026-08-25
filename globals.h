@@ -1,10 +1,10 @@
-#include <cstddef>
-#include "project_config.h"
-
-
 #ifndef __GLOBALS_H__
 #define __GLOBALS_H__
 
+#include <cstddef>
+#include <stdint.h>
+#include <stdbool.h>
+#include "project_config.h"
 
 
 // Voice / oscillator counts (4 MIDI voices × 2 analog DCOs).
@@ -292,17 +292,13 @@ void set_frequency(PIO pio, uint sm, float freq);
 float get_freq_from_midi_note(uint8_t note);
 void led_blinking_task();
 uint8_t voice_alloc();
-void voice_mark_on(uint8_t voice, uint8_t note, uint8_t velocity);
-void voice_mark_off(uint8_t voice);
+
 void usb_midi_task();
 void serial_midi_task();
 void note_on(uint8_t note, uint8_t velocity);
 void note_off(uint8_t note);
-void voice_task_fixed_point();
-void voice_task_float();
-void voice_task_main();
-void adc_task();
 
+void adc_task();
 
 // Free-running program + one soft-sync poll image per freq PIO block (pio0 and pio1).
 uint32_t pio_offset_free[2] = { 0, 0 };

@@ -35,6 +35,7 @@ void init_midi() {
   MIDI_SERIAL.turnThruOff();
 }
 
+uint8_t velocity[NUM_VOICES_TOTAL];
 
 // MIDI library callback → note_on(). Invoked from loop via MIDI_*.read().
 void handleNoteOn(byte channel, byte pitch, byte velocity) {
@@ -147,101 +148,154 @@ void handleAfterTouchChannel(byte channel, byte pressure) {
   serial_send_expression();
 }
 
-// Allocate voice(s) from MIDI note-on per voiceMode; notify Mainboard via 'n'.
-// Poly steal policy and mono note priority both come from the allocation mode.
-// Mono: stack push, then VOICE_NOTES/gate/note_on_flag + noteStart (porta + ADSR).
-void note_on(uint8_t note, uint8_t velocity) {
+/**
+ * @brief Allocates voice(s) upon receiving a MIDI Note-On event and dispatches to Mainboard.
+ * 
+ * Performance Modes (voiceMode):
+ *  - Mode 0 (MONO): 1 physical voice slot (Voice 0, DCO 0 & 1).
+ *  - Mode 1 (POLY): Dynamic allocation across all NUM_VOICES_TOTAL slots.
+ *  - Mode 2 (UNISON / STACK): All NUM_VOICES_TOTAL slots track the same note with detune.
+ * 
+ * Allocation Policies (alloc_mode = voiceAlloc.mode()):
+ *  - Mode 2 (LEGATO): If a key is already sounding, subsequent overlapping keys glide
+ *    to the new pitch WITHOUT retriggering ADSR envelopes (NOTE_FLAG_PORTA_ONLY).
+ *  - Other Modes: Multi-trigger re-attack on every key strike (NOTE_FLAG_RETRIGGER).
+ * 
+ * @param note        MIDI note number (0..127).
+ * @param velocity_in MIDI velocity (1..127).
+ */
+ void note_on(uint8_t note, uint8_t velocity_in) {
   const uint8_t alloc_mode = voiceAlloc.mode();
 
   switch (voiceMode) {
-    case 0: {
-      // push() denies the key under VOICE_ALLOC_NO_STEAL: while one is down the
-      // rest are ignored outright, so they do not take over later either. That
-      // is what separates mode 5 from first-note priority.
+    // =========================================================================
+    // MONOPHONE & UNISON MODES (Shared Held-Key Priority Stack)
+    // =========================================================================
+    case 0:  // MONO (1 voice)
+    case 2:  // STACK / UNISON (all 4 voices playing the same note)
+    {
+      // 1. Push note to the held-key stack.
+      // Returns false if VOICE_ALLOC_NO_STEAL denies adding a new key while held.
       if (!monoStack.push(note, alloc_mode)) return;
 
+      // 2. Determine which held key wins priority (Last, First, Low, High, etc.)
       const uint8_t winner = monoStack.pick(alloc_mode);
-      // A key that loses priority (first/low/high modes) is held but stays silent.
+
+      // If priority did not change (e.g. struck a lower key in High-Note priority), ignore
       if (winner == MONO_NOTE_NONE || winner == mono_sounding_note) return;
 
-      mod_matrix_on_note_on();
+      // 3. Legato Check:
+      // Active ONLY in Alloc Mode 2 when another key is already held/sounding.
+      const bool is_legato = (alloc_mode == 2) && (mono_sounding_note != MONO_NOTE_NONE);
       mono_sounding_note = winner;
-      voice_mark_on(0, winner, velocity);
-      serial_send_note_on(0, velocity, winner, NOTE_FLAG_RETRIGGER);
-      return;
+
+      // Number of voice slots to update (Mono = 1, Unison = all 4 voices)
+      const uint8_t count = (voiceMode == 0) ? 1 : NUM_VOICES_TOTAL;
+      const uint8_t note_flag = is_legato ? NOTE_FLAG_PORTA_ONLY : NOTE_FLAG_RETRIGGER;
+
+      for (uint8_t v = 0; v < count; v++) {
+        if (is_legato) {
+          // Pitch shift / glide only; keep ADSR envelopes in sustain/decay
+          voice_mark_regate(v, winner);
+        } else {
+          // Hard strike; restart ADSR envelopes and mod matrix triggers
+          voice_mark_on(v, winner, velocity_in);
+        }
+
+        // Notify Mainboard UART hub to gate/retrigger its analog CVs
+        serial_send_note_on(v, velocity_in, winner, note_flag);
+      }
+      break;
     }
 
-    case 1: {
-      // Same-note retrigger: reuse the voice already on this pitch rather than
-      // allocating a second one and stealing something else.
+    // =========================================================================
+    // POLYPHONIC MODE (Dynamic Voice Stealing & Allocation)
+    // =========================================================================
+    case 1:  // POLY
+    {
+      // 1. Same-Note Retrigger:
+      // If this note is already ringing in a voice slot, reuse it instead of stealing.
       const uint8_t held = voiceAlloc.findNote(note);
       if (held != VOICE_ALLOC_NONE) {
-        mod_matrix_on_note_on();
-        voice_mark_on(held, note, velocity);
-        serial_send_note_on(held, velocity, note, NOTE_FLAG_RETRIGGER);
+        voice_mark_on(held, note, velocity_in);
+        serial_send_note_on(held, velocity_in, note, NOTE_FLAG_RETRIGGER);
         return;
       }
 
+      // 2. Allocate a free or stolen voice per the active steal policy
       const uint8_t voice_num = voice_alloc();
-      if (voice_num == VOICE_ALLOC_NONE) return;  // VOICE_ALLOC_NO_STEAL: drop the note
+      if (voice_num == VOICE_ALLOC_NONE) return; // Dropped under NO_STEAL policy
 
-      mod_matrix_on_note_on();
-      voice_mark_on(voice_num, note, velocity);
-      serial_send_note_on(voice_num, velocity, note, NOTE_FLAG_RETRIGGER);
+      // 3. Mark voice active and notify Mainboard
+      voice_mark_on(voice_num, note, velocity_in);
+      serial_send_note_on(voice_num, velocity_in, note, NOTE_FLAG_RETRIGGER);
       break;
     }
-
-    case 2:
-      // Mode 2 stack: same note on all voice slots, so nothing to allocate.
-      mod_matrix_on_note_on();
-      for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
-        voice_mark_on((uint8_t)i, note, velocity);
-        serial_send_note_on((uint8_t)i, velocity, note, NOTE_FLAG_RETRIGGER);
-      }
-      break;
-
-    default:
-      return;
   }
+
+  // Reset global MIDI pitch bend tracking center on fresh key strikes
   last_midi_pitch_bend = 0;
 }
 
-// Release matching voice(s) on MIDI note-off; 'o' only when the voice actually gates off.
-// Mono: stack remove; empty → gate off; else fall back to the new priority winner
-// + note_on_flag (porta, no ADSR retrigger).
+/**
+ * @brief Handles MIDI Note-Off release events.
+ * 
+ *  - In Mono/Unison: Checks if other keys are still held. If so, glides/retriggers
+ *    back to the previous note. If no keys remain, gates the voices off.
+ *  - In Poly: Finds the active voice matching this note and gates it off into release.
+ * 
+ * @param note MIDI note number released (0..127).
+ */
 void note_off(uint8_t note) {
-  if (voiceMode == 0) {
-    if (!monoStack.remove(note)) {
-      return;  // note was not held
-    }
+  // ===========================================================================
+  // MONOPHONE & UNISON MODES
+  // ===========================================================================
+  if (voiceMode == 0 || voiceMode == 2) {
+    // Remove key from stack. Returns false if the released note wasn't in the stack.
+    if (!monoStack.remove(note)) return;
+
+    const uint8_t count = (voiceMode == 0) ? 1 : NUM_VOICES_TOTAL;
+
+    // CASE A: All keys released -> Gate off into the envelope release stage
     if (monoStack.empty()) {
-      // Keep VOICE_NOTES so voice_task holds last pitch through release.
       mono_sounding_note = MONO_NOTE_NONE;
-      voice_mark_off(0);
-      serial_send_note_off(0);
+      for (uint8_t v = 0; v < count; v++) {
+        voice_mark_off(v);
+        serial_send_note_off(v);
+      }
       return;
     }
-    const uint8_t winner = monoStack.pick(voiceAlloc.mode());
-    // Releasing a key that was never sounding leaves the gated pitch alone.
+
+    // CASE B: Other keys still held -> Fallback to next priority winner
+    const uint8_t alloc_mode = voiceAlloc.mode();
+    const uint8_t winner = monoStack.pick(alloc_mode);
+
+    // If releasing a key that wasn't currently sounding, do nothing to the active pitch
     if (winner == MONO_NOTE_NONE || winner == mono_sounding_note) return;
 
-    // Still holding other keys: sound the new winner; porta via note_on_flag only.
     mono_sounding_note = winner;
-    VOICE_NOTES[0] = winner;
-    VOICES[0] = 1;
-    voiceAlloc.regate(0, winner);
-    note_on_flag[0] = 1;
-    noteEnd[0] = 0;
-    serial_send_note_on(0, midi_velocity[0], winner, NOTE_FLAG_PORTA_ONLY);
+
+    // In Legato mode (2), fall back smoothly without re-attacking envelopes
+    const bool is_legato = (alloc_mode == 2);
+    const uint8_t note_flag = is_legato ? NOTE_FLAG_PORTA_ONLY : NOTE_FLAG_RETRIGGER;
+
+    for (uint8_t v = 0; v < count; v++) {
+      if (is_legato) {
+        voice_mark_regate(v, winner);
+      } else {
+        voice_mark_on(v, winner, velocity[0]);
+      }
+      serial_send_note_on(v, velocity[0], winner, note_flag);
+    }
     return;
   }
 
-  // Para/poly: scan full capacity so a release is not missed if NUM_VOICES shrank mid-note.
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++)
-  {
+  // ===========================================================================
+  // POLYPHONIC MODE
+  // ===========================================================================
+  // Scan all voice slots so no release is missed if NUM_VOICES was changed mid-note
+  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
     if (VOICE_NOTES[i] == note && VOICES[i] != 0) {
-      // Keep VOICE_NOTES so voice_task holds last pitch through release
-      // (portaTime==0 snaps portamento_cur_freq from VOICE_NOTES each frame).
       voice_mark_off((uint8_t)i);
       serial_send_note_off(i);
     }

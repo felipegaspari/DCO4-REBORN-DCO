@@ -59,8 +59,9 @@ extern uint16_t ADSR_VCF_decay;
 extern uint16_t ADSR_VCF_sustain;
 extern uint16_t ADSR_VCF_release;
 
-extern bool VCAADSRRestart;
-extern bool VCFADSRRestart;
+extern bool ADSR1Restart;
+extern bool ADSR2Restart;
+extern bool ADSR3Restart;
 
 // =================================================================
 // TRIGGER & LEVEL ARRAYS
@@ -102,25 +103,29 @@ extern uint16_t ADSRMinLevel;
 // ENV 3 (DCO) ROUTING VARIABLES
 // =================================================================
 extern int8_t ADSR3ToOscSelect; // 0=OSC1, 1=OSC2, 2=OSC1+2, 3=OSC3, 4=all
-extern uint8_t env_dco_pitch_centered;
 static constexpr int16_t ENV_DCO_PITCH_CENTER_Q15 = 16384;
 
-/** @brief Shifts unipolar EnvDCO tap to centered pitch domain if enabled. */
-static inline int16_t env_dco_pitch_wave_q15(int16_t env_q15) {
-  if (!env_dco_pitch_centered) return env_q15;
-  return (int16_t)(((int32_t)env_q15 - ENV_DCO_PITCH_CENTER_Q15) << 1);
-}
 
 extern uint16_t ADSR3_attack;
 extern uint16_t ADSR3_decay;
 extern uint16_t ADSR3_sustain;
 extern uint16_t ADSR3_release;
-extern bool ADSRRestart;
+extern bool     ADSR3Restart;
 
 extern int16_t ADSR3toDETUNE1;
 extern int32_t ADSR3toDETUNE1_scale_q24;
 extern int16_t ADSR3toPWM;
 extern int32_t ADSR3toPWM_scale;
+
+uint8_t ADSR1Mode = 0;
+uint8_t ADSR2Mode = 0;
+uint8_t ADSR3Mode = 0;
+
+/** @brief Shifts unipolar EnvDCO tap to centered pitch domain if enabled. */
+static inline int16_t env_dco_pitch_wave_q15(int16_t env_q15) {
+  if (ADSR3Mode != 1) return env_q15;
+  return (int16_t)(((int32_t)env_q15 - ENV_DCO_PITCH_CENTER_Q15) << 1);
+}
 
 // =================================================================
 // DIRTY FLAGS (Core 0 write -> Core 1 apply)
@@ -145,7 +150,7 @@ extern int32_t ADSR3toPWM_scale;
 extern volatile uint16_t adsr_params_dirty;
 
 /** @brief Flag parameters for Core 1 deferred update */
-static inline void __not_in_flash_func(mark_adsr_params_dirty)(uint16_t mask) {
+static inline void SRAM_HOT(mark_adsr_params_dirty)(uint16_t mask) {
   adsr_params_dirty |= mask;
 }
 
@@ -181,33 +186,40 @@ void set_vcf_trigger_mode(uint8_t mode);
 // =================================================================
 // ADSR INSTANCES
 // =================================================================
-extern adsr adsr3_voice_0;
-extern adsr adsr3_voice_1;
-extern adsr adsr3_voice_2;
-extern adsr adsr3_voice_3;
+SRAM_DATA extern adsr adsr3_voice_0;
+SRAM_DATA extern adsr adsr3_voice_1;
+SRAM_DATA extern adsr adsr3_voice_2;
+SRAM_DATA extern adsr adsr3_voice_3;
 
+/** @brief Per-voice VCA envelopes */
+/* DISABLED FOR DCO4 */
+/*
 extern adsr adsr_vca_voice_0;
 extern adsr adsr_vca_voice_1;
 extern adsr adsr_vca_voice_2;
 extern adsr adsr_vca_voice_3;
+*/
 
+/** @brief Per-voice VCF envelopes */
+/* DISABLED FOR DCO4 */
+/*
 extern adsr adsr_vcf_voice;
 extern adsr adsr_vcf2_voice;
-
+*/
 /** @brief Groups per-voice envelopes for array iteration */
 struct ADSRStruct {
   adsr& adsr3_voice;   // EnvDCO → pitch/PW
-  adsr& adsr_vca_voice;// EnvVCA → volume
+//  adsr& adsr_vca_voice;// EnvVCA → volume
 };
 
-extern ADSRStruct ADSRVoices[];
+SRAM_DATA extern ADSRStruct ADSRVoices[];
 
 // =================================================================
 // FUNCTION PROTOTYPES
 // =================================================================
 void init_ADSR();
-void __not_in_flash_func(ADSR_update)();
-void __not_in_flash_func(ADSR_set_parameters)();
+void SRAM_HOT(ADSR_update)();
+void SRAM_HOT(ADSR_set_parameters)();
 
 void ADSR3_set_restart();
 void ADSR_VCA_set_restart();

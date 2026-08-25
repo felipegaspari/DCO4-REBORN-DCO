@@ -26,10 +26,11 @@
  /**
   * @brief Applies an entire preset from the RAM shadow array to the synth engine.
   */
- void __not_in_flash_func(dco_apply_preset_shadow)() {
+ void SRAM_HOT(dco_apply_preset_shadow)() {
    // =========================================================================
    // 1. Oscillator & Voice Configuration
    // =========================================================================
+   
    pulseWaveOn       = (presetParamShadow[PARAM_OSC1_PULSE_ENABLE] != 0);
    octave_shift      = (int8_t)presetParamShadow[PARAM_OSC1_INTERVAL];
    OSC2_interval     = (int8_t)presetParamShadow[PARAM_OSC2_INTERVAL];
@@ -37,16 +38,17 @@
    OSC2_detune       = (uint16_t)presetParamShadow[PARAM_OSC2_DETUNE_VAL];
    unisonDetune      = presetParamShadow[PARAM_UNISON_DETUNE];
  
-   portamento_time   = (uint16_t)presetParamShadow[PARAM_PORTAMENTO_TIME];
+   apply_param_portamento_time((uint16_t)presetParamShadow[PARAM_PORTAMENTO_TIME]);
    portamento_mode   = (uint8_t)presetParamShadow[PARAM_PORTAMENTO_MODE];
  
-   voiceMode         = (uint8_t)constrain(presetParamShadow[PARAM_VOICE_MODE], 0, 2);
+   voiceMode         = (uint8_t)presetParamShadow[PARAM_VOICE_MODE];
    setVoiceMode();
-   voiceAlloc.setMode((uint8_t)constrain(presetParamShadow[PARAM_VOICE_ALLOC_MODE], 0, 5));
- 
+   voiceAlloc.setMode((uint8_t)presetParamShadow[PARAM_VOICE_ALLOC_MODE]);
+   
+   softSyncChunks    = (uint8_t)presetParamShadow[PARAM_SOFT_SYNC];
    syncMode          = (uint8_t)presetParamShadow[PARAM_SYNC_MODE];
    setSyncMode();
-   softSyncChunks    = (uint8_t)presetParamShadow[PARAM_SOFT_SYNC];
+   apply_param_phase_align((int16_t)presetParamShadow[PARAM_OSC_PHASE_SYNC]);
    subOscDivide      = (uint8_t)presetParamShadow[PARAM_SUBOSC_DIVIDE];
  
    // =========================================================================
@@ -86,9 +88,9 @@
    // =========================================================================
    // 4. Analog Drift, Pulse Width & Character
    // =========================================================================
-   analogDrift       = (int8_t)presetParamShadow[PARAM_ANALOG_DRIFT_AMOUNT];
-   analogDriftSpeed  = presetParamShadow[PARAM_ANALOG_DRIFT_SPEED];
-   analogDriftSpread = (int8_t)presetParamShadow[PARAM_ANALOG_DRIFT_SPREAD];
+   apply_param_analog_drift_amount(presetParamShadow[PARAM_ANALOG_DRIFT_AMOUNT]);
+   apply_param_analog_drift_speed(presetParamShadow[PARAM_ANALOG_DRIFT_SPEED]);
+   apply_param_analog_drift_spread(presetParamShadow[PARAM_ANALOG_DRIFT_SPREAD]);
    init_DRIFT_LFOs();
  
    PW[0]             = (uint16_t)(presetParamShadow[PARAM_PW_VALUE] >> 2);
@@ -100,8 +102,15 @@
   ADSR3toPWM               = (int16_t)presetParamShadow[PARAM_ADSR3_TO_PWM] - 512;
   ADSR3toPWM_scale         = ADSR3toPWM;
   ADSR3toDETUNE1           = presetParamShadow[PARAM_ADSR3_TO_DETUNE1];
-  ADSR3toDETUNE1_scale_q24 = (int32_t)presetParamShadow[PARAM_ADSR3_TO_DETUNE1] * 4097;
-  env_dco_pitch_centered   = (presetParamShadow[PARAM_ADSR3_PITCH_MODE] != 0) ? 1 : 0;
+  ADSR3toDETUNE1_scale_q24 = (int32_t)presetParamShadow[PARAM_ADSR3_TO_DETUNE1] * 65664;
+  
+  ADSR3Mode                = (uint8_t)presetParamShadow[PARAM_ADSR3_MODE];
+  ADSR2Mode                = (uint8_t)presetParamShadow[PARAM_ADSR2_MODE];
+  ADSR1Mode                = (uint8_t)presetParamShadow[PARAM_ADSR1_MODE];
+
+  ADSR3Restart = (uint8_t)presetParamShadow[PARAM_ADSR3_RESTART];
+  ADSR2Restart = (uint8_t)presetParamShadow[PARAM_ADSR2_RESTART];
+  ADSR1Restart = (uint8_t)presetParamShadow[PARAM_ADSR1_RESTART];
 
   // 1. Apply VCA Curves (ADSR1)
   ADSR1AttackCurveVal  = (uint8_t)presetParamShadow[PARAM_ADSR1_ATTACK_CURVE];
@@ -132,11 +141,12 @@
 
   // 4. Apply Shared Filter Trigger Mode (Legato / Multi / Direct)
   set_vcf_trigger_mode((uint8_t)presetParamShadow[PARAM_VCF_TRIGGER_MODE]);
+
  }
  // =============================================================================
  // 1. OSCILLATOR & VOICE CONFIGURATION APPLIERS
  // =============================================================================
- 
+
  static void apply_param_osc1_pulse_enable(int16_t v) { pulseWaveOn = (v != 0); }
  static void apply_param_osc1_interval(int16_t v) { octave_shift = (int8_t)v; }
  static void apply_param_osc2_interval(int16_t v) { OSC2_interval = (int8_t)v; }
@@ -146,32 +156,21 @@
  static void apply_param_unison_detune(int16_t v) { unisonDetune = v; }
  
  static void apply_param_portamento_time(int16_t v) {
-   const uint32_t val = (uint32_t)constrain(v, 0, 255);
-   portamento_parameter_value = (uint8_t)val;
  
-   if (val == 0) {
-     portamento_time_fixed = 0;
-     portamento_time_slew  = 0;
+   if (v == 0) {
      portamento_time       = 0;
      return;
    }
- 
-   const uint32_t val2 = val * val;
-   const uint32_t val3 = val2 * val;
-   const uint32_t t    = (val * 60u) + (val2 * 3u) + ((val3 * 200u) >> 10);
- 
-   portamento_time_fixed = t;
-   portamento_time_slew  = t;
-   portamento_time = (portamento_mode == PORTA_MODE_TIME)
-                         ? portamento_time_fixed
-                         : portamento_time_slew;
+   portamento_time = v;
+   const uint32_t val2 = v * v;
+   const uint32_t val3 = val2 * v;
+   const uint32_t t    = (v * 60u) + (val2 * 3u) + ((val3 * 200u) >> 10);
+   portamento_time_fixed = t ;
+   portamento_time_slew  = t ;
  }
  
  static void apply_param_portamento_mode(int16_t v) {
    portamento_mode = (uint8_t)v;
-   portamento_time = (portamento_mode == PORTA_MODE_TIME)
-                         ? portamento_time_fixed
-                         : portamento_time_slew;
  }
  
  static void bake_drift_lfo_frequencies() {
@@ -255,7 +254,10 @@
    }
  }
  
- static void apply_param_soft_sync(int16_t v) { softSyncChunks = (uint8_t)v; }
+static void apply_param_soft_sync(int16_t v) {
+   softSyncChunks = (uint8_t)v;
+   setSyncMode();
+}
  static void apply_param_subosc_divide(int16_t v) { subOscDivide = (uint8_t)v; }
  
  // =============================================================================
@@ -339,15 +341,28 @@
    ADSR3toPWM_scale = ADSR3toPWM;
  }
  
+/**
+ * @brief Bakes EnvDCO (ADSR3) modulation depth to OSC1 pitch.
+ * @details Multiplier 65664 maps full panel range (0..511) to +/-2.0 Octaves in Q24.
+ * @param v Parameter value (0..511).
+ */
  static void apply_param_adsr3_to_detune1(int16_t v) {
-   ADSR3toDETUNE1 = v;
-   ADSR3toDETUNE1_scale_q24 = (int32_t)v * 4097; 
+  ADSR3toDETUNE1 = v;
+  ADSR3toDETUNE1_scale_q24 = (int32_t)v * 65664; 
+}
+ 
+ static void apply_param_adsr3_mode(int16_t v) {
+   ADSR3Mode = (uint8_t)v;
  }
  
- static void apply_param_adsr3_pitch_mode(int16_t v) {
-   env_dco_pitch_centered = (v != 0) ? 1 : 0;
+ static void apply_param_adsr2_mode(int16_t v) {
+   ADSR2Mode = (uint8_t)v;
  }
  
+ static void apply_param_adsr1_mode(int16_t v) {
+   ADSR1Mode = (uint8_t)v;
+ }
+
  // --- VCA Curves (ADSR1) ---
  static void apply_param_adsr1_attack_curve(int16_t v) {
    ADSR1AttackCurveVal = (uint8_t)v;
@@ -393,6 +408,10 @@
    ADSR3_change_release_curve(ADSR3ReleaseCurveVal);
  }
  
+ static void apply_param_adsr3_restart(int16_t v) { ADSR3Restart = (uint8_t)v; }
+ static void apply_param_adsr2_restart(int16_t v) { ADSR2Restart = (uint8_t)v; }
+ static void apply_param_adsr1_restart(int16_t v) { ADSR1Restart = (uint8_t)v; }
+
  // --- Shared VCF Trigger Mode ---
  static void apply_param_vcf_trigger_mode(int16_t v) {
    set_vcf_trigger_mode((uint8_t)v);
@@ -656,6 +675,12 @@
  }
  
  // =============================================================================
+ // MODULATION MATRIX SLOT APPLIERS (MUST BE ABOVE paramTable[])
+ // =============================================================================
+ // They now live in mod_matrix_engine.h
+
+
+ // =============================================================================
  // 8. ROUTER TABLE & DISPATCH JUMP SETUP
  // =============================================================================
  
@@ -700,8 +725,7 @@
      {PARAM_ADSR3_TO_OSC_SELECT, apply_param_adsr3_to_osc_select},
      {PARAM_ADSR3_TO_PWM, apply_param_adsr3_to_pwm},
      {PARAM_ADSR3_TO_DETUNE1, apply_param_adsr3_to_detune1},
-     {PARAM_ADSR3_PITCH_MODE, apply_param_adsr3_pitch_mode},
- 
+
      // --- Envelope Curve Presets & Trigger Mode ---
      {PARAM_ADSR1_ATTACK_CURVE, apply_param_adsr1_attack_curve},
      {PARAM_ADSR1_DECAY_CURVE, apply_param_adsr1_decay_curve},
@@ -713,6 +737,40 @@
      {PARAM_ADSR3_DECAY_CURVE, apply_param_adsr3_decay_curve},
      {PARAM_ADSR3_RELEASE_CURVE, apply_param_adsr3_release_curve},
      {PARAM_VCF_TRIGGER_MODE, apply_param_vcf_trigger_mode},
+    
+     {PARAM_ADSR3_RESTART, apply_param_adsr3_restart},
+     {PARAM_ADSR2_RESTART, apply_param_adsr2_restart},
+     {PARAM_ADSR1_RESTART, apply_param_adsr1_restart},
+
+     {PARAM_ADSR3_MODE, apply_param_adsr3_mode},
+     {PARAM_ADSR2_MODE, apply_param_adsr2_mode},
+     {PARAM_ADSR1_MODE, apply_param_adsr1_mode},
+
+     // --- Modulation Matrix (Slots 0..7) ---
+    {PARAM_MOD_SLOT0_SOURCE, apply_param_mod_slot0_source},
+    {PARAM_MOD_SLOT0_DEST,   apply_param_mod_slot0_dest},
+    {PARAM_MOD_SLOT0_DEPTH,  apply_param_mod_slot0_depth},
+    {PARAM_MOD_SLOT1_SOURCE, apply_param_mod_slot1_source},
+    {PARAM_MOD_SLOT1_DEST,   apply_param_mod_slot1_dest},
+    {PARAM_MOD_SLOT1_DEPTH,  apply_param_mod_slot1_depth},
+    {PARAM_MOD_SLOT2_SOURCE, apply_param_mod_slot2_source},
+    {PARAM_MOD_SLOT2_DEST,   apply_param_mod_slot2_dest},
+    {PARAM_MOD_SLOT2_DEPTH,  apply_param_mod_slot2_depth},
+    {PARAM_MOD_SLOT3_SOURCE, apply_param_mod_slot3_source},
+    {PARAM_MOD_SLOT3_DEST,   apply_param_mod_slot3_dest},
+    {PARAM_MOD_SLOT3_DEPTH,  apply_param_mod_slot3_depth},
+    {PARAM_MOD_SLOT4_SOURCE, apply_param_mod_slot4_source},
+    {PARAM_MOD_SLOT4_DEST,   apply_param_mod_slot4_dest},
+    {PARAM_MOD_SLOT4_DEPTH,  apply_param_mod_slot4_depth},
+    {PARAM_MOD_SLOT5_SOURCE, apply_param_mod_slot5_source},
+    {PARAM_MOD_SLOT5_DEST,   apply_param_mod_slot5_dest},
+    {PARAM_MOD_SLOT5_DEPTH,  apply_param_mod_slot5_depth},
+    {PARAM_MOD_SLOT6_SOURCE, apply_param_mod_slot6_source},
+    {PARAM_MOD_SLOT6_DEST,   apply_param_mod_slot6_dest},
+    {PARAM_MOD_SLOT6_DEPTH,  apply_param_mod_slot6_depth},
+    {PARAM_MOD_SLOT7_SOURCE, apply_param_mod_slot7_source},
+    {PARAM_MOD_SLOT7_DEST,   apply_param_mod_slot7_dest},
+    {PARAM_MOD_SLOT7_DEPTH,  apply_param_mod_slot7_depth},
  
      // --- Calibration Controls ---
      {PARAM_CALIBRATION_FLAG, apply_param_calibration_flag},
@@ -774,7 +832,7 @@
   * @param id    16-bit parameter ID.
   * @param value Parameter payload value.
   */
- void __not_in_flash_func(update_parameters)(uint8_t id, int16_t value) {
+ void SRAM_HOT(update_parameters)(uint8_t id, int16_t value) {
    // Gating during calibration to prevent knob noise leaks
    if (calibrationFlag) {
      if (!manualCalibrationFlag) {

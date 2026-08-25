@@ -32,7 +32,7 @@ Depth is bipolar `int16` (typically ±4095 for full-scale swing). Hot path is **
 | 1 | ADSR4 | `0` | Stub until engine exists |
 | 2 | LFO3 | `0` | Stub (`PARAM_LFO3_*` reserved) |
 | 3 | LFO4 | `0` | Stub |
-| 4 | Velocity | `0..32766` | `midi_velocity[0] * 258` |
+| 4 | Velocity | `0..32766` | `velocity[0] * 258` |
 | 5 | Keytrack | `±32768` | `(note − 60) * 682`; note 0 → 0; independent of `VCFKeytrack` |
 | 6 | Random | `±32000` | DCO: S&H Q15 on note-on; aux: ~5 Hz free-run Q15 |
 | 7 | Aftertouch | `0..32766` | Channel AT `* 258` |

@@ -6,7 +6,7 @@
 // Enable/disable detailed DCO debug report (including OSC1 frequency stages)
 #define DCO_DEBUG_REPORT 0
 
-inline void amp_chan_levels_fixed(int64_t freq_q24_A, int64_t freq_q24_B,
+inline void SRAM_HOT(amp_chan_levels_fixed)(int64_t freq_q24_A, int64_t freq_q24_B,
                                   uint8_t oscA, uint8_t oscB, uint16_t *outA,
                                   uint16_t *outB);
 
@@ -19,7 +19,7 @@ inline __attribute__((always_inline)) void voice_write_pw(uint8_t voice,
 }
 
 inline __attribute__((always_inline)) void
-voice_write_range_pair(uint8_t dcoA, uint8_t dcoB, uint16_t chanA,
+SRAM_HOT(voice_write_range_pair)(uint8_t dcoA, uint8_t dcoB, uint16_t chanA,
                        uint16_t chanB) {
   if (char_amp_scale_q15) {
     const int32_t amp_j = character_amp_delta();
@@ -31,16 +31,16 @@ voice_write_range_pair(uint8_t dcoA, uint8_t dcoB, uint16_t chanA,
   }
 }
 #if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
-int32_t interpolateRatioQ16_cached(int32_t xQ16, int dcoIndex);
+int32_t SRAM_HOT(interpolateRatioQ16_cached)(int32_t xQ16, int dcoIndex);
 #endif
 #if PITCH_INTERP_MODE == PITCH_INTERP_Q12
-int32_t interpolatePitchMultiplierIntQ16_cached(int32_t xQ16, int dcoIndex);
+int32_t SRAM_HOT(interpolatePitchMultiplierIntQ16_cached)(int32_t xQ16, int dcoIndex);
 #endif
 #if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
-float interpolateRatioFloat_cached(float x, int dcoIndex);
+float SRAM_HOT(interpolateRatioFloat_cached)(float x, int dcoIndex);
 #endif
 #if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
-float interpolateRatioFloat_cached_fast(float x, int dcoIndex);
+float SRAM_HOT(interpolateRatioFloat_cached_fast)(float x, int dcoIndex);
 #endif
 
 // Live pitch interp: compile-time wrappers (always_inline; not function
@@ -48,8 +48,8 @@ float interpolateRatioFloat_cached_fast(float x, int dcoIndex);
 // interpolate_live_ratio_f (FLOAT_FAST would otherwise type-check the Q12 #else
 // and fail: IntQ16 is not compiled).
 #ifndef USE_FLOAT_VOICE_TASK
-static inline __attribute__((always_inline))
-int32_t modifiers_q24_to_xQ16(int64_t modifiers_q24) {
+inline __attribute__((always_inline))
+int32_t SRAM_HOT(modifiers_q24_to_xQ16)(int64_t modifiers_q24) {
 #if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
   return (modifiers_q24 >= 0) ? (int32_t)(modifiers_q24 >> 8)
                               : (int32_t)(-((-modifiers_q24) >> 8));
@@ -60,7 +60,7 @@ int32_t modifiers_q24_to_xQ16(int64_t modifiers_q24) {
 }
 
 inline __attribute__((always_inline)) int32_t
-interpolate_live_ratio_q16(int32_t xQ16, int dcoIndex) {
+SRAM_HOT(interpolate_live_ratio_q16)(int32_t xQ16, int dcoIndex) {
 #if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
   return interpolateRatioQ16_cached(xQ16, dcoIndex);
 #elif PITCH_INTERP_MODE == PITCH_INTERP_Q12
@@ -68,14 +68,14 @@ interpolate_live_ratio_q16(int32_t xQ16, int dcoIndex) {
   uint64_t num = ((uint64_t)(uint32_t)yTab << 16) + 5000u;
   return (int32_t)((num * 0xD1B71759ULL) >> 45);
 #else
-#error                                                                         \
+#error                                                                      
     "interpolate_live_ratio_q16: PITCH_INTERP_FLOAT / FLOAT_FAST require USE_FLOAT_VOICE_TASK"
 #endif
 }
 #endif // !USE_FLOAT_VOICE_TASK
 
 inline __attribute__((always_inline)) float
-interpolate_live_ratio_f(float modifiers, int dcoIndex) {
+SRAM_HOT(interpolate_live_ratio_f)(float modifiers, int dcoIndex) {
 #if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
   return interpolateRatioFloat_cached(modifiers, dcoIndex);
 #elif PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
@@ -113,92 +113,35 @@ void init_voices() {
   voice_task_main();
 }
 
-// Fast helper: convert a Q16 note (semitones) to Q24 frequency using linear
 // interpolation on the sNotePitches_q24 table. Used in slew-rate mode.
-static inline int64_t noteQ16_to_freqQ24(int32_t note_q16) {
+// Fast 32-bit helper: convert Q16 semitone note to Q24 frequency
+static inline int64_t SRAM_HOT(noteQ16_to_freqQ24)(int32_t note_q16) {
   const size_t NOTE_TABLE_LEN =
       sizeof(sNotePitches_q24) / sizeof(sNotePitches_q24[0]);
-  if (NOTE_TABLE_LEN == 0)
-    return 0;
 
   int32_t noteInt = note_q16 >> 16;
+  if (noteInt <= 0) return sNotePitches_q24[0];
+  if ((size_t)noteInt >= NOTE_TABLE_LEN - 1) return sNotePitches_q24[NOTE_TABLE_LEN - 1];
+
   uint32_t frac = (uint32_t)note_q16 & 0xFFFF;
-
-  if (noteInt <= 0) {
-    if (NOTE_TABLE_LEN == 1)
-      return sNotePitches_q24[0];
-    if (frac == 0)
-      return sNotePitches_q24[0];
-    int64_t f0 = sNotePitches_q24[0];
-    int64_t f1 = sNotePitches_q24[1];
-    int64_t df = f1 - f0;
-    return f0 + ((df * (int64_t)frac) >> 16);
-  }
-  if ((size_t)noteInt >= NOTE_TABLE_LEN - 1) {
-    // Clamp to top of table
-    return sNotePitches_q24[NOTE_TABLE_LEN - 1];
-  }
-
-  if (frac == 0) {
-    // Exact semitone, just return table entry (common case).
-    return sNotePitches_q24[noteInt];
-  }
+  if (frac == 0) return sNotePitches_q24[noteInt]; // Instant lookup at semitone boundary
 
   int64_t f0 = sNotePitches_q24[noteInt];
   int64_t f1 = sNotePitches_q24[noteInt + 1];
-  int64_t df = f1 - f0;
-  return f0 + ((df * (int64_t)frac) >> 16);
-}
 
-// Inverse of noteQ16_to_freqQ24: Q24 Hz → Q16 note via binary search + linear
-// frac.
-static inline int32_t freqQ24_to_noteQ16(int64_t freq_q24) {
-  const size_t NOTE_TABLE_LEN =
-      sizeof(sNotePitches_q24) / sizeof(sNotePitches_q24[0]);
-  if (NOTE_TABLE_LEN == 0)
-    return 0;
-  if (NOTE_TABLE_LEN == 1)
-    return 0;
-  if (freq_q24 <= sNotePitches_q24[0])
-    return 0;
-  if (freq_q24 >= sNotePitches_q24[NOTE_TABLE_LEN - 1]) {
-    return ((int32_t)(NOTE_TABLE_LEN - 1)) << 16;
-  }
-
-  size_t lo = 0;
-  size_t hi = NOTE_TABLE_LEN - 1;
-  while (hi - lo > 1) {
-    size_t mid = lo + ((hi - lo) >> 1);
-    if (sNotePitches_q24[mid] <= freq_q24) {
-      lo = mid;
-    } else {
-      hi = mid;
-    }
-  }
-
-  int64_t f0 = sNotePitches_q24[lo];
-  int64_t f1 = sNotePitches_q24[hi];
-  int64_t df = f1 - f0;
-  if (df <= 0)
-    return ((int32_t)lo) << 16;
-
-  int64_t num = (freq_q24 - f0) << 16;
-  int32_t frac = (int32_t)(num / df);
-  if (frac < 0)
-    frac = 0;
-  if (frac > 0xFFFF)
-    frac = 0xFFFF;
-  return (((int32_t)lo) << 16) + frac;
+  // Pre-shift df so multiplication is 100% 32-bit hardware MULS (zero __aeabi_lmul):
+  uint32_t df_high = (uint32_t)((f1 - f0) >> 16);
+  return f0 + (int64_t)(df_high * frac);
 }
 
 // Helper: convert float Hz to Q24 fixed-point (Hz * 2^24)
-static inline int64_t float_to_q24(float f) {
+static inline int64_t SRAM_HOT(float_to_q24)(float f) {
   return (int64_t)lrintf(f * (float)(1 << 24));
 }
 
 // midi/base + offset → table index using signed math (no uint8 wrap-to-top).
 // High notes still fold down by octaves to stay within highestNote, then clamp.
-static inline uint8_t midi_offset_to_table_index(int midi_or_base, int offset,
+static inline uint8_t SRAM_HOT(midi_offset_to_table_index)(int midi_or_base, int offset,
                                                  size_t table_len) {
   int n = midi_or_base - 36 + offset;
   if (n < 0)
@@ -212,86 +155,90 @@ static inline uint8_t midi_offset_to_table_index(int midi_or_base, int offset,
   return (uint8_t)n;
 }
 
-// Resolve porta start note (Q16). First edge snaps; later edges use cur note
-// (incl. index 0).
-static inline int32_t porta_resolve_start_note_q16(uint8_t osc,
-                                                   int32_t target_q16) {
+
+// =============================================================================
+// FIXED-POINT PORTAMENTO FUNCTIONS (Always available)
+// =============================================================================
+
+// Common endpoint latch
+static inline void SRAM_HOT(porta_latch_endpoints_q16)(uint8_t osc, int32_t start_q16, int32_t target_q16) {
+  porta_note_start_q16[osc] = start_q16;
+  porta_note_stop_q16[osc] = target_q16;
+  porta_note_cur_q16[osc] = start_q16;
+  porta_note_valid[osc] = true;
+
+  int32_t targetInt = target_q16 >> 16;
+  const size_t LEN = sizeof(sNotePitches_q24) / sizeof(sNotePitches_q24[0]);
+  if (targetInt >= 0 && (size_t)targetInt < LEN) {
+    portamento_stop_q24[osc] = sNotePitches_q24[targetInt];
+  } else {
+    portamento_stop_q24[osc] = noteQ16_to_freqQ24(target_q16);
+  }
+}
+
+// TIME: fixed duration T_fixed µs for any interval; linear in semitones.
+static inline void SRAM_HOT(porta_setup_time_q16)(uint8_t osc, int32_t start_q16,
+  int32_t target_q16, int32_t T_fixed) {
+if (T_fixed < 256)
+T_fixed = 256;
+porta_latch_endpoints_q16(osc, start_q16, target_q16);
+
+int32_t dNote_q16 = target_q16 - start_q16;
+uint32_t u_total = (uint32_t)T_fixed >> 8;
+if (u_total == 0)
+u_total = 1;
+
+// Pure 32-bit division on trigger (SIO hardware divider on RP2040)
+porta_note_step_q16[osc] = dNote_q16 / (int32_t)u_total;
+}
+
+// SLEW: constant rate = 12 semitones / T_slew (one octave takes the slew-time knob).
+static inline void SRAM_HOT(porta_setup_slew_q16)(uint8_t osc, int32_t start_q16,
+  int32_t target_q16, int32_t T_slew) {
+if (T_slew < 256)
+T_slew = 256;
+porta_latch_endpoints_q16(osc, start_q16, target_q16);
+
+int32_t dNote_q16 = target_q16 - start_q16;
+uint32_t u_slew = (uint32_t)T_slew >> 8;
+if (u_slew == 0)
+u_slew = 1;
+
+// 12 semitones in Q16 = 786432
+int32_t rate_per_u = 786432 / (int32_t)u_slew;
+if (rate_per_u == 0)
+rate_per_u = 1;
+
+porta_note_step_q16[osc] = (dNote_q16 >= 0) ? rate_per_u : -rate_per_u;
+}
+
+static inline void SRAM_HOT(porta_setup_glide_q16)(uint8_t osc, int32_t start_q16,
+   int32_t target_q16, uint8_t mode) {
+if (mode == PORTA_MODE_TIME) {
+int32_t T =
+(portamento_time_fixed == 0) ? 1 : (int32_t)portamento_time_fixed;
+porta_setup_time_q16(osc, start_q16, target_q16, T);
+} else {
+int32_t T = (portamento_time_slew == 0) ? 1 : (int32_t)portamento_time_slew;
+porta_setup_slew_q16(osc, start_q16, target_q16, T);
+}
+}
+
+// Resolve start note (Q16) directly from existing state (ZERO table searches)
+static inline int32_t SRAM_HOT(porta_resolve_start_note_q16)(uint8_t osc, int32_t target_q16) {
   if (porta_note_valid[osc]) {
     return porta_note_cur_q16[osc];
-  }
-  if (portamento_cur_freq_q24[osc] > 0) {
-    porta_note_valid[osc] = true;
-    return freqQ24_to_noteQ16(portamento_cur_freq_q24[osc]);
   }
   porta_note_valid[osc] = true;
   return target_q16;
 }
 
-// Common endpoint latch for note-space porta setup.
-static inline void porta_latch_endpoints_q16(uint8_t osc, int32_t start_q16,
-                                             int32_t target_q16) {
-  porta_note_start_q16[osc] = start_q16;
-  porta_note_stop_q16[osc] = target_q16;
-  porta_note_cur_q16[osc] = start_q16;
-  porta_note_valid[osc] = true;
-  int64_t freq_q24 = noteQ16_to_freqQ24(start_q16);
-  portamento_start_q24[osc] = freq_q24;
-  portamento_stop_q24[osc] = noteQ16_to_freqQ24(target_q16);
-  portamento_cur_freq_q24[osc] = freq_q24;
-}
-
-// TIME: fixed duration T_fixed µs for any interval; linear in semitones.
-static inline void porta_setup_time_q16(uint8_t osc, int32_t start_q16,
-                                        int32_t target_q16, int32_t T_fixed) {
-  if (T_fixed < 1)
-    T_fixed = 1;
-  porta_latch_endpoints_q16(osc, start_q16, target_q16);
-
-  int32_t dNote_q16 = target_q16 - start_q16;
-  int64_t halfT = (int64_t)T_fixed >> 1;
-  int64_t num = (dNote_q16 >= 0) ? ((int64_t)dNote_q16 + halfT)
-                                 : ((int64_t)dNote_q16 - halfT);
-  porta_note_step_q16[osc] = (int32_t)(num / (int64_t)T_fixed);
-  if (dNote_q16 != 0 && porta_note_step_q16[osc] == 0) {
-    porta_note_step_q16[osc] = (dNote_q16 > 0) ? 1 : -1;
-  }
-}
-
-// SLEW: constant rate = 12 semitones / T_slew (one octave takes the slew-time
-// knob).
-static inline void porta_setup_slew_q16(uint8_t osc, int32_t start_q16,
-                                        int32_t target_q16, int32_t T_slew) {
-  if (T_slew < 1)
-    T_slew = 1;
-  porta_latch_endpoints_q16(osc, start_q16, target_q16);
-
-  int32_t dNote_q16 = target_q16 - start_q16;
-  if (dNote_q16 == 0) {
-    porta_note_step_q16[osc] = 0;
-  } else {
-    int32_t rate = (int32_t)(((int64_t)12 << 16) / (int64_t)T_slew);
-    if (rate == 0)
-      rate = 1;
-    porta_note_step_q16[osc] = (dNote_q16 > 0) ? rate : -rate;
-  }
-}
-
-static inline void porta_setup_glide_q16(uint8_t osc, int32_t start_q16,
-                                         int32_t target_q16, uint8_t mode) {
-  if (mode == PORTA_MODE_TIME) {
-    int32_t T =
-        (portamento_time_fixed == 0) ? 1 : (int32_t)portamento_time_fixed;
-    porta_setup_time_q16(osc, start_q16, target_q16, T);
-  } else {
-    int32_t T = (portamento_time_slew == 0) ? 1 : (int32_t)portamento_time_slew;
-    porta_setup_slew_q16(osc, start_q16, target_q16, T);
-  }
-}
-
+// =============================================================================
+// FLOAT PORTAMENTO FUNCTIONS (Guarded for float-enabled builds)
+// =============================================================================
 #ifdef USE_FLOAT_VOICE_TASK
-// Helper: convert a semitone index (float) to Hz using sNotePitches[] with
-// linear interpolation.
-static inline float noteIndex_to_freqFloat(float noteIndex) {
+
+static inline float SRAM_HOT(noteIndex_to_freqFloat)(float noteIndex) {
   const size_t LEN = sizeof(sNotePitches) / sizeof(sNotePitches[0]);
   if (LEN == 0)
     return 0.0f;
@@ -308,9 +255,7 @@ static inline float noteIndex_to_freqFloat(float noteIndex) {
   return f0 + (f1 - f0) * t;
 }
 
-// Inverse of noteIndex_to_freqFloat: Hz → semitone index via binary search +
-// linear frac.
-static inline float freqFloat_to_noteIndex(float hz) {
+static inline float SRAM_HOT(freqFloat_to_noteIndex)(float hz) {
   const size_t LEN = sizeof(sNotePitches) / sizeof(sNotePitches[0]);
   if (LEN == 0)
     return 0.0f;
@@ -340,7 +285,7 @@ static inline float freqFloat_to_noteIndex(float hz) {
   return (float)lo + (hz - f0) / df;
 }
 
-static inline float porta_resolve_start_note_f(uint8_t osc, float target) {
+static inline float SRAM_HOT(porta_resolve_start_note_f)(uint8_t osc, float target) {
   if (porta_note_valid[osc]) {
     return porta_note_cur_f[osc];
   }
@@ -352,7 +297,7 @@ static inline float porta_resolve_start_note_f(uint8_t osc, float target) {
   return target;
 }
 
-static inline void porta_latch_endpoints_f(uint8_t osc, float startNote,
+static inline void SRAM_HOT(porta_latch_endpoints_f)(uint8_t osc, float startNote,
                                            float targetNote) {
   porta_note_start_f[osc] = startNote;
   porta_note_stop_f[osc] = targetNote;
@@ -366,27 +311,16 @@ static inline void porta_latch_endpoints_f(uint8_t osc, float startNote,
 }
 
 // TIME: fixed duration T_fixed µs for any interval; linear in semitones.
-static inline void porta_setup_time_f(uint8_t osc, float startNote,
+static inline void SRAM_HOT(porta_setup_time_f)(uint8_t osc, float startNote,
                                       float targetNote, float T_fixed) {
   if (T_fixed < 1.0f)
     T_fixed = 1.0f;
   porta_latch_endpoints_f(osc, startNote, targetNote);
-
-  float dNote = targetNote - startNote;
-  const float SCALE = 65536.0f;
-  float halfT = 0.5f * T_fixed;
-  float d_q16 = dNote * SCALE;
-  float num = (d_q16 >= 0.0f) ? (d_q16 + halfT) : (d_q16 - halfT);
-  float stepNote = (num / T_fixed) / SCALE;
-  if (dNote != 0.0f && stepNote == 0.0f) {
-    stepNote = (dNote > 0.0f) ? (1.0f / SCALE) : (-1.0f / SCALE);
-  }
-  porta_note_step_f[osc] = stepNote;
+  porta_note_step_f[osc] = (targetNote - startNote) / T_fixed;
 }
 
-// SLEW: constant rate = 12 semitones / T_slew (one octave takes the slew-time
-// knob).
-static inline void porta_setup_slew_f(uint8_t osc, float startNote,
+// SLEW: constant rate = 12 semitones / T_slew (one octave takes the slew-time knob).
+static inline void SRAM_HOT(porta_setup_slew_f)(uint8_t osc, float startNote,
                                       float targetNote, float T_slew) {
   if (T_slew < 1.0f)
     T_slew = 1.0f;
@@ -397,13 +331,11 @@ static inline void porta_setup_slew_f(uint8_t osc, float startNote,
     porta_note_step_f[osc] = 0.0f;
   } else {
     float rate = 12.0f / T_slew;
-    if (rate == 0.0f)
-      rate = 1.0f / 65536.0f;
     porta_note_step_f[osc] = (dNote > 0.0f) ? rate : -rate;
   }
 }
 
-static inline void porta_setup_glide_f(uint8_t osc, float startNote,
+static inline void SRAM_HOT(porta_setup_glide_f)(uint8_t osc, float startNote,
                                        float targetNote, uint8_t mode) {
   if (mode == PORTA_MODE_TIME) {
     float T =
@@ -418,14 +350,15 @@ static inline void porta_setup_glide_f(uint8_t osc, float startNote,
 // Q24 → float modifier/Hz scale (multiply avoids per-sample divide by 2^24).
 static constexpr float Q24_TO_FLOAT = 1.0f / 16777216.0f;
 
-static inline float q24_to_float(int32_t q) { return (float)q * Q24_TO_FLOAT; }
-#endif
+static inline float SRAM_HOT(q24_to_float)(int32_t q) { return (float)q * Q24_TO_FLOAT; }
+
+#endif // USE_FLOAT_VOICE_TASK
 
 #ifndef USE_FLOAT_VOICE_TASK
 // Fixed-point realtime voice engine (portamento, modifiers, clkdiv, amp,
 // PIO/PWM/PW). Selected by voice_task_main() when USE_FLOAT_VOICE_TASK is not
 // defined.
-void __not_in_flash_func(voice_task_fixed_point)() {
+void SRAM_HOT(voice_task_fixed_point)() {
   static uint32_t last_portamento_time = 0;
   static uint8_t last_portamento_mode = PORTA_MODE_TIME;
   static uint8_t lastNote1[NUM_VOICES_TOTAL] = {};
@@ -477,6 +410,13 @@ void __not_in_flash_func(voice_task_fixed_point)() {
     lastNote1[i] = note1;
     lastNote2[i] = note2;
 
+    int64_t freq_q24_A;
+    int64_t freq_q24_B;
+
+    const uint8_t DCO_A = (uint8_t)(i * 2);
+    const uint8_t DCO_B = (uint8_t)(i * 2 + 1);
+
+    // OSC2 Fine Detune
     BENCH_BEGIN(vt_osc_detune);
     static constexpr int32_t DETUNE_SCALE_Q24 =
         (int32_t)(0.0002f * (float)(1 << 24) + 0.5f);
@@ -484,11 +424,6 @@ void __not_in_flash_func(voice_task_fixed_point)() {
     int32_t detune_q24 = (1 << 24) + (detune_steps * DETUNE_SCALE_Q24);
     BENCH_END(vt_osc_detune);
 
-    int64_t freq_q24_A;
-    int64_t freq_q24_B;
-
-    const uint8_t DCO_A = (uint8_t)(i * 2);
-    const uint8_t DCO_B = (uint8_t)(i * 2 + 1);
 
     BENCH_BEGIN(vt_portamento);
     if (portaTime > 0) {
@@ -522,12 +457,10 @@ void __not_in_flash_func(voice_task_fixed_point)() {
 
         int32_t targetNoteA_q16 = ((int32_t)note1) << 16;
         int32_t targetNoteB_q16 = ((int32_t)note2) << 16;
-        int32_t curNoteA_q16 =
-            freqQ24_to_noteQ16(portamento_cur_freq_q24[DCO_A]);
-        int32_t curNoteB_q16 =
-            freqQ24_to_noteQ16(portamento_cur_freq_q24[DCO_B]);
-        porta_setup_glide_q16(DCO_A, curNoteA_q16, targetNoteA_q16, portaMode);
-        porta_setup_glide_q16(DCO_B, curNoteB_q16, targetNoteB_q16, portaMode);
+        
+        // DIRECT: Use current note-space position (NO binary search!)
+        porta_setup_glide_q16(DCO_A, porta_note_cur_q16[DCO_A], targetNoteA_q16, portaMode);
+        porta_setup_glide_q16(DCO_B, porta_note_cur_q16[DCO_B], targetNoteB_q16, portaMode);
         curA = portamento_cur_freq_q24[DCO_A];
         curB = portamento_cur_freq_q24[DCO_B];
       } else if (porta_note_cur_q16[DCO_A] == porta_note_stop_q16[DCO_A] &&
@@ -535,82 +468,48 @@ void __not_in_flash_func(voice_task_fixed_point)() {
         curA = portamento_stop_q24[DCO_A];
         curB = portamento_stop_q24[DCO_B];
       } else {
-        int32_t elapsed = (int32_t)portamentoTimer[i];
+        int32_t elapsed_u = (int32_t)((uint32_t)portamentoTimer[i] >> 8);
 
-        int32_t dNoteA_q16 =
-            porta_note_stop_q16[DCO_A] - porta_note_start_q16[DCO_A];
-        int32_t dNoteB_q16 =
-            porta_note_stop_q16[DCO_B] - porta_note_start_q16[DCO_B];
+        // 100% 32-bit native MULS + ADDS
+        int32_t curNoteA_q16 = porta_note_start_q16[DCO_A] + (porta_note_step_q16[DCO_A] * elapsed_u);
+        int32_t curNoteB_q16 = porta_note_start_q16[DCO_B] + (porta_note_step_q16[DCO_B] * elapsed_u);
 
-        int64_t curNoteA_q16 =
-            (int64_t)porta_note_start_q16[DCO_A] +
-            (int64_t)porta_note_step_q16[DCO_A] * (int64_t)elapsed;
-        int64_t curNoteB_q16 =
-            (int64_t)porta_note_start_q16[DCO_B] +
-            (int64_t)porta_note_step_q16[DCO_B] * (int64_t)elapsed;
+        int32_t stopA  = porta_note_stop_q16[DCO_A];
+        int32_t stopB  = porta_note_stop_q16[DCO_B];
+        int32_t startA = porta_note_start_q16[DCO_A];
+        int32_t startB = porta_note_start_q16[DCO_B];
 
-        if ((dNoteA_q16 >= 0 &&
-             curNoteA_q16 >= (int64_t)porta_note_stop_q16[DCO_A]) ||
-            (dNoteA_q16 < 0 &&
-             curNoteA_q16 <= (int64_t)porta_note_stop_q16[DCO_A])) {
-          curNoteA_q16 = porta_note_stop_q16[DCO_A];
+        if ((stopA >= startA && curNoteA_q16 >= stopA) ||
+            (stopA < startA && curNoteA_q16 <= stopA)) {
+          curNoteA_q16 = stopA;
         }
-        if ((dNoteB_q16 >= 0 &&
-             curNoteB_q16 >= (int64_t)porta_note_stop_q16[DCO_B]) ||
-            (dNoteB_q16 < 0 &&
-             curNoteB_q16 <= (int64_t)porta_note_stop_q16[DCO_B])) {
-          curNoteB_q16 = porta_note_stop_q16[DCO_B];
+        if ((stopB >= startB && curNoteB_q16 >= stopB) ||
+            (stopB < startB && curNoteB_q16 <= stopB)) {
+          curNoteB_q16 = stopB;
         }
 
-        porta_note_cur_q16[DCO_A] = (int32_t)curNoteA_q16;
-        porta_note_cur_q16[DCO_B] = (int32_t)curNoteB_q16;
+        porta_note_cur_q16[DCO_A] = curNoteA_q16;
+        porta_note_cur_q16[DCO_B] = curNoteB_q16;
 
-        if (curNoteA_q16 == (int64_t)porta_note_stop_q16[DCO_A]) {
-          curA = portamento_stop_q24[DCO_A];
-        } else {
-          curA = noteQ16_to_freqQ24(porta_note_cur_q16[DCO_A]);
-        }
-        if (curNoteB_q16 == (int64_t)porta_note_stop_q16[DCO_B]) {
-          curB = portamento_stop_q24[DCO_B];
-        } else {
-          curB = noteQ16_to_freqQ24(porta_note_cur_q16[DCO_B]);
-        }
+        curA = (curNoteA_q16 == stopA) ? portamento_stop_q24[DCO_A] : noteQ16_to_freqQ24(curNoteA_q16);
+        curB = (curNoteB_q16 == stopB) ? portamento_stop_q24[DCO_B] : noteQ16_to_freqQ24(curNoteB_q16);
       }
 
       portamento_cur_freq_q24[DCO_A] = curA;
       portamento_cur_freq_q24[DCO_B] = curB;
     } else {
+      // Instant lookup when portamento is off (ZERO math)
       portamento_cur_freq_q24[DCO_A] = sNotePitches_q24[note1];
-      portamento_start_q24[DCO_A] = portamento_cur_freq_q24[DCO_A];
-      portamento_stop_q24[DCO_A] = portamento_cur_freq_q24[DCO_A];
-      porta_note_cur_q16[DCO_A] = ((int32_t)note1) << 16;
-      porta_note_stop_q16[DCO_A] = porta_note_cur_q16[DCO_A];
-      porta_note_valid[DCO_A] = true;
-
       portamento_cur_freq_q24[DCO_B] = sNotePitches_q24[note2];
-      portamento_start_q24[DCO_B] = portamento_cur_freq_q24[DCO_B];
+      portamento_stop_q24[DCO_A] = portamento_cur_freq_q24[DCO_A];
       portamento_stop_q24[DCO_B] = portamento_cur_freq_q24[DCO_B];
+      porta_note_cur_q16[DCO_A] = ((int32_t)note1) << 16;
       porta_note_cur_q16[DCO_B] = ((int32_t)note2) << 16;
+      porta_note_stop_q16[DCO_A] = porta_note_cur_q16[DCO_A];
       porta_note_stop_q16[DCO_B] = porta_note_cur_q16[DCO_B];
+      porta_note_valid[DCO_A] = true;
       porta_note_valid[DCO_B] = true;
     }
-
-#if defined(BENCH_PATH_STATS)
-    if (portaTime == 0) {
-      BENCH_PATH_INC(porta_off);
-    } else if (note_on_flag_flag[i]) {
-      BENCH_PATH_INC(porta_note_on);
-    } else if (portaTimeChanged || portaModeChanged || pitchTargetChanged) {
-      BENCH_PATH_INC(porta_retime);
-    } else if (portaMode == PORTA_MODE_TIME) {
-      BENCH_PATH_INC(porta_steady_time);
-    } else {
-      BENCH_PATH_INC(porta_steady_slew);
-    }
-#endif
-#if DCO_DEBUG_REPORT
-    dbg_freq_base_Hz = (float)portamento_cur_freq_q24[DCO_A] / (float)(1 << 24);
-#endif
     BENCH_END(vt_portamento);
 
     BENCH_BEGIN(vt_adsr_mod);
@@ -660,7 +559,7 @@ void __not_in_flash_func(voice_task_fixed_point)() {
       const int32_t local_lfo2_osc2 = lfo2_pitch_mod_q24[LFO2_PITCH_OSC2];
       BENCH_BEGIN(vt_modifiers);
       modifiersBase_q24 = calcPitchbend_q24 + Q24_ONE_EPS +
-                          matrix_pitch_mod_q24 + unisonMODIFIER_q24;
+                          matrix_pitch_mod_q24[i] + unisonMODIFIER_q24;
       if (char_pitch_scale_q15) {
         modifiersBase_q24 += character_pitch_delta_q24();
       }
@@ -820,11 +719,12 @@ void __not_in_flash_func(voice_task_fixed_point)() {
       BENCH_END(vt_note_retrig);
     }
 
-    if (timer99microsFlag2) {
+    
       BENCH_BEGIN(vt_range_pwm);
       voice_write_range_pair(DCO_A, DCO_B, chanLevel, chanLevel2);
       BENCH_END(vt_range_pwm);
 
+      if (timer99microsFlag2) {
       if (pulseWaveOn) {
         BENCH_FBEGIN(vt_pwm_calc);
 
@@ -841,6 +741,7 @@ void __not_in_flash_func(voice_task_fixed_point)() {
 
         // 2. ✅ Clean logical sum: Knob + LFO + Envelope + Jitter
         int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr3_delta +
+                          mod_matrix_get_dest(i, DEST_PW) +
                           (int32_t)character_pw_delta();
 
         // 3. Clamp to valid 10-bit range (0 .. 1023)
@@ -872,7 +773,7 @@ void __not_in_flash_func(voice_task_fixed_point)() {
 
 // Dispatch entry point: select float vs fixed-point implementation at compile
 // time.
-inline void voice_task_main() {
+inline void SRAM_HOT(voice_task_main)() {
 #ifdef USE_FLOAT_VOICE_TASK
   voice_task_float();
 #else
@@ -883,7 +784,7 @@ inline void voice_task_main() {
 #ifdef USE_FLOAT_VOICE_TASK
 // Float realtime voice engine (same stages as voice_task_fixed_point, in Hz).
 // Board default on RP2350.
-void __not_in_flash_func(voice_task_float)() {
+void SRAM_HOT(voice_task_float)() {
   static uint32_t last_portamento_time = 0;
   static uint8_t last_portamento_mode = PORTA_MODE_SLEW;
   static uint8_t lastNote1[NUM_VOICES_TOTAL] = {};
@@ -942,11 +843,6 @@ void __not_in_flash_func(voice_task_float)() {
     lastNote1[i] = note1;
     lastNote2[i] = note2;
 
-    BENCH_BEGIN(vt_osc_detune);
-    float detuneSteps = (float)((int)256 - OSC2DetuneVal);
-    float osc2DetuneRatio = 1.0f + 0.0002f * detuneSteps;
-    BENCH_END(vt_osc_detune);
-
     float noteFreq1 = sNotePitches[note1];
     float noteFreq2 = sNotePitches[note2];
 
@@ -954,6 +850,11 @@ void __not_in_flash_func(voice_task_float)() {
 
     const uint8_t DCO_A = (uint8_t)(i * 2);
     const uint8_t DCO_B = (uint8_t)(i * 2 + 1);
+
+    BENCH_BEGIN(vt_osc_detune);
+    float detuneSteps = (float)((int)256 - OSC2DetuneVal);
+    float osc2DetuneRatio = 1.0f + 0.0002f * detuneSteps;
+    BENCH_END(vt_osc_detune);
 
     BENCH_BEGIN(vt_portamento);
 
@@ -1254,9 +1155,9 @@ void __not_in_flash_func(voice_task_float)() {
       BENCH_END(vt_note_retrig);
     }
 
-    if (timer99microsFlag2) {
-      voice_write_range_pair(DCO_A, DCO_B, chanLevel, chanLevel2);
+    voice_write_range_pair(DCO_A, DCO_B, chanLevel, chanLevel2);
 
+    if (timer99microsFlag2) {
       if (pulseWaveOn) {
         BENCH_FBEGIN(vt_pwm_calc);
 
@@ -1272,6 +1173,7 @@ void __not_in_flash_func(voice_task_float)() {
 
         // 2. Clean logical sum: Knob + LFO + Envelope + Jitter
         int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr3_delta +
+                          mod_matrix_get_dest(i, DEST_PW) +
                           (int32_t)character_pw_delta();
 
         // 3. Clamp to valid 10-bit range (0 .. 1023)
@@ -1321,25 +1223,46 @@ uint8_t voice_alloc() {
   return voiceAlloc.alloc();
 }
 
-// Mark a voice as sounding a new note. Shared by every note_on path so the
-// allocation bookkeeping never drifts from the gate flags.
-void voice_mark_on(uint8_t voice, uint8_t note, uint8_t velocity) {
+/**
+ * @brief Hard note attack: gates on, triggers ADSR curves, and notifies Core 1.
+ */
+ void SRAM_HOT(voice_mark_on)(uint8_t voice, uint8_t note, uint8_t velocity_in) {
   VOICES[voice] = 1;
   VOICE_NOTES[voice] = note;
-  midi_velocity[voice] = velocity;
-  note_on_flag[voice] = 1;
-  noteStart[voice] = 1;
+  velocity[voice] = velocity_in;
+  note_on_flag[voice] = 1;  // Mailbox flag for Core 1 audio task (triggers PIO/porta)
+  noteStart[voice] = 1;     // ADSR attack edge
   noteEnd[voice] = 0;
   voiceAlloc.markOn(voice, note);
+  adsr_note_on(voice);
+  mod_matrix_on_note_on(voice);
 }
 
-// Gate a voice off and start tracking its release tail.
-void voice_mark_off(uint8_t voice) {
+/**
+ * @brief Gates off a voice into its ADSR release tail.
+ */
+void SRAM_HOT(voice_mark_off)(uint8_t voice) {
   VOICES[voice] = 0;
-  noteEnd[voice] = 1;
+  noteEnd[voice] = 1;       // ADSR release edge
   noteStart[voice] = 0;
   voiceAlloc.markOff(voice);
+  adsr_note_off(voice);
 }
+
+/**
+ * @brief Legato pitch regate: updates pitch & portamento WITHOUT restarting ADSR envelopes.
+ * 
+ * Used during Mono/Unison overlapping notes and release fallback in Alloc Mode 3.
+ */
+void SRAM_HOT(voice_mark_regate)(uint8_t voice, uint8_t note) {
+  VOICES[voice] = 1;
+  VOICE_NOTES[voice] = note;
+  note_on_flag[voice] = 1;  // Tells Core 1 to glide/recalculate PIO pitch
+  noteEnd[voice] = 0;       // Ensure the voice does not drop into release
+  voiceAlloc.regate(voice, note);
+  // Deliberately skips adsr_note_on() and mod_matrix_on_note_on()
+}
+
 
 // Map voiceMode → NUM_VOICES / STACK_VOICES. Called from init_voices and
 // apply_param_voice_mode.
@@ -1349,31 +1272,31 @@ void voice_mark_off(uint8_t voice) {
 inline void setVoiceMode() {
   // Resync allocation state to the gates: a slot that NUM_VOICES dropped
   // mid-note would otherwise come back HELD when the count grows again.
-  voiceAlloc.resyncFromGates(VOICES);
-
-  switch (voiceMode) {
-  case 0:
-    NUM_VOICES = 1;
-    STACK_VOICES = 1;
-    // Drop any stale held notes when entering mono.
-    mono_note_stack_clear();
-    break;
-  case 1:
-    NUM_VOICES = NUM_VOICES_TOTAL;
-    STACK_VOICES = 1;
-    break;
-  case 2:
-    NUM_VOICES = NUM_VOICES_TOTAL;
-    STACK_VOICES = NUM_VOICES_TOTAL;
-    break;
+    voiceAlloc.resyncFromGates(VOICES);
+  
+    switch (voiceMode) {
+      case 0: // Mono
+        NUM_VOICES = 1;
+        STACK_VOICES = 1;
+        mono_note_stack_clear();
+        break;
+      case 1: // Poly
+        NUM_VOICES = NUM_VOICES_TOTAL;
+        STACK_VOICES = 1;
+        mono_note_stack_clear();
+        break;
+      case 2: // Unison / Stack
+        NUM_VOICES = NUM_VOICES_TOTAL;
+        STACK_VOICES = NUM_VOICES_TOTAL;
+        mono_note_stack_clear();
+        break;
+    }
+    voiceAlloc.setVoiceCount(NUM_VOICES);
   }
-
-  voiceAlloc.setVoiceCount(NUM_VOICES);
-}
 
 // Rebuild the PIO sync topology and retrigger voices.
 // Called from apply_param_sync_mode (Serial2).
-void setSyncMode() {
+void SRAM_HOT(setSyncMode)() {
   // assign_sm_mapping() keeps the slave below its master in SM index;
   // start_voice_sms() re-derives every SM's program, set pin and sideset pin
   // from syncMode and softSyncChunks, then starts them all on the same cycle.
@@ -1393,7 +1316,7 @@ void setSyncMode() {
 
 // One osc: shipping FIXED = Q24→Q8 lookup. With USE_FLOAT_AMP_COMP, non-FIXED
 // methods take Q24→Hz then get_chan_level_by_method (cmds 20–22).
-inline __attribute__((always_inline)) uint16_t amp_level_q24(int64_t freq_q24,
+inline __attribute__((always_inline)) uint16_t SRAM_HOT(amp_level_q24)(int64_t freq_q24,
                                                              uint8_t osc) {
 #ifdef USE_FLOAT_AMP_COMP
   if (amp_comp_method != AMP_COMP_FIXED) {
@@ -1407,7 +1330,7 @@ inline __attribute__((always_inline)) uint16_t amp_level_q24(int64_t freq_q24,
 
 // Q24 + syncMode switch + 2× lookup. SRAM so vt_chan_level is not a flash
 // caller.
-void __not_in_flash_func(amp_chan_levels_fixed)(int64_t freq_q24_A,
+void SRAM_HOT(amp_chan_levels_fixed)(int64_t freq_q24_A,
                                                 int64_t freq_q24_B,
                                                 uint8_t oscA, uint8_t oscB,
                                                 uint16_t *outA,
@@ -1440,7 +1363,7 @@ void __not_in_flash_func(amp_chan_levels_fixed)(int64_t freq_q24_A,
  * Window rule matches float: first i with freqRow[i] <= x < freqRow[i+2].
  * Find: per-osc ampWinCache → walk → full scan (same as FLOAT_QUAD).
  */
-uint16_t __not_in_flash_func(get_chan_level_lookup_fast)(int32_t x,
+uint16_t SRAM_HOT(get_chan_level_lookup_fast)(int32_t x,
                                                          uint8_t voiceN) {
   const int32_t *freqRow = ampCompFrequencyArray[voiceN];
   const int32_t *ampRow = ampCompArray[voiceN];
@@ -1548,7 +1471,7 @@ uint16_t __not_in_flash_func(get_chan_level_lookup_fast)(int32_t x,
  * @brief Pure-float quadratic amp-comp (Hz domain). Live FLOAT_QUAD.
  * Window find: per-osc cache → walk → full scan (first-match [Hz[w], Hz[w+2]]).
  */
-uint16_t __not_in_flash_func(get_chan_level_float_quad)(float freqHz,
+uint16_t SRAM_HOT(get_chan_level_float_quad)(float freqHz,
                                                         uint8_t voiceN) {
   // Domain Floor
   if (freqHz <= ampCompFrequencyHz[voiceN][0]) {
@@ -1618,7 +1541,7 @@ uint16_t __not_in_flash_func(get_chan_level_float_quad)(float freqHz,
   return (uint16_t)round(interpolatedValue);
 }
 
-uint16_t __not_in_flash_func(get_chan_level_lut)(float freqHz, uint8_t voiceN) {
+uint16_t SRAM_HOT(get_chan_level_lut)(float freqHz, uint8_t voiceN) {
   if (freqHz <= 0.0f)
     return ampCompLut[voiceN][0];
   if (freqHz >= (float)AMP_COMP_MAX_HZ)
@@ -1761,7 +1684,7 @@ void voice_task_autotune(uint8_t taskAutotuneVoiceMode,
 // Cached variant: pass DCO index to reuse last segment and avoid binary search
 #if PITCH_INTERP_MODE == PITCH_INTERP_Q12
 int32_t
-__not_in_flash_func(interpolatePitchMultiplierIntQ16_cached)(int32_t xQ16,
+SRAM_HOT(interpolatePitchMultiplierIntQ16_cached)(int32_t xQ16,
                                                              int dcoIndex) {
   int32_t xInt = xQ16 >> 16;
   if (xInt <= xMultiplierTable[0]) {
@@ -1819,7 +1742,7 @@ __not_in_flash_func(interpolatePitchMultiplierIntQ16_cached)(int32_t xQ16,
 // xQ16 and tables are natural Q16 (1.0 = 65536). Returns frequency ratio as
 // Q16. Miss path: O(1) trunc±1 (same idea as FLOAT_FAST) — avoids walk under
 // LFO thrash.
-int32_t __not_in_flash_func(interpolateRatioQ16_cached)(int32_t xQ16,
+int32_t SRAM_HOT(interpolateRatioQ16_cached)(int32_t xQ16,
                                                         int dcoIndex) {
   // Endpoints match initMultiplierTables (-1 / 3) in Q16.
   static constexpr int32_t kPitchX0_Q16 = -65536; // -1.0
@@ -1879,7 +1802,7 @@ int32_t __not_in_flash_func(interpolateRatioQ16_cached)(int32_t xQ16,
 #if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
 // x = pitch modifier in ~[-1, 3]; returns frequency ratio directly (tables are
 // unscaled). Walk + bsearch find (A/B vs FLOAT_FAST).
-float __not_in_flash_func(interpolateRatioFloat_cached)(float x, int dcoIndex) {
+float SRAM_HOT(interpolateRatioFloat_cached)(float x, int dcoIndex) {
   if (x <= xMultiplierTableF[0]) {
     BENCH_PATH_INC(ratio_clamp);
     return yMultiplierTableF[0];
@@ -1953,7 +1876,7 @@ float __not_in_flash_func(interpolateRatioFloat_cached)(float x, int dcoIndex) {
 // ballast). noinline: isolate codegen from voice_task_float (distinct SRAM
 // symbol).
 __attribute__((noinline)) float
-__not_in_flash_func(interpolateRatioFloat_cached_fast)(float x, int dcoIndex) {
+SRAM_HOT(interpolateRatioFloat_cached_fast)(float x, int dcoIndex) {
   // Endpoints match initMultiplierTables (-1 / 3).
   if (x <= -1.0f) {
     BENCH_PATH_INC(ratio_clamp);

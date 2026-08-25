@@ -61,7 +61,7 @@ void __not_in_flash_func(LFO1)() {
 
 // Update LFO2 Q15 level + OSC2/3 pitch mods (fine + coarse folded).
 // DMB after LFO1()+LFO2() stores so Core1 snapshots a coherent mailbox (not SIO FIFO).
-void __not_in_flash_func(LFO2)() {
+void SRAM_HOT(LFO2)() {
   LFO2Level = LFO2_class.getWaveQ15(micros());
   lfo2_pitch_mod_q24[LFO2_PITCH_OSC2] =
     applyDepthQ24(LFO2Level, LFO2toOSC2_q24 + LFO2toOSC2_coarse_q24);
@@ -72,10 +72,10 @@ void __not_in_flash_func(LFO2)() {
 
 // Update per-oscillator drift LFO levels as Q15 (negate wave = legacy polarity).
 // Publish mailbox for Core 1: three stores then DMB (not SIO FIFO).
-void __not_in_flash_func(DRIFT_LFOs)() {
+void SRAM_HOT(DRIFT_LFOs)() {
   unsigned long currentMicros = micros();
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
-    LFO_DRIFT_LEVEL[i] = (int16_t)(-LFO_DRIFT_CLASS[i].getWaveQ15(currentMicros));
+    LFO_DRIFT_LEVEL[i] = (int16_t)(LFO_DRIFT_CLASS[i].getWaveQ15(currentMicros));
   }
   __dmb();
 }
