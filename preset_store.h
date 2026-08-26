@@ -12,8 +12,9 @@
  #include "_build_libs/DCO-PROTOCOL/params_def.h"
  #include "_build_libs/DCO-PROTOCOL/serial_input_protocol.h"
 
- uint8_t presetName[PRESET_NAME_LEN] = { 32, 32, 32, 32, 32, 32, 32, 32,
-                               32, 32, 32, 32, 32, 32, 32, 32 };
+uint8_t presetName[PRESET_NAME_LEN];
+
+extern uint8_t currentPresetSlot;
  
  // PRESET_NUM_SLOTS (256) and PRESET_NAME_LEN (16) come from serial_input_protocol.h
  static constexpr uint8_t  PRESET_RECORDS_PER_FILE  = 4;

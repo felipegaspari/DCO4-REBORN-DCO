@@ -56,20 +56,19 @@ void serial_send_screen_signal_to_mb(uint8_t signal) {
  * @param slot Preset slot index (0..255).
  */
  void serial_send_preset_scroll_to_mb(uint8_t slot) {
-  uint8_t payload[SERIAL_LEN_SCREEN_PRESET_SCROLL]; // 17 bytes total
-  payload[0] = slot;                                // Byte 0 = Preset Number
+  uint8_t payload[1 + PRESET_NAME_LEN]; // 17 bytes total: [slot][name:16]
+  payload[0] = slot;
   
-  // If a valid preset exists in RAM for this slot, copy its 16-character name
   if (slot < PRESET_RAM_SLOTS && presetStoreRAM[slot][PRESET_OFF_MAGIC] == PRESET_MAGIC) {
-    memcpy(payload + 1, &presetStoreRAM[slot][PRESET_OFF_NAME], 16);
+    memcpy(payload + 1, &presetStoreRAM[slot][PRESET_OFF_NAME], PRESET_NAME_LEN);
   } else {
-    // Empty preset slot - fill name with 16 space characters (0x20)
-    memset(payload + 1, ' ', 16);
+    memset(payload + 1, ' ', PRESET_NAME_LEN);
   }
   
-  // Transmit 17 bytes [slot][name:16] across Serial2 to Mainboard
-  serial_frame_write(Serial2Dma, (uint8_t)CMD_PRESET_NAME, payload, SERIAL_LEN_SCREEN_PRESET_SCROLL);
+  // Send as CMD_PRESET_DIR_ENTRY ('O') so Input board updates preset_names[slot] cache
+  serial_frame_write(Serial2Dma, CMD_PRESET_DIR_ENTRY, payload, sizeof(payload));
 }
+
 /**
  * @brief Sends the active preset slot number to the Mainboard ('L').
  * @param slot Preset slot index (0..255).
@@ -249,8 +248,30 @@ void __not_in_flash_func(serialSendParam32)(byte paramNumber, uint32_t paramValu
   }
 }
 
-void serial_echo_persistable_param16(uint8_t id, int16_t value) {
+static inline bool SRAM_HOT(dco_should_forward_usb_param)(uint8_t id) {
+  // 1. All patch sound parameters (0..179)
   if (preset_param_is_persistable(id)) {
+    return true;
+  }
+  // 2. Explicit runtime calibration and hardware control flags
+  switch (id) {
+    case PARAM_CALIBRATION_FLAG:
+    case PARAM_MANUAL_CALIBRATION_FLAG:
+    case PARAM_MANUAL_CALIBRATION_STAGE:
+    case PARAM_MANUAL_CALIBRATION_OFFSET:
+    case PARAM_MANUAL_CALIBRATION_STORE:
+    case PARAM_MANUAL_CALIBRATION_STEP:
+    case PARAM_AMP_COMP_440:
+    case PARAM_AMP_COMP_DUTY_OFFSET:
+    case PARAM_CAL_PW_CENTER:
+      return true;
+    default:
+      return false; // Blocks DCO-internal commands (PRESET_SAVE/LOAD/DUMP/CAL_DUMP)
+  }
+}
+
+void SRAM_HOT(serial_echo_usb_param16)(uint8_t id, int16_t value) {
+  if (dco_should_forward_usb_param(id)) {
     serialSendParam16(id, value);
   }
 }
@@ -317,21 +338,23 @@ static void __not_in_flash_func(dco_rx_handle_param16)(char, const uint8_t* payl
   decode_param_p(payload, frame);
   update_parameters(frame.id, (int16_t)frame.value);
   if (g_param_ingress == PARAM_SRC_USB) {
-    serial_echo_persistable_param16(frame.id, (int16_t)frame.value);
+    serial_echo_usb_param16(frame.id, (int16_t)frame.value);
   }
 }
 
-
 static void __not_in_flash_func(dco_rx_handle_preset_name)(char cmd, const uint8_t* payload, uint8_t len) {
   // 1. Store 16-byte name in DCO local RAM
-  for (int i = 0; i < 16; ++i) presetName[i] = payload[i];
+  for (int i = 0; i < PRESET_NAME_LEN; ++i) presetName[i] = payload[i];
 
-  // 2. Forward to Mainboard as 17-byte [slot][name:16] frame if originating from USB
+  // 2. Forward to Mainboard/Input as 'O' (CMD_PRESET_DIR_ENTRY) to update Input RAM cache
   if (g_param_ingress == PARAM_SRC_USB) {
-    uint8_t mb_payload[SERIAL_LEN_SCREEN_PRESET_SCROLL];
-    mb_payload[0] = (uint8_t)presetParamShadow[PARAM_UI_PRESET_SCROLL]; // Current active slot
-    memcpy(mb_payload + 1, presetName, 16);
-    serial_frame_write(Serial2Dma, (uint8_t)CMD_PRESET_NAME, mb_payload, SERIAL_LEN_SCREEN_PRESET_SCROLL);
+    uint8_t mb_payload[1 + PRESET_NAME_LEN];
+    mb_payload[0] = currentPresetSlot;
+    memcpy(mb_payload + 1, presetName, PRESET_NAME_LEN);
+    serial_frame_write(Serial2Dma, CMD_PRESET_DIR_ENTRY, mb_payload, sizeof(mb_payload));
+    
+    // Notify Mainboard & Input that currentPresetSlot is active with this name
+    serial_send_preset_loaded_to_mb(currentPresetSlot);
   }
 }
 

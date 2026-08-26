@@ -48,19 +48,17 @@ float SRAM_HOT(interpolateRatioFloat_cached_fast)(float x, int dcoIndex);
 // interpolate_live_ratio_f (FLOAT_FAST would otherwise type-check the Q12 #else
 // and fail: IntQ16 is not compiled).
 #ifndef USE_FLOAT_VOICE_TASK
-inline __attribute__((always_inline))
 int32_t SRAM_HOT(modifiers_q24_to_xQ16)(int64_t modifiers_q24) {
 #if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
-  return (modifiers_q24 >= 0) ? (int32_t)(modifiers_q24 >> 8)
-                              : (int32_t)(-((-modifiers_q24) >> 8));
+  // Round to nearest Q16 integer instead of truncating:
+  return (int32_t)((modifiers_q24 + 128) >> 8);
 #else
   int64_t x_q24s = modifiers_q24 * (int64_t)multiplierTableScale;
-  return (x_q24s >= 0) ? (int32_t)(x_q24s >> 8) : (int32_t)(-((-x_q24s) >> 8));
+  return (int32_t)((x_q24s + 128) >> 8);
 #endif
 }
 
-inline __attribute__((always_inline)) int32_t
-SRAM_HOT(interpolate_live_ratio_q16)(int32_t xQ16, int dcoIndex) {
+int32_t SRAM_HOT(interpolate_live_ratio_q16)(int32_t xQ16, int dcoIndex) {
 #if PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
   return interpolateRatioQ16_cached(xQ16, dcoIndex);
 #elif PITCH_INTERP_MODE == PITCH_INTERP_Q12
@@ -74,8 +72,7 @@ SRAM_HOT(interpolate_live_ratio_q16)(int32_t xQ16, int dcoIndex) {
 }
 #endif // !USE_FLOAT_VOICE_TASK
 
-inline __attribute__((always_inline)) float
-SRAM_HOT(interpolate_live_ratio_f)(float modifiers, int dcoIndex) {
+float SRAM_HOT(interpolate_live_ratio_f)(float modifiers, int dcoIndex) {
 #if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
   return interpolateRatioFloat_cached(modifiers, dcoIndex);
 #elif PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
@@ -137,22 +134,6 @@ static inline int64_t SRAM_HOT(noteQ16_to_freqQ24)(int32_t note_q16) {
 // Helper: convert float Hz to Q24 fixed-point (Hz * 2^24)
 static inline int64_t SRAM_HOT(float_to_q24)(float f) {
   return (int64_t)lrintf(f * (float)(1 << 24));
-}
-
-// midi/base + offset → table index using signed math (no uint8 wrap-to-top).
-// High notes still fold down by octaves to stay within highestNote, then clamp.
-static inline uint8_t SRAM_HOT(midi_offset_to_table_index)(int midi_or_base, int offset,
-                                                 size_t table_len) {
-  int n = midi_or_base - 36 + offset;
-  if (n < 0)
-    n = 0;
-  while (n > (int)highestNote)
-    n -= 12;
-  if (table_len == 0)
-    return 0;
-  if (n >= (int)table_len)
-    n = (int)table_len - 1;
-  return (uint8_t)n;
 }
 
 
@@ -378,6 +359,7 @@ void SRAM_HOT(voice_task_fixed_point)() {
 
   last_midi_pitch_bend = midi_pitch_bend;
 
+  // Latch and clear Core 0 mailbox trigger flags
   for (int k = 0; k < NUM_VOICES; k++) {
     if (note_on_flag[k] == 1) {
       note_on_flag_flag[k] = true;
@@ -392,19 +374,15 @@ void SRAM_HOT(voice_task_fixed_point)() {
     float dbg_freq_after_mod_Hz = 0.0f;
 #endif
 
-    const size_t NOTE_TABLE_LEN =
-        sizeof(sNotePitches_q24) / sizeof(sNotePitches_q24[0]);
-    uint8_t note1, note2;
-    const uint8_t vn = VOICE_NOTES[i];
-    if (vn == 0) {
-      note1 = note2 = 0;
-    } else {
-      note1 = midi_offset_to_table_index((int)vn, (int)octave_shift,
-                                         NOTE_TABLE_LEN);
-      note2 = midi_offset_to_table_index((int)note1, (int)OSC2_interval,
-                                         NOTE_TABLE_LEN);
-    }
+    // =========================================================================
+    // INSTANT ZERO-MATH FETCH (Replaces runtime midi_offset_to_table_index)
+    // =========================================================================
+    // Fetch the pre-baked pitch table indices directly from SRAM (1 clock cycle).
+    // All octave shifting, interval math, and folding were completed at note_on.
+    const uint8_t note1 = VOICE_NOTE_OSC1[i];
+    const uint8_t note2 = VOICE_NOTE_OSC2[i];
 
+    // Detect if the target pitch has changed for glide / portamento re-targeting
     const bool pitchTargetChanged =
         note1 != lastNote1[i] || note2 != lastNote2[i];
     lastNote1[i] = note1;
@@ -412,15 +390,13 @@ void SRAM_HOT(voice_task_fixed_point)() {
 
     int64_t freq_q24_A;
     int64_t freq_q24_B;
-
     const uint8_t DCO_A = (uint8_t)(i * 2);
     const uint8_t DCO_B = (uint8_t)(i * 2 + 1);
 
     // OSC2 Fine Detune
     BENCH_BEGIN(vt_osc_detune);
-    static constexpr int32_t DETUNE_SCALE_Q24 =
-        (int32_t)(0.0002f * (float)(1 << 24) + 0.5f);
-    int32_t detune_steps = ((int)256 - OSC2DetuneVal);
+    static constexpr int32_t DETUNE_SCALE_Q24 = (int32_t)(0.0002f * (float)(1 << 24) + 0.5f);
+    int32_t detune_steps = ((int32_t)OSC2_detune - 256);
     int32_t detune_q24 = (1 << 24) + (detune_steps * DETUNE_SCALE_Q24);
     BENCH_END(vt_osc_detune);
 
@@ -454,15 +430,12 @@ void SRAM_HOT(voice_task_fixed_point)() {
       if (portaDoRetime) {
         portamentoStartMicros[i] = now_us;
         portamentoTimer[i] = 0;
-
-        int32_t targetNoteA_q16 = ((int32_t)note1) << 16;
-        int32_t targetNoteB_q16 = ((int32_t)note2) << 16;
-        
-        // DIRECT: Use current note-space position (NO binary search!)
-        porta_setup_glide_q16(DCO_A, porta_note_cur_q16[DCO_A], targetNoteA_q16, portaMode);
-        porta_setup_glide_q16(DCO_B, porta_note_cur_q16[DCO_B], targetNoteB_q16, portaMode);
-        curA = portamento_cur_freq_q24[DCO_A];
-        curB = portamento_cur_freq_q24[DCO_B];
+      
+        // DIRECT note position (no table lookups or binary searches!)
+        porta_setup_glide_f(DCO_A, porta_note_cur_f[DCO_A], (float)note1, portaMode);
+        porta_setup_glide_f(DCO_B, porta_note_cur_f[DCO_B], (float)note2, portaMode);
+        curA = porta_freq_cur_f[DCO_A];
+        curB = porta_freq_cur_f[DCO_B];
       } else if (porta_note_cur_q16[DCO_A] == porta_note_stop_q16[DCO_A] &&
                  porta_note_cur_q16[DCO_B] == porta_note_stop_q16[DCO_B]) {
         curA = portamento_stop_q24[DCO_A];
@@ -563,11 +536,8 @@ void SRAM_HOT(voice_task_fixed_point)() {
       if (char_pitch_scale_q15) {
         modifiersBase_q24 += character_pitch_delta_q24();
       }
-      freqModifiers_q24 = ADSRModifierOSC1_q24 + DETUNE_DRIFT_OSC1_q24 +
-                          modifiersBase_q24 + local_lfo1_osc1;
-      freq2Modifiers_q24 = ADSRModifierOSC2_q24 + DETUNE_DRIFT_OSC2_q24 +
-                           modifiersBase_q24 + local_lfo1_osc2 +
-                           local_lfo2_osc2;
+      freqModifiers_q24 = ADSRModifierOSC1_q24 + DETUNE_DRIFT_OSC1_q24 + modifiersBase_q24 + local_lfo1_osc1 + matrix_osc1_pitch_mod_q24[i];
+      freq2Modifiers_q24 = ADSRModifierOSC2_q24 + DETUNE_DRIFT_OSC2_q24 + modifiersBase_q24 + local_lfo1_osc2 + local_lfo2_osc2 + matrix_osc2_pitch_mod_q24[i];
       BENCH_END(vt_modifiers);
     }
 
@@ -739,10 +709,8 @@ void SRAM_HOT(voice_task_fixed_point)() {
         const int32_t lfo2_delta =
             ((int32_t)local_LFO2Level * (int32_t)local_LFO2toPW) >> 15;
 
-        // 2. ✅ Clean logical sum: Knob + LFO + Envelope + Jitter
-        int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr3_delta +
-                          mod_matrix_get_dest(i, DEST_PW) +
-                          (int32_t)character_pw_delta();
+        // 2. ✅ Clean logical sum: Knob + LFO + Envelope + mod_matrix + Jitter 
+        int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr3_delta + matrix_pw_mod[i] + (int32_t)character_pw_delta();
 
         // 3. Clamp to valid 10-bit range (0 .. 1023)
         if (pw_calc < 0)
@@ -795,22 +763,46 @@ void SRAM_HOT(voice_task_float)() {
   bool portaModeChanged = (portaMode != last_portamento_mode);
 
   BENCH_BEGIN(vt_pitchbend);
-  float pitchBendMultiplier = q24_to_float(pitchBendMultiplier_q24);
   float calcPitchbend;
 
+  static constexpr float INV_8191 = 1.0f / 8190.99f;
+  static constexpr float INV_8192 = 1.0f / 8192.99f;
+  
   if (midi_pitch_bend == 8192) {
     calcPitchbend = 0.0f;
   } else if (midi_pitch_bend < 8192) {
-    calcPitchbend =
-        (((float)midi_pitch_bend / 8190.99f) - 1.0f) * pitchBendMultiplier;
+    calcPitchbend = (((float)midi_pitch_bend * INV_8191) - 1.0f) * pitchBendMultiplier;
   } else {
-    calcPitchbend =
-        (((float)midi_pitch_bend / 8192.99f) - 1.0f) * pitchBendMultiplier;
+    calcPitchbend = (((float)midi_pitch_bend * INV_8192) - 1.0f) * pitchBendMultiplier;
   }
   BENCH_END(vt_pitchbend);
 
   last_midi_pitch_bend = midi_pitch_bend;
 
+  // 1. OSC2 Detune (Global patch parameter, not per-voice)
+  const float detuneSteps = (float)((int32_t)OSC2_detune - 256);
+  const float osc2DetuneRatio = 1.0f + 0.0002f * detuneSteps;
+
+  // 2. Unison Base (Global parameter)
+  static constexpr float UNISON_SCALE = 0.0001f;
+  const float unisonBase = (float)unisonDetune * UNISON_SCALE;
+
+  // 3. Global LFOs (Global parameters)
+  const float lfo1_osc1_f = q24_to_float(lfo1_pitch_mod_q24[LFO1_PITCH_OSC1]);
+  const float lfo1_osc2_f = q24_to_float(lfo1_pitch_mod_q24[LFO1_PITCH_OSC2]);
+  const float lfo2_osc2_f = q24_to_float(lfo2_pitch_mod_q24[LFO2_PITCH_OSC2]);
+
+  // 4. Constant Epsilon
+  static constexpr float EPS_FLOAT = (float)Q24_ONE_EPS * (1.0f / 16777216.0f);
+
+  // 5. Global PWM LFO delta
+  const int32_t lfo2_pw_delta = ((int32_t)LFO2Level * (int32_t)LFO2toPW) >> 15;
+
+  // 6. Pre-scaled Modifiers (Avoid 64-bit integer math in the loop!)
+  const float adsr3_to_pitch_scale_f = q24_to_float(ADSR3toDETUNE1_scale_q24) * (1.0f / 32768.0f);
+  const float drift_scale_f = q24_to_float(drift_pitch_scale_q24) * (1.0f / 32768.0f);
+
+  // Latch and clear Core 0 mailbox trigger flags
   for (int k = 0; k < NUM_VOICES; k++) {
     if (note_on_flag[k] == 1) {
       note_on_flag_flag[k] = true;
@@ -825,36 +817,29 @@ void SRAM_HOT(voice_task_float)() {
     float dbg_freq_after_mod_Hz = 0.0f;
 #endif
 
-    const size_t NOTE_TABLE_LEN =
-        sizeof(sNotePitches) / sizeof(sNotePitches[0]);
-    uint8_t note1, note2;
-    const uint8_t vn = VOICE_NOTES[i];
-    if (vn == 0) {
-      note1 = note2 = 0;
-    } else {
-      note1 = midi_offset_to_table_index((int)vn, (int)octave_shift,
-                                         NOTE_TABLE_LEN);
-      note2 = midi_offset_to_table_index((int)note1, (int)OSC2_interval,
-                                         NOTE_TABLE_LEN);
-    }
+    // =========================================================================
+    // INSTANT ZERO-MATH FETCH (Replaces runtime midi_offset_to_table_index)
+    // =========================================================================
+    // Fetch pre-baked pitch table indices directly from SRAM (1 clock cycle).
+    // All octave shifting, interval math, and folding were completed at note_on.
+    const uint8_t note1 = VOICE_NOTE_OSC1[i];
+    const uint8_t note2 = VOICE_NOTE_OSC2[i];
 
+    // Detect if target pitch changed to re-target portamento / glide slew
     const bool pitchTargetChanged =
         note1 != lastNote1[i] || note2 != lastNote2[i];
     lastNote1[i] = note1;
     lastNote2[i] = note2;
 
+    // Direct float frequency fetch from table
     float noteFreq1 = sNotePitches[note1];
     float noteFreq2 = sNotePitches[note2];
+
 
     float freqA, freqB;
 
     const uint8_t DCO_A = (uint8_t)(i * 2);
     const uint8_t DCO_B = (uint8_t)(i * 2 + 1);
-
-    BENCH_BEGIN(vt_osc_detune);
-    float detuneSteps = (float)((int)256 - OSC2DetuneVal);
-    float osc2DetuneRatio = 1.0f + 0.0002f * detuneSteps;
-    BENCH_END(vt_osc_detune);
 
     BENCH_BEGIN(vt_portamento);
 
@@ -970,65 +955,34 @@ void SRAM_HOT(voice_task_float)() {
     BENCH_END(vt_portamento);
 
     BENCH_BEGIN(vt_adsr_mod);
-    float ADSRModifier = 0.0f;
-    if (ADSR3toDETUNE1_scale_q24 != 0) {
-      ADSRModifier = q24_to_float(applyDepthQ24(
-          env_dco_pitch_wave_q15(ADSR3Level_q15[i]), ADSR3toDETUNE1_scale_q24));
-    }
-    float ADSRModifierOSC1 = (ADSR3ToOscSelect == 0 || ADSR3ToOscSelect == 2 ||
-                              ADSR3ToOscSelect == 4)
-                                 ? ADSRModifier
-                                 : 0.0f;
-    float ADSRModifierOSC2 = (ADSR3ToOscSelect == 1 || ADSR3ToOscSelect == 2 ||
-                              ADSR3ToOscSelect == 4)
-                                 ? ADSRModifier
-                                 : 0.0f;
+    // Direct 1-cycle float multiply:
+    float ADSRModifier = (float)ADSR3Level_q15[i] * adsr3_to_pitch_scale_f;
+    float ADSRModifierOSC1 = (ADSR3ToOscSelect == 0 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier : 0.0f;
+    float ADSRModifierOSC2 = (ADSR3ToOscSelect == 1 || ADSR3ToOscSelect == 2 || ADSR3ToOscSelect == 4) ? ADSRModifier : 0.0f;
     BENCH_END(vt_adsr_mod);
+    
+    BENCH_BEGIN(vt_drift_mod);
+    // Direct 1-cycle float multiply:
+    const int16_t driftA = LFO_DRIFT_LEVEL[DCO_A];
+    const int16_t driftB = LFO_DRIFT_LEVEL[DCO_B];
+    float DETUNE_DRIFT_OSC1 = (float)driftA * drift_scale_f;
+    float DETUNE_DRIFT_OSC2 = (float)driftB * drift_scale_f;
+    BENCH_END(vt_drift_mod);
 
     BENCH_BEGIN(vt_unison_mod);
-    static constexpr float UNISON_SCALE = 0.0001f;
-    const float unisonBase = (float)unisonDetune * UNISON_SCALE;
     float voiceMag = (float)((i >> 1) + 1);
     float voiceSign = ((i & 0x01) == 0) ? 1.0f : -1.0f;
     float unisonMODIFIER = unisonBase * (voiceSign * voiceMag);
     BENCH_END(vt_unison_mod);
 
-    BENCH_BEGIN(vt_drift_mod);
-    const int32_t driftScale_q24 = drift_pitch_scale_q24;
-    const int16_t driftA = LFO_DRIFT_LEVEL[DCO_A];
-    const int16_t driftB = LFO_DRIFT_LEVEL[DCO_B];
-    float DETUNE_DRIFT_OSC1 =
-        (driftScale_q24 != 0)
-            ? q24_to_float(applyDepthQ24(driftA, driftScale_q24))
-            : 0.0f;
-    float DETUNE_DRIFT_OSC2 =
-        (driftScale_q24 != 0)
-            ? q24_to_float(applyDepthQ24(driftB, driftScale_q24))
-            : 0.0f;
-    BENCH_END(vt_drift_mod);
 
     float freqModifiers1;
     float freqModifiers2;
     {
-      const int32_t local_lfo1_osc1 = lfo1_pitch_mod_q24[LFO1_PITCH_OSC1];
-      const int32_t local_lfo1_osc2 = lfo1_pitch_mod_q24[LFO1_PITCH_OSC2];
-      const int32_t local_lfo2_osc2 = lfo2_pitch_mod_q24[LFO2_PITCH_OSC2];
       BENCH_BEGIN(vt_modifiers);
-      float lfo1_osc1 = q24_to_float(local_lfo1_osc1);
-      float lfo1_osc2 = q24_to_float(local_lfo1_osc2);
-      float lfo2_osc2 = q24_to_float(local_lfo2_osc2);
-      float eps = q24_to_float(Q24_ONE_EPS);
-      float pitchBendF = calcPitchbend;
-
-      float modifiersBase = pitchBendF + eps +
-                            q24_to_float(matrix_pitch_mod_q24) + unisonMODIFIER;
-      if (char_pitch_scale_q15) {
-        modifiersBase += q24_to_float(character_pitch_delta_q24());
-      }
-      freqModifiers1 =
-          ADSRModifierOSC1 + DETUNE_DRIFT_OSC1 + modifiersBase + lfo1_osc1;
-      freqModifiers2 = ADSRModifierOSC2 + DETUNE_DRIFT_OSC2 + modifiersBase +
-                       lfo1_osc2 + lfo2_osc2;
+      float modifiersBase = calcPitchbend + EPS_FLOAT + q24_to_float(matrix_pitch_mod_q24[i]) + unisonMODIFIER;
+      freqModifiers1 = ADSRModifierOSC1 + DETUNE_DRIFT_OSC1 + modifiersBase + lfo1_osc1_f + q24_to_float(matrix_osc1_pitch_mod_q24[i]);
+      freqModifiers2 = ADSRModifierOSC2 + DETUNE_DRIFT_OSC2 + modifiersBase + lfo1_osc2_f + lfo2_osc2_f + q24_to_float(matrix_osc2_pitch_mod_q24[i]);
       BENCH_END(vt_modifiers);
     }
 
@@ -1162,19 +1116,13 @@ void SRAM_HOT(voice_task_float)() {
         BENCH_FBEGIN(vt_pwm_calc);
 
         const int16_t local_LFO2Level = LFO2Level;
-        const int16_t local_LFO2toPW = LFO2toPW;
         const int16_t local_ADSR3toPWM = ADSR3toPWM;
 
         // 1. Calculate Q15 modulation deltas
-        const int32_t adsr3_delta =
-            ((int32_t)ADSR3Level_q15[i] * (int32_t)local_ADSR3toPWM) >> 15;
-        const int32_t lfo2_delta =
-            ((int32_t)local_LFO2Level * (int32_t)local_LFO2toPW) >> 15;
+        const int32_t adsr3_delta = ((int32_t)ADSR3Level_q15[i] * (int32_t)local_ADSR3toPWM) >> 15;
 
         // 2. Clean logical sum: Knob + LFO + Envelope + Jitter
-        int32_t pw_calc = (int32_t)PW[0] + lfo2_delta + adsr3_delta +
-                          mod_matrix_get_dest(i, DEST_PW) +
-                          (int32_t)character_pw_delta();
+        int32_t pw_calc = (int32_t)PW[0] + lfo2_pw_delta + adsr3_delta + matrix_pw_mod[i] + (int32_t)character_pw_delta();
 
         // 3. Clamp to valid 10-bit range (0 .. 1023)
         if (pw_calc < 0)
@@ -1222,47 +1170,6 @@ uint8_t voice_alloc() {
 #endif
   return voiceAlloc.alloc();
 }
-
-/**
- * @brief Hard note attack: gates on, triggers ADSR curves, and notifies Core 1.
- */
- void SRAM_HOT(voice_mark_on)(uint8_t voice, uint8_t note, uint8_t velocity_in) {
-  VOICES[voice] = 1;
-  VOICE_NOTES[voice] = note;
-  velocity[voice] = velocity_in;
-  note_on_flag[voice] = 1;  // Mailbox flag for Core 1 audio task (triggers PIO/porta)
-  noteStart[voice] = 1;     // ADSR attack edge
-  noteEnd[voice] = 0;
-  voiceAlloc.markOn(voice, note);
-  adsr_note_on(voice);
-  mod_matrix_on_note_on(voice);
-}
-
-/**
- * @brief Gates off a voice into its ADSR release tail.
- */
-void SRAM_HOT(voice_mark_off)(uint8_t voice) {
-  VOICES[voice] = 0;
-  noteEnd[voice] = 1;       // ADSR release edge
-  noteStart[voice] = 0;
-  voiceAlloc.markOff(voice);
-  adsr_note_off(voice);
-}
-
-/**
- * @brief Legato pitch regate: updates pitch & portamento WITHOUT restarting ADSR envelopes.
- * 
- * Used during Mono/Unison overlapping notes and release fallback in Alloc Mode 3.
- */
-void SRAM_HOT(voice_mark_regate)(uint8_t voice, uint8_t note) {
-  VOICES[voice] = 1;
-  VOICE_NOTES[voice] = note;
-  note_on_flag[voice] = 1;  // Tells Core 1 to glide/recalculate PIO pitch
-  noteEnd[voice] = 0;       // Ensure the voice does not drop into release
-  voiceAlloc.regate(voice, note);
-  // Deliberately skips adsr_note_on() and mod_matrix_on_note_on()
-}
-
 
 // Map voiceMode → NUM_VOICES / STACK_VOICES. Called from init_voices and
 // apply_param_voice_mode.
@@ -1875,8 +1782,7 @@ float SRAM_HOT(interpolateRatioFloat_cached)(float x, int dcoIndex) {
 // Trunc+clamp±1 find; same lerp as walk. Keep ±1 even when walk_steps≈0 (live
 // ballast). noinline: isolate codegen from voice_task_float (distinct SRAM
 // symbol).
-__attribute__((noinline)) float
-SRAM_HOT(interpolateRatioFloat_cached_fast)(float x, int dcoIndex) {
+float SRAM_HOT(interpolateRatioFloat_cached_fast)(float x, int dcoIndex) {
   // Endpoints match initMultiplierTables (-1 / 3).
   if (x <= -1.0f) {
     BENCH_PATH_INC(ratio_clamp);

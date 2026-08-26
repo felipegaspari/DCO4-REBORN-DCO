@@ -50,7 +50,7 @@ static constexpr uint16_t DIV_COUNTER_PW = 1024;
 
 // Reset pulse width in system clock cycles (Y). Runtime-settable via
 // PARAM_DEBUG_COMMAND 160 with value in [200, 50000] (dco_control Calibration).
-uint32_t pioPulseLength = 3200;
+uint32_t pioPulseLength = 6000;
 
 // --- PIO Program Timing Constants ---
 // `jmp x-- lp` executes X+1 times: it jumps while X is non-zero, then spends one
@@ -270,10 +270,18 @@ PIO pio[3] = { pio0, pio1, pio2 };
 PIO pio[2] = { pio0, pio1 };
 #endif
 
+volatile uint8_t VOICE_NOTE_OSC1[NUM_VOICES_TOTAL] = {0};
+volatile uint8_t VOICE_NOTE_OSC2[NUM_VOICES_TOTAL] = {0};
+static uint8_t VOICE_MIDI_NOTE[NUM_VOICES_TOTAL];
+
 uint8_t midi_serial_status = 0;
 int midi_pitch_bend = 8192, last_midi_pitch_bend = 8192;
 uint8_t midi_aftertouch = 0;
+uint8_t midi_expression = 0;
+uint8_t midi_breath = 0;
 uint8_t midi_mod_wheel = 0;
+uint8_t midi_sustain = 0;
+uint8_t midi_channel = 1;
 uint8_t pitchBendRange = 2;
 // MIDI Bank Select (CC 0 / CC 32): 0 = slots 0..127, 1 = slots 128..255.
 uint8_t midiPresetBank = 0;
@@ -501,9 +509,10 @@ volatile uint8_t octave_shift = 24;
 uint8_t OSC2_serial_detune = 127;
 volatile uint8_t OSC2_interval = 36;
 volatile uint8_t OSC3_interval = 36;
-float OSC2_detune = 127;
-uint16_t OSC2DetuneVal = 256;
-uint16_t OSC3DetuneVal = 256;
+
+
+uint16_t OSC2_detune = 127;
+uint16_t OSC3_detune = 127;
 
 bool PWMPotsControlManual;
 

@@ -24,7 +24,7 @@ void SRAM_HOT(serial_usb_task)();
 
 void SRAM_HOT(serialSendParam32)(byte paramNumber, uint32_t paramValue, bool force = false);
 void SRAM_HOT(serialSendParam16)(byte paramNumber, int16_t paramValue, bool force = false);
-void SRAM_HOT(serial_echo_persistable_param16)(uint8_t id, int16_t value);
+void SRAM_HOT(serial_echo_usb_param16)(uint8_t id, int16_t value);
 
 void SRAM_HOT(serial_send_adsr_vca_block_to_mb)();
 void SRAM_HOT(serial_send_adsr_vcf_block_to_mb)();

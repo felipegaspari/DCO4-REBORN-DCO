@@ -112,7 +112,7 @@ lfo LFO_DRIFT_CLASS[NUM_OSCILLATORS] = {
 
 
 /////////////////////////////////////////////////////////////////
-byte LFO_DRIFT_WAVEFORM = 2;
+byte LFO_DRIFT_WAVEFORM = 10;
 float LFO_DRIFT_SPEED_OFFSET[NUM_OSCILLATORS];
 // Drift LFO mailbox: Core0 DRIFT_LFOs() publishes Q15 then DMB; Core1 snapshots
 // once per voice_task into locals. Polarity: negate Q15 for Mainboard polarity.
@@ -136,8 +136,12 @@ volatile int32_t lfo1_pitch_mod_q24[LFO1_PITCH_SLOT_COUNT];
 volatile int32_t lfo2_pitch_mod_q24[LFO2_PITCH_SLOT_COUNT];
 
 volatile int16_t LFO2Level;
+volatile int16_t LFO3Level;
 byte LFO2Waveform = 2;  // default triangle
+byte LFO3Waveform = 2;  // default triangle
+
 float LFO2Speed;
+float LFO3Speed;
 // Per-osc LFO2 fine pitch depths (OSC2/3; param 0..255).
 int32_t LFO2toOSC2_q24 = 0;
 int32_t LFO2toOSC3_q24 = 0;
@@ -148,6 +152,7 @@ volatile uint16_t LFO2toPW;
 
 uint16_t LFO1SpeedVal;
 uint16_t LFO2SpeedVal;
+uint16_t LFO3SpeedVal;
 uint16_t LFO1toDCOVal;
 
 void LFO1();

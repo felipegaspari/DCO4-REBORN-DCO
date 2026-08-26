@@ -7,6 +7,8 @@ int16_t presetParamShadow[PRESET_PARAM_COUNT];
 uint8_t presetParamSetBitmap[PRESET_PARAM_COUNT / 8];
 bool presetBootPending = true;
 
+uint8_t currentPresetSlot = 0;
+
 // --- IN-RAM PRESET STORE ---
 uint8_t presetStoreRAM[PRESET_RAM_SLOTS][PRESET_RECORD_SIZE];
 static uint8_t presetBulkStaging[PRESET_BULK_STAGING_SIZE];
@@ -299,6 +301,7 @@ static bool preset_chunk_write_record(uint8_t slot, const uint8_t* record, const
 
 void preset_store_save(uint8_t slot) {
   if (slot >= PRESET_RAM_SLOTS) return;
+  currentPresetSlot = slot;
   preset_record_build(presetStoreRAM[slot]);
   if (!preset_chunk_write_record(slot, presetStoreRAM[slot], "preset")) return;
   preset_set_slot_valid(slot, true);
@@ -308,7 +311,7 @@ void preset_store_save(uint8_t slot) {
 
 bool __not_in_flash_func(preset_store_load)(uint8_t slot) {
   if (slot >= PRESET_RAM_SLOTS) return false;
-
+  currentPresetSlot = slot;
   const bool isValid = preset_is_slot_valid(slot);
   const uint8_t* record = presetStoreRAM[slot];
  

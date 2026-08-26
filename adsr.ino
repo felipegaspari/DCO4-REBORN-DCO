@@ -24,11 +24,11 @@ uint16_t ADSR3Level[NUM_VOICES_TOTAL];
 uint16_t ADSR_VCA_Level[NUM_VOICES_TOTAL];
 
 /** @brief Legacy 12-bit DAC output level for primary filter (VCF1) envelope. */
-uint16_t ADSR_VCF_Level;
+uint16_t ADSR_VCF_Level[NUM_VOICES_TOTAL];
 
 /** @brief Legacy 12-bit DAC output level for secondary filter (VCF2) envelope.
  */
-uint16_t ADSR_VCF2_Level;
+uint16_t ADSR_VCF2_Level[NUM_VOICES_TOTAL];
 
 /** @brief Primary Q15 modulation output tap (0 .. 32767) for DCO envelope (per
  * voice). */
@@ -39,10 +39,10 @@ int16_t ADSR3Level_q15[NUM_VOICES_TOTAL];
 int16_t ADSR_VCA_Level_q15[NUM_VOICES_TOTAL];
 
 /** @brief Primary Q15 modulation output tap (0 .. 32767) for VCF1 envelope. */
-int16_t ADSR_VCF_Level_q15;
+int16_t ADSR_VCF_Level_q15[NUM_VOICES_TOTAL];
 
 /** @brief Primary Q15 modulation output tap (0 .. 32767) for VCF2 envelope. */
-int16_t ADSR_VCF2_Level_q15;
+int16_t ADSR_VCF2_Level_q15[NUM_VOICES_TOTAL];
 
 /** @brief Volatile Q15 output level read by audio synthesis tasks for DCO
  * envelope. */
@@ -54,11 +54,11 @@ volatile int16_t ADSR_VCA_Level_q15_volatile[NUM_VOICES_TOTAL];
 
 /** @brief Volatile Q15 output level read by audio synthesis tasks for VCF1
  * envelope. */
-volatile int16_t ADSR_VCF_Level_q15_volatile;
+volatile int16_t ADSR_VCF_Level_q15_volatile[NUM_VOICES_TOTAL];
 
 /** @brief Volatile Q15 output level read by audio synthesis tasks for VCF2
  * envelope. */
-volatile int16_t ADSR_VCF2_Level_q15_volatile;
+volatile int16_t ADSR_VCF2_Level_q15_volatile[NUM_VOICES_TOTAL];
 
 /** @brief Maximum envelope level reference for calibration/export. */
 float ADSRMaxLevel = ADSR_1_CC;
@@ -253,6 +253,7 @@ void init_ADSR() {
         adsr_sustain_for_set(ADSR3_sustain, ADSR_CV_SCALE));
     ADSRVoices[i].adsr3_voice.setRelease(ADSR3_release);
     ADSRVoices[i].adsr3_voice.setResetAttack(ADSR3Restart);
+    ADSRVoices[i].adsr3_voice.setMode(ADSR3Mode);
     /*/
         ADSRVoices[i].adsr_vca_voice.setAttack(ADSR_VCA_attack);
         ADSRVoices[i].adsr_vca_voice.setDecay(ADSR_VCA_decay);
@@ -554,4 +555,20 @@ void ADSR3_change_release_curve(uint8_t adsrCurveRelease) {
   for (int i = 0; i < NUM_VOICES; i++) {
     ADSRVoices[i].adsr3_voice.adsrCurveRelease(adsrCurveRelease);
   }
+}
+
+ // =============================================================================
+// MODE SETTERS (Direct mode updates across all 4 voices)
+// =============================================================================
+
+void ADSR1_set_mode(uint8_t mode) {
+ // for (int i = 0; i < NUM_VOICES; i++) ADSRVoices[i].adsr1_voice.setMode(mode);
+}
+
+void ADSR2_set_mode(uint8_t mode) {
+ // for (int i = 0; i < NUM_VOICES; i++) ADSRVoices[i].adsr2_voice.setMode(mode);
+}
+
+void ADSR3_set_mode(uint8_t mode) {
+  for (int i = 0; i < NUM_VOICES; i++) ADSRVoices[i].adsr3_voice.setMode(mode);
 }

@@ -303,8 +303,11 @@
 #include "hardware/clocks.h"
 #include "hardware/pwm.h"
 #include "hardware/watchdog.h"
+#include "pico/multicore.h"
+#include "hardware/irq.h"
 #include "LittleFS.h"
 #include "pico-dco.pio.h"
+
 
 // 1. Protocol & Framework Libraries
 #include "_build_libs/DCO-PROTOCOL/params_def.h"
@@ -379,9 +382,6 @@ void setup() {
 
   pinMode(DCO_calibration_pin, INPUT);
 
-  // gpio_init(11);
-  // gpio_set_dir(11, GPIO_IN);
-  // gpio_pull_down(11);
 }
 
 // Core 1 boot: LittleFS cal load, ADSR, amp-comp precompute, PWM/PIO, voices.
@@ -415,7 +415,9 @@ void setup1() {
 #ifdef RANGE0_PIO_DITHER_TEST
   init_range_pio_dither();
 #endif
+#if NOISE_ENGINE == 0
   dcoNoisePioBegin(pio[NOISE_PIO], NOISE_SM);
+#endif
   init_voices();
 }
 
@@ -475,11 +477,8 @@ void SRAM_HOT(loop)() {
     BENCH_END(loop0_lfo2);
 
 
-  if (timer50microsFlag == 1) {
-    BENCH_BEGIN(loop1_cv_outs);
-    update_CV_outs();
-    BENCH_END(loop1_cv_outs);
-  }
+
+
   if (timer51microsFlag == 1) {
     BENCH_BEGIN(loop0_drift);
     DRIFT_LFOs();
@@ -495,14 +494,20 @@ void SRAM_HOT(loop)() {
   {
     BENCH_BEGIN(loop1_noise);
     {
+      #if NOISE_ENGINE == 0
       BENCH_BEGIN(loop1_noise_refill);
       dcoNoisePioRefill();
       BENCH_END(loop1_noise_refill);
+      #endif
     }
     noiseLevel[0] = noise0.next();
     noiseLevel[1] = noise1.next();
     BENCH_END(loop1_noise);
   }
+
+  BENCH_BEGIN(loop1_cv_outs);
+  update_CV_outs();
+  BENCH_END(loop1_cv_outs);
 
   // Snapshot core 0's probes and print once core 1 has handed its own over. All profiler
   // serial traffic happens here, never on the audio core.
@@ -523,11 +528,11 @@ void SRAM_HOT(loop1)() {
   }
 
   // ===============================================
-  // CALIBRATION OR VOICE ENGINE TASK
+  // CALIBRATION TRAP (Costs exactly 1 clock cycle to bypass during normal play)
   // ===============================================
-  if (calibrationFlag || calibrationVerifyRequested) {
-    // Defer all calibration execution to the centralized manager
-    autotune_loop_task();
+  if (__builtin_expect(calibrationFlag || calibrationVerifyRequested, 0)) {
+    autotune_loop_task(); 
+    return; // EARLY EXIT: voice_task_main() is never reached while calibrating!
   }
 
   pio_defer_service();
@@ -540,10 +545,11 @@ void SRAM_HOT(loop1)() {
     for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
       ADSR3Level_q15[i] = ADSR3Level_q15_volatile[i];
       ADSR_VCA_Level_q15[i] = ADSR_VCA_Level_q15_volatile[i];
+      ADSR_VCF_Level_q15[i] = ADSR_VCF_Level_q15_volatile[i];
+      ADSR_VCF2_Level_q15[i] = ADSR_VCF2_Level_q15_volatile[i];
       }
-      ADSR_VCF_Level_q15 = ADSR_VCF_Level_q15_volatile;
-      ADSR_VCF2_Level_q15 = ADSR_VCF2_Level_q15_volatile;
-  }
+
+   }
 
   {
     BENCH_BEGIN(voice_task);

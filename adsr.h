@@ -75,19 +75,19 @@ extern volatile uint8_t vcf_active_gates;
 // Legacy u12/DAC mirrors
 extern uint16_t ADSR3Level[NUM_VOICES_TOTAL];
 extern uint16_t ADSR_VCA_Level[NUM_VOICES_TOTAL];
-extern uint16_t ADSR_VCF_Level;
-extern uint16_t ADSR_VCF2_Level;
+extern uint16_t ADSR_VCF_Level[NUM_VOICES_TOTAL];
+extern uint16_t ADSR_VCF2_Level[NUM_VOICES_TOTAL];
 
 // Primary mod taps (0..ADSR_Q15_ONE)
 extern int16_t ADSR3Level_q15[NUM_VOICES_TOTAL];
 extern int16_t ADSR_VCA_Level_q15[NUM_VOICES_TOTAL];
-extern int16_t ADSR_VCF_Level_q15;
-extern int16_t ADSR_VCF2_Level_q15;
+extern int16_t ADSR_VCF_Level_q15[NUM_VOICES_TOTAL];
+extern int16_t ADSR_VCF2_Level_q15[NUM_VOICES_TOTAL];
 
 extern volatile int16_t ADSR3Level_q15_volatile[NUM_VOICES_TOTAL];
 extern volatile int16_t ADSR_VCA_Level_q15_volatile[NUM_VOICES_TOTAL];
-extern volatile int16_t ADSR_VCF_Level_q15_volatile;
-extern volatile int16_t ADSR_VCF2_Level_q15_volatile;
+extern volatile int16_t ADSR_VCF_Level_q15_volatile[NUM_VOICES_TOTAL];;
+extern volatile int16_t ADSR_VCF2_Level_q15_volatile[NUM_VOICES_TOTAL];;
 
 // =================================================================
 // SCALES & CV LIMITS
@@ -103,8 +103,6 @@ extern uint16_t ADSRMinLevel;
 // ENV 3 (DCO) ROUTING VARIABLES
 // =================================================================
 extern int8_t ADSR3ToOscSelect; // 0=OSC1, 1=OSC2, 2=OSC1+2, 3=OSC3, 4=all
-static constexpr int16_t ENV_DCO_PITCH_CENTER_Q15 = 16384;
-
 
 extern uint16_t ADSR3_attack;
 extern uint16_t ADSR3_decay;
@@ -120,12 +118,6 @@ extern int32_t ADSR3toPWM_scale;
 uint8_t ADSR1Mode = 0;
 uint8_t ADSR2Mode = 0;
 uint8_t ADSR3Mode = 0;
-
-/** @brief Shifts unipolar EnvDCO tap to centered pitch domain if enabled. */
-static inline int16_t env_dco_pitch_wave_q15(int16_t env_q15) {
-  if (ADSR3Mode != 1) return env_q15;
-  return (int16_t)(((int32_t)env_q15 - ENV_DCO_PITCH_CENTER_Q15) << 1);
-}
 
 // =================================================================
 // DIRTY FLAGS (Core 0 write -> Core 1 apply)
