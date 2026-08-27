@@ -185,12 +185,12 @@ SRAM_DATA extern adsr adsr3_voice_3;
 
 /** @brief Per-voice VCA envelopes */
 /* DISABLED FOR DCO4 */
-/*
+
 extern adsr adsr_vca_voice_0;
 extern adsr adsr_vca_voice_1;
 extern adsr adsr_vca_voice_2;
 extern adsr adsr_vca_voice_3;
-*/
+
 
 /** @brief Per-voice VCF envelopes */
 /* DISABLED FOR DCO4 */
@@ -201,7 +201,7 @@ extern adsr adsr_vcf2_voice;
 /** @brief Groups per-voice envelopes for array iteration */
 struct ADSRStruct {
   adsr& adsr3_voice;   // EnvDCO → pitch/PW
-//  adsr& adsr_vca_voice;// EnvVCA → volume
+  adsr& adsr_vca_voice;// EnvVCA → volume
 };
 
 SRAM_DATA extern ADSRStruct ADSRVoices[];

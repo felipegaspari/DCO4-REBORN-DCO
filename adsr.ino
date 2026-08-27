@@ -172,13 +172,13 @@ adsr adsr_vcf2_voice(ADSR_CV_CC, ADSR_CURVE_S_CURVE_SOFT, ADSR_CURVE_ROUNDED,
 /** @brief Voice struct pairing per-voice DCO and VCA envelope instances. */
 ADSRStruct ADSRVoices[] = {
     {adsr3_voice_0,
-     /* adsr_vca_voice_0 */},
+     adsr_vca_voice_0},
     {adsr3_voice_1,
-     /* adsr_vca_voice_1 */},
+     adsr_vca_voice_1},
     {adsr3_voice_2,
-     /* adsr_vca_voice_2 */},
+     adsr_vca_voice_2},
     {adsr3_voice_3,
-     /* adsr_vca_voice_3 */},
+     adsr_vca_voice_3},
 };
 
 // =============================================================================
@@ -254,14 +254,12 @@ void init_ADSR() {
     ADSRVoices[i].adsr3_voice.setRelease(ADSR3_release);
     ADSRVoices[i].adsr3_voice.setResetAttack(ADSR3Restart);
     ADSRVoices[i].adsr3_voice.setMode(ADSR3Mode);
-    /*/
+    
         ADSRVoices[i].adsr_vca_voice.setAttack(ADSR_VCA_attack);
         ADSRVoices[i].adsr_vca_voice.setDecay(ADSR_VCA_decay);
-        ADSRVoices[i].adsr_vca_voice.setSustain(adsr_sustain_for_set(ADSR_VCA_sustain,
-       ADSR_CV_SCALE));
+        ADSRVoices[i].adsr_vca_voice.setSustain(adsr_sustain_for_set(ADSR_VCA_sustain, ADSR_CV_SCALE));
         ADSRVoices[i].adsr_vca_voice.setRelease(ADSR_VCA_release);
         ADSRVoices[i].adsr_vca_voice.setResetAttack(ADSR1Restart);
-   */
   }
 
   /* DISABLED FOR DCO4
@@ -299,17 +297,18 @@ void SRAM_HOT(ADSR_update)() {
   for (int i = phase; i < NUM_VOICES; i += 2) {
 #if ADSR_BEZIER_NATIVE_Q15
     ADSR3Level_q15_volatile[i] = (int16_t)ADSRVoices[i].adsr3_voice.getWave();
-    /*ADSR_VCA_Level_q15_volatile[i] =
-      (int16_t)ADSRVoices[i].adsr_vca_voice.getWave();
-      ADSR_VCF2_Level_q15_volatile = (int16_t)adsr_vcf2_voice.getWave();
+    ADSR_VCA_Level_q15_volatile[i] =(int16_t)ADSRVoices[i].adsr_vca_voice.getWave();
+     /* DISABLED FOR DCO4
+    ADSR_VCF2_Level_q15_volatile = (int16_t)adsr_vcf2_voice.getWave();
     */
 #else
     ADSR3Level[i] = ADSRVoices[i].adsr3_voice.getWave();
     ADSR3Level_q15_volatile[i] = ADSRVoices[i].adsr3_voice.levelQ15();
-    /*ADSR_VCA_Level[i] = ADSRVoices[i].adsr_vca_voice.getWave();
+    ADSR_VCA_Level[i] = ADSRVoices[i].adsr_vca_voice.getWave();
     ADSR_VCA_Level_q15_volatile[i] = ADSRVoices[i].adsr_vca_voice.levelQ15();
+    /* DISABLED FOR DCO4
         ADSR_VCF2_Level = adsr_vcf2_voice.getWave();
-  ADSR_VCF2_Level_q15_volatile = adsr_vcf2_voice.levelQ15();
+    ADSR_VCF2_Level_q15_volatile = adsr_vcf2_voice.levelQ15();
     */
 #endif
   }
@@ -317,13 +316,13 @@ void SRAM_HOT(ADSR_update)() {
 
 inline void SRAM_HOT(adsr_note_on)(uint8_t voice) {
   ADSRVoices[voice].adsr3_voice.noteOn();
-  //  ADSRVoices[voice].adsr_vca_voice.noteOn();
+    ADSRVoices[voice].adsr_vca_voice.noteOn();
   //  ADSRVoices[voice].adsr_vcf_voice.noteOn();
 }
 
 inline void SRAM_HOT(adsr_note_off)(uint8_t voice) {
   ADSRVoices[voice].adsr3_voice.noteOff();
-  //  ADSRVoices[voice].adsr_vca_voice.noteOff();
+    ADSRVoices[voice].adsr_vca_voice.noteOff();
   //  ADSRVoices[voice].adsr_vcf_voice.noteOff();
 }
 
@@ -358,7 +357,7 @@ inline void SRAM_HOT(ADSR_set_parameters)() {
         ADSRVoices[i].adsr3_voice.setRelease(ADSR3_release);
     }
   }
-  /*
+  
     // Update VCA Envelope parameters
     if (ch & ADSR_DIRTY_VCA_ALL) {
       const int s = adsr_sustain_for_set(ADSR_VCA_sustain, ADSR_CV_SCALE);
@@ -370,7 +369,7 @@ inline void SRAM_HOT(ADSR_set_parameters)() {
     ADSR_DIRTY_VCA_R) ADSRVoices[i].adsr_vca_voice.setRelease(ADSR_VCA_release);
       }
     }
-
+/** DISABLED FOR DCO4
     // Update Shared VCF Envelopes (VCF1 & VCF2)
     if (ch & ADSR_DIRTY_VCF_ALL) {
       const int s = adsr_sustain_for_set(ADSR_VCF_sustain, ADSR_CV_SCALE);
@@ -408,7 +407,7 @@ void ADSR3_set_restart() {
 /** @brief Apply VCA envelope retrigger behavior to all active voices. */
 void ADSR_VCA_set_restart() {
   for (int i = 0; i < NUM_VOICES; i++) {
-    // ADSRVoices[i].adsr_vca_voice.setResetAttack(ADSR1Restart);
+    ADSRVoices[i].adsr_vca_voice.setResetAttack(ADSR1Restart);
   }
 }
 
@@ -437,7 +436,7 @@ void ADSR_VCF2_set_restart() {
  */
 void ADSR_VCA_change_attack_curve(uint8_t adsrCurveAttack) {
   for (int i = 0; i < NUM_VOICES; i++) {
-    //     ADSRVoices[i].adsr_vca_voice.adsrCurveAttack(adsrCurveAttack);
+     ADSRVoices[i].adsr_vca_voice.adsrCurveAttack(adsrCurveAttack);
   }
 }
 
@@ -448,7 +447,7 @@ void ADSR_VCA_change_attack_curve(uint8_t adsrCurveAttack) {
  */
 void ADSR_VCA_change_decay_curve(uint8_t adsrCurveDecay) {
   for (int i = 0; i < NUM_VOICES; i++) {
-    //     ADSRVoices[i].adsr_vca_voice.adsrCurveDecay(adsrCurveDecay);
+     ADSRVoices[i].adsr_vca_voice.adsrCurveDecay(adsrCurveDecay);
   }
 }
 
@@ -459,7 +458,7 @@ void ADSR_VCA_change_decay_curve(uint8_t adsrCurveDecay) {
  */
 void ADSR_VCA_change_release_curve(uint8_t adsrCurveRelease) {
   for (int i = 0; i < NUM_VOICES; i++) {
-    //     ADSRVoices[i].adsr_vca_voice.adsrCurveRelease(adsrCurveRelease);
+     ADSRVoices[i].adsr_vca_voice.adsrCurveRelease(adsrCurveRelease);
   }
 }
 
@@ -562,7 +561,7 @@ void ADSR3_change_release_curve(uint8_t adsrCurveRelease) {
 // =============================================================================
 
 void ADSR1_set_mode(uint8_t mode) {
- // for (int i = 0; i < NUM_VOICES; i++) ADSRVoices[i].adsr1_voice.setMode(mode);
+ for (int i = 0; i < NUM_VOICES; i++) ADSRVoices[i].adsr_vca_voice.setMode(mode);
 }
 
 void ADSR2_set_mode(uint8_t mode) {

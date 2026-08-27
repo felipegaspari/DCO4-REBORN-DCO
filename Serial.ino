@@ -534,10 +534,13 @@ void __not_in_flash_func(serial_usb_task)() {
 void serial_send_note_on(uint8_t voice, uint8_t velocity, uint8_t note, uint8_t flags) {
   uint8_t payload[SERIAL_LEN_NOTE_ON] = { voice, velocity, note, flags };
   serial_frame_write(Serial2Dma, CMD_NOTE_ON, payload, SERIAL_LEN_NOTE_ON);
+  //Serial.printf(">> SERIAL SEND NOTE ON: Voice=%d | Velocity=%d | Note=%d | Flags=%d\n", 
+  //  voice, velocity, note, flags);
 }
 
 void serial_send_note_off(uint8_t voice) {
   serial_frame_write(Serial2Dma, CMD_NOTE_OFF, &voice, SERIAL_LEN_NOTE_OFF);
+  //Serial.printf(">> SERIAL SEND NOTE OFF: Voice=%d\n", voice);
 }
 
 void serial_send_expression() {

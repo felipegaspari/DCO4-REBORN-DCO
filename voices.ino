@@ -359,15 +359,13 @@ void SRAM_HOT(voice_task_fixed_point)() {
 
   last_midi_pitch_bend = midi_pitch_bend;
 
-  // Latch and clear Core 0 mailbox trigger flags
-  for (int k = 0; k < NUM_VOICES; k++) {
-    if (note_on_flag[k] == 1) {
-      note_on_flag_flag[k] = true;
-      note_on_flag[k] = 0;
-    }
-  }
-
   for (int i = 0; i < NUM_VOICES; i++) {
+
+    if (note_on_flag[i] == 1) {
+      note_on_flag_flag[i] = true;
+      note_on_flag[i] = 0;
+      __dmb(); // Memory barrier: Ensure flag is cleared before reading note indices
+    }
 
 #if DCO_DEBUG_REPORT
     float dbg_freq_base_Hz = 0.0f;
@@ -432,10 +430,10 @@ void SRAM_HOT(voice_task_fixed_point)() {
         portamentoTimer[i] = 0;
       
         // DIRECT note position (no table lookups or binary searches!)
-        porta_setup_glide_f(DCO_A, porta_note_cur_f[DCO_A], (float)note1, portaMode);
-        porta_setup_glide_f(DCO_B, porta_note_cur_f[DCO_B], (float)note2, portaMode);
-        curA = porta_freq_cur_f[DCO_A];
-        curB = porta_freq_cur_f[DCO_B];
+        porta_setup_glide_q16(DCO_A, porta_note_cur_q16[DCO_A], (float)note1, portaMode);
+        porta_setup_glide_q16(DCO_B, porta_note_cur_q16[DCO_B], (float)note2, portaMode);
+        curA = portamento_cur_freq_q24[DCO_A];
+        curB = portamento_cur_freq_q24[DCO_B];
       } else if (porta_note_cur_q16[DCO_A] == porta_note_stop_q16[DCO_A] &&
                  porta_note_cur_q16[DCO_B] == porta_note_stop_q16[DCO_B]) {
         curA = portamento_stop_q24[DCO_A];
@@ -488,8 +486,7 @@ void SRAM_HOT(voice_task_fixed_point)() {
     BENCH_BEGIN(vt_adsr_mod);
     int32_t ADSRModifier_q24 = 0;
     if (ADSR3toDETUNE1_scale_q24 != 0) {
-      ADSRModifier_q24 = applyDepthQ24(
-          env_dco_pitch_wave_q15(ADSR3Level_q15[i]), ADSR3toDETUNE1_scale_q24);
+      ADSRModifier_q24 = applyDepthQ24(ADSR3Level_q15[i], ADSR3toDETUNE1_scale_q24);
     }
     // ADSR3→pitch: 0=A, 1=B, 2=A+B (legacy), 3/4 ignored or map 4→A+B
     int32_t ADSRModifierOSC1_q24 =
@@ -613,15 +610,6 @@ void SRAM_HOT(voice_task_fixed_point)() {
                           &chanLevel2);
     BENCH_END(vt_chan_level);
 
-    BENCH_BEGIN(vt_pio_write);
-    pio_sm_put(pioN_A, smAN, clk_div1);
-    pio_sm_put(pioN_B, smBN, clk_div2);
-    pio_sm_exec(pioN_A, smAN, pio_encode_pull(false, false));
-    pio_sm_exec(pioN_B, smBN, pio_encode_pull(false, false));
-    osc_last_clk_div[DCO_A] = clk_div1;
-    osc_last_clk_div[DCO_B] = clk_div2;
-    BENCH_END(vt_pio_write);
-
     if (note_on_flag_flag[i]) {
       BENCH_BEGIN(vt_note_retrig);
 #if DCO_DEBUG_REPORT
@@ -683,12 +671,17 @@ void SRAM_HOT(voice_task_fixed_point)() {
         BENCH_END(vt_retrig_sm_apply);
       }
 
-      BENCH_BEGIN(vt_retrig_pwm);
-      voice_write_range_pair(DCO_A, DCO_B, chanLevel, chanLevel2);
-      BENCH_END(vt_retrig_pwm);
       BENCH_END(vt_note_retrig);
+    } else {
+      BENCH_BEGIN(vt_pio_write);
+      pio_sm_put(pioN_A, smAN, clk_div1);
+      pio_sm_put(pioN_B, smBN, clk_div2);
+      pio_sm_exec(pioN_A, smAN, pio_encode_pull(false, false));
+      pio_sm_exec(pioN_B, smBN, pio_encode_pull(false, false));
+      osc_last_clk_div[DCO_A] = clk_div1;
+      osc_last_clk_div[DCO_B] = clk_div2;
+      BENCH_END(vt_pio_write);
     }
-
     
       BENCH_BEGIN(vt_range_pwm);
       voice_write_range_pair(DCO_A, DCO_B, chanLevel, chanLevel2);
@@ -729,7 +722,7 @@ void SRAM_HOT(voice_task_fixed_point)() {
     }
   }
 
-  for (int k = 0; k < NUM_VOICES; k++) {
+  for (int k = 0; k < NUM_VOICES_TOTAL; k++) {  // <-- Change to NUM_VOICES_TOTAL
     note_on_flag_flag[k] = false;
   }
 
@@ -802,15 +795,13 @@ void SRAM_HOT(voice_task_float)() {
   const float adsr3_to_pitch_scale_f = q24_to_float(ADSR3toDETUNE1_scale_q24) * (1.0f / 32768.0f);
   const float drift_scale_f = q24_to_float(drift_pitch_scale_q24) * (1.0f / 32768.0f);
 
-  // Latch and clear Core 0 mailbox trigger flags
-  for (int k = 0; k < NUM_VOICES; k++) {
-    if (note_on_flag[k] == 1) {
-      note_on_flag_flag[k] = true;
-      note_on_flag[k] = 0;
-    }
-  }
-
   for (int i = 0; i < NUM_VOICES; ++i) {
+
+    if (note_on_flag[i] == 1) {
+      note_on_flag_flag[i] = true;
+      note_on_flag[i] = 0;
+      __dmb(); // Memory barrier: Ensure flag is cleared before reading note indices
+    }
 
 #if DCO_DEBUG_REPORT
     float dbg_freq_base_Hz = 0.0f;
@@ -1065,16 +1056,10 @@ void SRAM_HOT(voice_task_float)() {
     uint8_t sm1N = VOICE_TO_SM[DCO_A];
     uint8_t sm2N = VOICE_TO_SM[DCO_B];
 
-    BENCH_BEGIN(vt_pio_write);
-    pio_sm_put(pioN_A, sm1N, clk_div1);
-    pio_sm_put(pioN_B, sm2N, clk_div2);
-    pio_sm_exec(pioN_A, sm1N, pio_encode_pull(false, false));
-    pio_sm_exec(pioN_B, sm2N, pio_encode_pull(false, false));
-    osc_last_clk_div[DCO_A] = clk_div1;
-    osc_last_clk_div[DCO_B] = clk_div2;
-    BENCH_END(vt_pio_write);
+
 
     if (note_on_flag_flag[i]) {
+      //Serial.printf(">> NOTE RETRIG: Voice=%d | Note1=%d | Note2=%d\n" , i, note1, note2);
       BENCH_BEGIN(vt_note_retrig);
       if (oscPhaseSync >= 1) {
         BENCH_BEGIN(vt_retrig_sm_apply);
@@ -1102,11 +1087,16 @@ void SRAM_HOT(voice_task_float)() {
         }
         BENCH_END(vt_retrig_sm_apply);
       }
-
-      BENCH_BEGIN(vt_retrig_pwm);
-      voice_write_range_pair(DCO_A, DCO_B, chanLevel, chanLevel2);
-      BENCH_END(vt_retrig_pwm);
       BENCH_END(vt_note_retrig);
+    } else {
+      BENCH_BEGIN(vt_pio_write);
+      pio_sm_put(pioN_A, sm1N, clk_div1);
+      pio_sm_put(pioN_B, sm2N, clk_div2);
+      pio_sm_exec(pioN_A, sm1N, pio_encode_pull(false, false));
+      pio_sm_exec(pioN_B, sm2N, pio_encode_pull(false, false));
+      osc_last_clk_div[DCO_A] = clk_div1;
+      osc_last_clk_div[DCO_B] = clk_div2;
+      BENCH_END(vt_pio_write);
     }
 
     voice_write_range_pair(DCO_A, DCO_B, chanLevel, chanLevel2);
@@ -1143,7 +1133,8 @@ void SRAM_HOT(voice_task_float)() {
     }
   }
 
-  for (int k = 0; k < NUM_VOICES; k++) {
+  // Clear flags at the end of the frame
+  for (int k = 0; k < NUM_VOICES_TOTAL; k++) {
     note_on_flag_flag[k] = false;
   }
 

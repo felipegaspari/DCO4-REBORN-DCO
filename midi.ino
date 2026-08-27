@@ -19,6 +19,12 @@ uint8_t velocity[NUM_VOICES_TOTAL];
 
 // MIDI library callback → note_on(). Invoked from loop via MIDI_*.read().
 void SRAM_HOT(handleNoteOn)(byte channel, byte pitch, byte velocity) {
+  if (velocity == 0) {
+    note_off(pitch);
+    return;
+  }
+  //Serial.printf(">> MIDI IN: Ch=%d | Pitch=%d | Vel=%d | voiceMode=%d\n", 
+  //  channel, pitch, velocity, voiceMode);
   note_on(pitch, velocity);
 }
 // MIDI library callback → note_off().
@@ -75,14 +81,11 @@ void SRAM_HOT(handleControlChange)(byte channel, byte number, byte value) {
     // 4. Custom DCO Pitch-Bend Range (CC 42)
     // -------------------------------------------------------------------------
     case MIDI_CC_PITCH_BEND_RANGE: {
-      // Clamp pitch bend range between 0 and 48 semitones (4 octaves)
       pitchBendRange = (value > 48) ? 48 : value;
-
-      // Q24 math: pitchBendMultiplier_q24 = (range * RECIP_TWELVE_Q24)
-      pitchBendMultiplier_q24 = (int32_t)(((int64_t)pitchBendRange * RECIP_TWELVE_Q24));
-
-      #if VOICE_ENGINE_FLOAT
+      #if VOICE_ENGINE_FLOAT 
       pitchBendMultiplier = (float)pitchBendMultiplier_q24 / (float)(1 << 24);
+      #else
+      pitchBendMultiplier_q24 = (int32_t)(((int64_t)pitchBendRange * RECIP_TWELVE_Q24));
       #endif
       return;
     }
@@ -285,7 +288,6 @@ void SRAM_HOT(note_on)(uint8_t note, uint8_t velocity_in) {
       break;
     }
   }
-  last_midi_pitch_bend = 0;
 }
 
 void SRAM_HOT(note_off)(uint8_t note) {
@@ -351,10 +353,12 @@ void SRAM_HOT(note_off)(uint8_t note) {
  * @param velocity_in Key strike velocity (1..127).
  */
 void SRAM_HOT(voice_mark_on)(uint8_t voice, uint8_t note1_idx, uint8_t note2_idx, uint8_t velocity_in) {
+  //Serial.printf("   --> Voice Mark On: Voice=%d | PitchIdx1=%d | PitchIdx2=%d | Velocity=%d\n", voice, note1_idx, note2_idx, velocity_in);
   VOICES[voice] = 1;
   VOICE_NOTE_OSC1[voice] = note1_idx;
   VOICE_NOTE_OSC2[voice] = note2_idx;
   velocity[voice] = velocity_in;
+  __dmb();
 
   note_on_flag[voice] = 1;
   noteStart[voice] = 1;
@@ -376,12 +380,11 @@ void SRAM_HOT(voice_mark_on)(uint8_t voice, uint8_t note1_idx, uint8_t note2_idx
  * @param note1_idx Pre-baked DCO pitch table index for OSC1 (0..TABLE_LEN - 1).
  * @param note2_idx Pre-baked DCO pitch table index for OSC2 (includes interval).
  */
-void SRAM_HOT(voice_mark_regate)(uint8_t voice, uint8_t note1_idx, uint8_t note2_idx) {
+ void SRAM_HOT(voice_mark_regate)(uint8_t voice, uint8_t note1_idx, uint8_t note2_idx) {
   VOICES[voice] = 1;
   VOICE_NOTE_OSC1[voice] = note1_idx;
   VOICE_NOTE_OSC2[voice] = note2_idx;
   
-  note_on_flag[voice] = 1;  
   noteEnd[voice] = 0;
   
   voiceAlloc.regate(voice, note1_idx);
