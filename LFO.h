@@ -11,6 +11,15 @@
 #ifndef MO_LFO_SRAM_HOT
 #define MO_LFO_SRAM_HOT 1
 #endif
+#if defined(PICO_RP2350) || defined(ARDUINO_ARCH_RP2350) || defined(__ARM_FP)
+  #ifndef FLOAT_ENGINE
+  #define FLOAT_ENGINE 1
+  #endif
+#else
+  #ifndef FLOAT_ENGINE
+  #define FLOAT_ENGINE 0
+  #endif
+#endif
 
 #define LFO_SINE_TABLE_BITS 9
 
