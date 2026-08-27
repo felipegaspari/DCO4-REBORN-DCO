@@ -182,7 +182,7 @@
 #ifdef BENCHMARKING_ENABLED
 #define RUNNING_AVERAGE
 // #define RUNNING_AVERAGE_FINE
- #define RUNNING_AVERAGE_PERIOD
+// #define RUNNING_AVERAGE_PERIOD
 
 // #define BENCH_PATH_STATS
 
@@ -319,7 +319,7 @@
 
 // 2. Base Configuration, Globals & Tables
 #include "globals.h"
-#include "FS.h"                 // Provides chanLevelVoiceDataSize for amp_comp.h
+#include "_shared/FS.h"         // Provides chanLevelVoiceDataSize for amp_comp.h
 #include "_shared/noteList.h"   // Provides sNotePitches for autotune.h
 
 // 3. Amplitude Compensation (MUST be before bench.h!)
@@ -432,20 +432,33 @@ void SRAM_HOT(loop)() {
     BENCH_END(loop0_microsTimer);
   }
 
+ {
+  BENCH_BEGIN(loop0_midi);
+
+  // 1. USB MIDI (TinyUSB)
   {
-    BENCH_BEGIN(loop0_midi);
-    uint8_t midi_budget = MIDI_DRAIN_BYTE_BUDGET;
+    BENCH_BEGIN(loop0_midi_usb);
     if (TinyUSBDevice.mounted()) {
+      uint8_t midi_budget = MIDI_DRAIN_BYTE_BUDGET;
       while (midi_budget > 0 && MIDI_USB.read()) {
         midi_budget--;
       }
     }
-    midi_budget = MIDI_DRAIN_BYTE_BUDGET;
+    BENCH_END(loop0_midi_usb);
+  }
+
+  // 2. Hardware DIN MIDI (Lock-Free SRAM Ring Buffer)
+  {
+    BENCH_BEGIN(loop0_midi_din);
+    uint8_t midi_budget = MIDI_DRAIN_BYTE_BUDGET;
     while (midi_budget > 0 && MIDI_SERIAL.read()) {
       midi_budget--;
     }
-    BENCH_END(loop0_midi);
+    BENCH_END(loop0_midi_din);
   }
+
+  BENCH_END(loop0_midi);
+}
 
   {
     BENCH_BEGIN(loop0_serial);
@@ -464,9 +477,13 @@ void SRAM_HOT(loop)() {
     BENCH_END(loop0_serial);
   }
 
+
   if (timer5msFlag2 == 1) {
+    BENCH_BEGIN(loop0_set_parameters);
     ADSR_set_parameters();
+    BENCH_END(loop0_set_parameters);
   }
+
  
     BENCH_BEGIN(loop0_lfo1);
     LFO1();
@@ -486,13 +503,13 @@ void SRAM_HOT(loop)() {
   }
 
   if (timer49microsFlag == 1) {
-    BENCH_BEGIN(loop1_adsr);
+    BENCH_BEGIN(loop0_adsr);
     ADSR_update();
-    BENCH_END(loop1_adsr);
+    BENCH_END(loop0_adsr);
   }
 
   {
-    BENCH_BEGIN(loop1_noise);
+    BENCH_BEGIN(loop0_noise);
     {
       #if NOISE_ENGINE == 0
       BENCH_BEGIN(loop1_noise_refill);
@@ -502,18 +519,20 @@ void SRAM_HOT(loop)() {
     }
     noiseLevel[0] = noise0.next();
     noiseLevel[1] = noise1.next();
-    BENCH_END(loop1_noise);
+    BENCH_END(loop0_noise);
   }
 
-  BENCH_BEGIN(loop1_cv_outs);
+  BENCH_BEGIN(loop0_cv_outs);
   update_CV_outs();
-  BENCH_END(loop1_cv_outs);
+  BENCH_END(loop0_cv_outs);
 
   // Snapshot core 0's probes and print once core 1 has handed its own over. All profiler
   // serial traffic happens here, never on the audio core.
+  BENCH_BEGIN(loop0_housekeeping);
   bench_poll_core0();
   mb_bench_text_drain();
   mem_diag_poll_core0();
+  BENCH_END(loop0_housekeeping);
 }
 
 // Core 1 forever loop: soft timers; auto/manual calibration OR ADSR + voice_task_main.

@@ -88,9 +88,11 @@
  // =============================================================================
 // 3. REALTIME CV & MODULATION MATRIX EXECUTION LOOP
 // =============================================================================
-void __not_in_flash_func(update_CV_outs)() {
-  #ifndef ENABLE_MB_MOD_STREAM
-  
+// =============================================================================
+void SRAM_HOT(update_CV_outs)() {
+
+  BENCH_BEGIN(cv_ingest);
+
     // A. Zero Modulation on Calibration
     if (__builtin_expect(manualCalibrationFlag || calibrationFlag, 0)) {
       for (uint8_t i = 0; i < NUM_VOICES_TOTAL; i++) {
@@ -105,64 +107,75 @@ void __not_in_flash_func(update_CV_outs)() {
   
     // B. Ingest All Polyphonic Voice Sources (Optimized SoA Write)
     ModSources sources;
+      // Write Globals ONCE (Eliminates redundant stack copies)
+      sources.lfo1         = LFO1Level;
+      sources.lfo2         = LFO2Level;
+      sources.lfo3         = LFO3Level;             
+      sources.noise        = (int16_t)noiseLevel[0];         
+      sources.pitch_bend   = (int16_t)((int32_t)midi_pitch_bend - 8192);
+      sources.drift_global = LFO_DRIFT_LEVEL[0];    
+      sources.expression   = expression_q15;        
+      sources.breath       = breath_q15;            
+  
+      // Write Voice-specifics
+      for (uint8_t i = 0; i < NUM_VOICES_TOTAL; i++) {
+        const uint8_t oscA = (uint8_t)(i * 2);
+  
+        sources.drift_voice[i]   = LFO_DRIFT_LEVEL[oscA];
+        sources.env_vca[i]       = ADSR_VCA_Level_q15[i];
+        sources.env_dco[i]       = ADSR3Level_q15[i];
+        sources.env_vcf[i]       = ADSR_VCF_Level_q15[i]; 
+        sources.velocity[i]      = velocity[i];
+        sources.keytrack_note[i] = VOICE_NOTES[i] ? VOICE_NOTES[i] : 60;
+      }
     
-    // Write Globals ONCE (Eliminates redundant stack copies)
-    sources.lfo1         = LFO1Level;
-    sources.lfo2         = LFO2Level;
-    sources.lfo3         = LFO3Level;             
-    sources.noise        = (int16_t)noiseLevel[0];         
-    sources.pitch_bend   = (int16_t)((int32_t)midi_pitch_bend - 8192);
-    sources.drift_global = LFO_DRIFT_LEVEL[0];    
-    sources.expression   = expression_q15;        
-    sources.breath       = breath_q15;            
-  
-    // Write Voice-specifics
-    for (uint8_t i = 0; i < NUM_VOICES_TOTAL; i++) {
-      const uint8_t oscA = (uint8_t)(i * 2);
-  
-      sources.drift_voice[i]   = LFO_DRIFT_LEVEL[oscA];
-      sources.env_vca[i]       = ADSR_VCA_Level_q15[i];
-      sources.env_dco[i]       = ADSR3Level_q15[i];
-      sources.env_vcf[i]          = ADSR_VCF_Level_q15[i]; 
-      sources.velocity[i]      = velocity[i];
-      sources.keytrack_note[i] = VOICE_NOTES[i] ? VOICE_NOTES[i] : 60;
+      BENCH_END(cv_ingest);
+    // C. Execute Matrix Engine (Pass pointer)
+    {
+      BENCH_BEGIN(cv_matrix);
+      mod_matrix_accumulate_all(&sources, NUM_VOICES_TOTAL);
+      BENCH_END(cv_matrix);
     }
   
-    // C. Execute Matrix Engine (Pass pointer)
-    mod_matrix_accumulate_all(&sources, NUM_VOICES_TOTAL);
- 
-   // D. Extract Hardware Deltas
-   for (uint8_t i = 0; i < NUM_VOICES_TOTAL; i++) {
-     matrix_pitch_mod_q24[i]      = mod_matrix_get_dest_fast<DEST_PITCH>(i);
-     matrix_osc1_pitch_mod_q24[i] = mod_matrix_get_dest_fast<DEST_OSC1_PITCH>(i);
-     matrix_osc2_pitch_mod_q24[i] = mod_matrix_get_dest_fast<DEST_OSC2_PITCH>(i);
-     matrix_pw_mod[i]             = mod_matrix_get_dest_fast<DEST_PW>(i);
-   }
- 
-   // E. Control-Rate 1ms Sub-Loop (Dynamic LFO Rates)
-   static uint32_t last_1ms_tick = 0;
-   const uint32_t now_us = micros();
-   if (now_us - last_1ms_tick >= 201) {
-     last_1ms_tick = now_us;
- 
-     // LFO 1 Dynamic Speed
-     int32_t l1_speed_mod = (int32_t)LFO1SpeedVal + mod_matrix_get_dest_fast<DEST_LFO1_SPEED>(0);
-     l1_speed_mod = constrain(l1_speed_mod, 0, 4095);
-     LFO1_class.setMode0Freq(fast_exp_speed_5000((uint16_t)l1_speed_mod), now_us);
- 
-     // LFO 2 Dynamic Speed
-     int32_t l2_speed_mod = (int32_t)LFO2SpeedVal + mod_matrix_get_dest_fast<DEST_LFO2_SPEED>(0);
-     l2_speed_mod = constrain(l2_speed_mod, 0, 4095);
-     LFO2_class.setMode0Freq(fast_exp_speed_5000((uint16_t)l2_speed_mod), now_us);
- 
-     // LFO 3 Dynamic Speed
-     int32_t l3_speed_mod = (int32_t)LFO3SpeedVal + mod_matrix_get_dest_fast<DEST_LFO3_SPEED>(0);
-     l3_speed_mod = constrain(l3_speed_mod, 0, 4095);
-     LFO3_class.setMode0Freq(fast_exp_speed_5000((uint16_t)l3_speed_mod), now_us);
-   }
- 
- #endif // !ENABLE_MB_MOD_STREAM
- }
+    // D. Extract Hardware Deltas
+    {
+      BENCH_BEGIN(cv_deltas);
+      for (uint8_t i = 0; i < NUM_VOICES_TOTAL; i++) {
+        matrix_pitch_mod_q24[i]      = mod_matrix_get_dest_fast<DEST_PITCH>(i);
+        matrix_osc1_pitch_mod_q24[i] = mod_matrix_get_dest_fast<DEST_OSC1_PITCH>(i);
+        matrix_osc2_pitch_mod_q24[i] = mod_matrix_get_dest_fast<DEST_OSC2_PITCH>(i);
+        matrix_pw_mod[i]             = mod_matrix_get_dest_fast<DEST_PW>(i);
+      }
+      BENCH_END(cv_deltas);
+    }
+  
+    // E. Control-Rate 1ms Sub-Loop (Dynamic LFO Rates)
+    {
+      
+      static uint32_t last_1ms_tick = 0;
+      const uint32_t now_us = micros();
+      if (now_us - last_1ms_tick >= 201) {
+        BENCH_BEGIN(cv_lfo_subloop);
+        last_1ms_tick = now_us;
+  
+        // LFO 1 Dynamic Speed
+        int32_t l1_speed_mod = (int32_t)LFO1SpeedVal + mod_matrix_get_dest_fast<DEST_LFO1_SPEED>(0);
+        l1_speed_mod = constrain(l1_speed_mod, 0, 4095);
+        LFO1_class.setMode0Freq(fast_exp_speed_5000((uint16_t)l1_speed_mod), now_us);
+  
+        // LFO 2 Dynamic Speed
+        int32_t l2_speed_mod = (int32_t)LFO2SpeedVal + mod_matrix_get_dest_fast<DEST_LFO2_SPEED>(0);
+        l2_speed_mod = constrain(l2_speed_mod, 0, 4095);
+        LFO2_class.setMode0Freq(fast_exp_speed_5000((uint16_t)l2_speed_mod), now_us);
+  
+        // LFO 3 Dynamic Speed
+        int32_t l3_speed_mod = (int32_t)LFO3SpeedVal + mod_matrix_get_dest_fast<DEST_LFO3_SPEED>(0);
+        l3_speed_mod = constrain(l3_speed_mod, 0, 4095);
+        LFO3_class.setMode0Freq(fast_exp_speed_5000((uint16_t)l3_speed_mod), now_us);
+        BENCH_END(cv_lfo_subloop);
+      }
+    }
+  }
  
  void update_CV_outs_manual_calibration() {
  #ifndef ENABLE_CV_OUTS

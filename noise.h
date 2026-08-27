@@ -1,6 +1,3 @@
-#ifndef NOISE_DCO_H
-#define NOISE_DCO_H
-
+#include "_build_libs/DCO_Noise/DCO_Noise.h"
 #include "_shared/noise.h"
 
-#endif
