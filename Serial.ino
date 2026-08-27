@@ -480,12 +480,20 @@ static SerialCommandTable mainboardSerialLut;
 static SerialParserContext mainboardSerialParser = {};
 
 void init_serial() {
-  Serial1.setFIFOSize(256);
-  Serial1.setPollingMode(false);
-  Serial1.setRX(1);
-  Serial1.setTX(0);
-  Serial1.begin(31250);
+  // 1. Hardware UART0 for DIN MIDI (GP0 TX, GP1 RX @ 31,250 baud)
+  uart_init(uart0, 31250);
+  gpio_set_function(0, GPIO_FUNC_UART);
+  gpio_set_function(1, GPIO_FUNC_UART);
+  uart_set_hw_flow(uart0, false, false);
+  uart_set_format(uart0, 8, 1, UART_PARITY_NONE);
+  uart_set_fifo_enabled(uart0, true);
 
+  // Attach zero-latency SRAM interrupt
+  irq_set_exclusive_handler(UART0_IRQ, on_midi_uart_rx);
+  irq_set_enabled(UART0_IRQ, true);
+  uart_set_irq_enables(uart0, true, false);
+
+  // 2. Serial2 for Mainboard (2.5 Mbps)
   Serial2.setFIFOSize(2048);
   Serial2.setPollingMode(false);
   Serial2.setRX(21);
@@ -499,9 +507,6 @@ void init_serial() {
 }
 
 void init_usb() {
-  USBDevice.setManufacturerDescriptor("FELA         ");
-  USBDevice.setProductDescriptor("DCO4-REBORN ");
-
   if (!TinyUSBDevice.isInitialized()) {
     TinyUSBDevice.begin(0);
   }
@@ -510,11 +515,11 @@ void init_usb() {
   usb_midi.setStringDescriptor("DCO4-REBORN MIDI");
   MIDI_USB.begin(MIDI_CHANNEL_OMNI);
 
-  if (TinyUSBDevice.mounted()) {
-    TinyUSBDevice.detach();
-    delay(10);
-    TinyUSBDevice.attach();
-  }
+  TinyUSBDevice.setManufacturerDescriptor("DCO4");
+  TinyUSBDevice.setProductDescriptor("DCO4-REBORN");
+  TinyUSBDevice.detach();
+  delay(10);
+  TinyUSBDevice.attach();
 }
 
 void __not_in_flash_func(serial_panel_task)() {

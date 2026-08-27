@@ -758,16 +758,9 @@ void SRAM_HOT(voice_task_float)() {
   BENCH_BEGIN(vt_pitchbend);
   float calcPitchbend;
 
-  static constexpr float INV_8191 = 1.0f / 8190.99f;
-  static constexpr float INV_8192 = 1.0f / 8192.99f;
+  static constexpr float INV_8192 = 1.0f / 8192.0f;
   
-  if (midi_pitch_bend == 8192) {
-    calcPitchbend = 0.0f;
-  } else if (midi_pitch_bend < 8192) {
-    calcPitchbend = (((float)midi_pitch_bend * INV_8191) - 1.0f) * pitchBendMultiplier;
-  } else {
-    calcPitchbend = (((float)midi_pitch_bend * INV_8192) - 1.0f) * pitchBendMultiplier;
-  }
+  calcPitchbend = ((float)midi_pitch_bend - 8192.0f) * INV_8192 * pitchBendMultiplier;
   BENCH_END(vt_pitchbend);
 
   last_midi_pitch_bend = midi_pitch_bend;
@@ -860,11 +853,9 @@ void SRAM_HOT(voice_task_float)() {
       if (portaDoRetime) {
         portamentoStartMicros[i] = now_us;
         portamentoTimer[i] = 0;
-
-        float curNoteA = freqFloat_to_noteIndex(porta_freq_cur_f[DCO_A]);
-        float curNoteB = freqFloat_to_noteIndex(porta_freq_cur_f[DCO_B]);
-        porta_setup_glide_f(DCO_A, curNoteA, (float)note1, portaMode);
-        porta_setup_glide_f(DCO_B, curNoteB, (float)note2, portaMode);
+      
+        porta_setup_glide_f(DCO_A, porta_note_cur_f[DCO_A], (float)note1, portaMode);
+        porta_setup_glide_f(DCO_B, porta_note_cur_f[DCO_B], (float)note2, portaMode);
         curA = porta_freq_cur_f[DCO_A];
         curB = porta_freq_cur_f[DCO_B];
       } else if (porta_note_cur_f[DCO_A] == porta_note_stop_f[DCO_A] &&
@@ -972,6 +963,9 @@ void SRAM_HOT(voice_task_float)() {
     {
       BENCH_BEGIN(vt_modifiers);
       float modifiersBase = calcPitchbend + EPS_FLOAT + q24_to_float(matrix_pitch_mod_q24[i]) + unisonMODIFIER;
+      if (char_pitch_scale_q15) {
+        modifiersBase += character_pitch_delta_float();
+      }
       freqModifiers1 = ADSRModifierOSC1 + DETUNE_DRIFT_OSC1 + modifiersBase + lfo1_osc1_f + q24_to_float(matrix_osc1_pitch_mod_q24[i]);
       freqModifiers2 = ADSRModifierOSC2 + DETUNE_DRIFT_OSC2 + modifiersBase + lfo1_osc2_f + lfo2_osc2_f + q24_to_float(matrix_osc2_pitch_mod_q24[i]);
       BENCH_END(vt_modifiers);

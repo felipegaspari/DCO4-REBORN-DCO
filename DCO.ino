@@ -329,6 +329,7 @@
 #include "autotune.h"
 
 // 5. Modulation & Drivers (MUST be before bench.h!)
+#include "_build_libs/DCO_Noise/DCO_Noise.h"
 #include "noise.h"
 #include "_shared/character_jitter.h"
 #include "LFO.h"

@@ -1,3 +1,15 @@
+MidiUartRingBuffer midi_din_rx_buf;
+MidiUartTransport  midi_din_transport;
+Adafruit_USBD_MIDI usb_midi;
+
+// Hardware UART0 Interrupt Handler (Runs in SRAM)
+void __not_in_flash_func(on_midi_uart_rx)() {
+  while (uart_is_readable(uart0)) {
+    midi_din_rx_buf.push((uint8_t)uart_get_hw(uart0)->dr);
+  }
+}
+
+
 // Mono held-key stack lives in the shared library (monoStack in
 // voice_alloc_state.h); which entry sounds depends on the allocation mode,
 // which doubles as the mono note priority.
