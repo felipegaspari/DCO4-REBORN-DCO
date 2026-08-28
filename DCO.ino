@@ -73,6 +73,9 @@
 #endif
 #endif
 
+// Q24 voice task -- experimental
+// #define USE_VOICE_TASK_Q24
+
 // Note-on sync retrigger (oscPhaseSync >= 1): 0 = EXACT_Y (Y load + phase hold), 1 = SYNC_JMP
 // (restart jmp only; degree offsets need EXACT_Y). Runtime: cmds 26/27.
 #ifndef NOTE_RETRIG_MODE_DEFAULT
@@ -182,7 +185,7 @@
 #ifdef BENCHMARKING_ENABLED
 #define RUNNING_AVERAGE
 // #define RUNNING_AVERAGE_FINE
-// #define RUNNING_AVERAGE_PERIOD
+#define RUNNING_AVERAGE_PERIOD
 
 // #define BENCH_PATH_STATS
 
