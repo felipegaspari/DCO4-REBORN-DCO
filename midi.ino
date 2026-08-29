@@ -20,14 +20,65 @@ static constexpr uint8_t MONO_NOTE_NONE = VOICE_ALLOC_NONE;
 // silently instead of retriggering the envelope.
 static uint8_t mono_sounding_note = MONO_NOTE_NONE;
 
+uint8_t velocity[NUM_VOICES_TOTAL];
+
 // Empty held stack when entering mono so notes do not leak across voice modes.
 void mono_note_stack_clear() {
   monoStack.clear();
   mono_sounding_note = MONO_NOTE_NONE;
 }
 
+  // Map voiceMode → NUM_VOICES / STACK_VOICES. Called from init_voices and
+  // apply_param_voice_mode.
+  //   0 mono:  one MIDI voice → osc pair 0/1
+  //   1 poly:  NUM_VOICES_TOTAL independent 2-osc voices
+  //   2 stack: all voices, same note
+  inline void setVoiceMode(uint8_t new_mode) {
+    // 1. FIX: Send note-off to ALL active voices before changing mode.
+    // This clears VOICES[v] to 0, ensuring no notes get trapped in the hardware
+    // when we shrink NUM_VOICES. (The ADSR will still musically play the release tail!)
+    for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
+      if (VOICES[v] != 0) {
+        voice_mark_off(v);
+        serial_send_note_off(v);
+      }
+    }
+  
+    // 2. Change the routing constraints
+    switch (new_mode) {
+      case 0: // Mono
+        NUM_VOICES = 1;
+        STACK_VOICES = 1;
+        break;
+      case 1: // Poly
+        NUM_VOICES = NUM_VOICES_TOTAL;
+        STACK_VOICES = 1;
+        break;
+      case 2: // Unison / Stack
+        NUM_VOICES = NUM_VOICES_TOTAL;
+        STACK_VOICES = NUM_VOICES_TOTAL;
+        break;
+    }
+    
+    // 3. Clear the mono priority memory
+    mono_note_stack_clear();
+  
+    // 4. Safely resync. Because we forced voice_mark_off() above, VOICES[] 
+    // is guaranteed to be clean (0), so the allocator will properly reset to IDLE.
+    voiceAlloc.resyncFromGates(VOICES);
+    voiceAlloc.setVoiceCount(NUM_VOICES);
+  }
 
-uint8_t velocity[NUM_VOICES_TOTAL];
+  // Clears all active voices and mono memory. Must be called on Mode switches.
+void SRAM_HOT(all_notes_off)() {
+  for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
+    if (VOICES[v] != 0) {
+      voice_mark_off(v);
+      serial_send_note_off(v);
+    }
+  }
+  mono_note_stack_clear();
+}
 
 // MIDI library callback → note_on(). Invoked from loop via MIDI_*.read().
 void SRAM_HOT(handleNoteOn)(byte channel, byte pitch, byte velocity) {
@@ -107,27 +158,21 @@ void SRAM_HOT(handleControlChange)(byte channel, byte number, byte value) {
     // -------------------------------------------------------------------------
     case 120: // All Sound Off (Kill voices immediately)
      // voice_allocator_all_sound_off();
-      return;
-
     case 121: // Reset All Controllers
       // reset_all_controllers();
-      return;
-
     case 123: // All Notes Off (Release active voice gates)
-      //voice_allocator_all_notes_off();
+      all_notes_off();
       return;
 
     case 124: // Omni Mode Off
     case 125: // Omni Mode On
     case 126: // Mono Mode On
     case 127: // Poly Mode On
-      // Polyphonic synth mode management:
-      // voice_allocator_all_notes_off();
-      // if (number == 126) {
-      //   voice_allocator_set_mode(VOICE_MODE_MONO);
-      // } else if (number == 127) {
-      //   voice_allocator_set_mode(VOICE_MODE_POLY);
-      // }
+      if (number == 126) {
+        setVoiceMode(0); // MONO
+      } else if (number == 127) {
+        setVoiceMode(1); // POLY
+      }
       return;
 
     // -------------------------------------------------------------------------
@@ -141,7 +186,7 @@ void SRAM_HOT(handleControlChange)(byte channel, byte number, byte value) {
 
 // Scale a controller into its parameter's native range and apply it. Unmapped CCs are
 // ignored. Linear search over ~70 entries, which at MIDI's 3125 bytes/s is free.
-void midi_cc_handle(uint8_t number, uint8_t value) {
+void SRAM_HOT(midi_cc_handle)(uint8_t number, uint8_t value) {
   for (size_t i = 0; i < midiCcMapSize; ++i) {
     const MidiCcEntry& entry = midiCcMap[i];
     if (entry.cc != number) continue;
@@ -201,13 +246,13 @@ void handleProgramChange(byte channel, byte program) {
 }
 
 // MIDI pitch-bend callback → midi_pitch_bend (offset to 0..16383 style).
-void handlePitchBend(byte channel, int pitchBend) {
+void SRAM_HOT(handlePitchBend)(byte channel, int pitchBend) {
   midi_pitch_bend = pitchBend + 8192;
   serial_send_expression();
 }
 
 // Channel aftertouch → mod matrix source.
-void handleAfterTouchChannel(byte channel, byte pressure) {
+void SRAM_HOT(handleAfterTouchChannel)(byte channel, byte pressure) {
   (void)channel;
   midi_aftertouch = pressure;
   mod_matrix_set_aftertouch(pressure);
@@ -219,7 +264,7 @@ void handleAfterTouchChannel(byte channel, byte pressure) {
 // ===========================================================================
 
 // Fast loop-based folding avoids the RP2040's slow software division (modulo)
-static inline uint8_t SRAM_HOT(fold_table_idx)(int val) {
+static uint8_t SRAM_HOT(fold_table_idx)(int val) {
   constexpr int MAX_TABLE_IDX = (sizeof(sNotePitches_q24) / sizeof(sNotePitches_q24[0])) - 1;
   while (val > MAX_TABLE_IDX) val -= 12;
   while (val < 0)             val += 12;
@@ -227,7 +272,7 @@ static inline uint8_t SRAM_HOT(fold_table_idx)(int val) {
 }
 
 // Single function to calculate the modified table index from an incoming key strike
-static inline void SRAM_HOT(get_modified_indices)(uint8_t raw_note, uint8_t* idx1, uint8_t* idx2) {
+static void SRAM_HOT(get_modified_indices)(uint8_t raw_note, uint8_t* idx1, uint8_t* idx2) {
   int shifted = (int)raw_note + (int)octave_shift;
   while (shifted > 127) shifted -= 12;
   while (shifted < 0)   shifted += 12;
@@ -237,7 +282,7 @@ static inline void SRAM_HOT(get_modified_indices)(uint8_t raw_note, uint8_t* idx
 }
 
 // Easily derive OSC2 index from OSC1 (useful during priority stack fallbacks)
-static inline uint8_t SRAM_HOT(get_osc2_from_osc1)(uint8_t idx1) {
+static uint8_t SRAM_HOT(get_osc2_from_osc1)(uint8_t idx1) {
   return fold_table_idx((int)idx1 + ((int)OSC2_interval - 36));
 }
 
@@ -255,7 +300,6 @@ void SRAM_HOT(note_on)(uint8_t note, uint8_t velocity_in) {
     case 0:  // MONO
     case 2:  // UNISON
     {
-      // The stack exclusively tracks the modified version
       if (!monoStack.push(note1_idx, alloc_mode)) return;
       const uint8_t winner = monoStack.pick(alloc_mode); 
       
@@ -264,26 +308,38 @@ void SRAM_HOT(note_on)(uint8_t note, uint8_t velocity_in) {
       const bool is_legato = (alloc_mode == 2) && (mono_sounding_note != MONO_NOTE_NONE);
       mono_sounding_note = winner;
 
-      // If priority stack chose a fallback held key, re-sync notes
       if (winner != note1_idx) {
         note1_idx = winner;
         note2_idx = get_osc2_from_osc1(winner);
       }
 
-      const uint8_t count = (voiceMode == 0) ? 1 : NUM_VOICES_TOTAL;
       const uint8_t note_flag = is_legato ? NOTE_FLAG_PORTA_ONLY : NOTE_FLAG_RETRIGGER;
 
-      for (uint8_t v = 0; v < count; v++) {
-        if (is_legato) voice_mark_regate(v, note1_idx, note2_idx);
-        else           voice_mark_on(v, note1_idx, note2_idx, velocity_in);
-
-        // Send strictly the modified index over Serial
-        serial_send_note_on(v, velocity_in, note1_idx, note_flag);
+      // OPTIMIZATION: Split the routes so loops use compile-time constants.
+      if (voiceMode == 0) { // MONO: No loop needed, perfectly inlined.
+        if (is_legato) voice_mark_regate(0, note1_idx, note2_idx);
+        else           voice_mark_on(0, note1_idx, note2_idx, velocity_in);
+        serial_send_note_on(0, velocity_in, note1_idx, note_flag);
+      } 
+      else { // UNISON: Compile-time loop boundary allows pragma unrolling.
+        if (is_legato) {
+          #pragma GCC unroll 8
+          for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
+            voice_mark_regate(v, note1_idx, note2_idx);
+            serial_send_note_on(v, velocity_in, note1_idx, note_flag);
+          }
+        } else {
+          #pragma GCC unroll 8
+          for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
+            voice_mark_on(v, note1_idx, note2_idx, velocity_in);
+            serial_send_note_on(v, velocity_in, note1_idx, note_flag);
+          }
+        }
       }
       break;
     }
 
-    case 1:  // POLY
+    case 1:  
     {
       const uint8_t held = voiceAlloc.findNote(note1_idx);
       if (held != VOICE_ALLOC_NONE) {
@@ -301,53 +357,71 @@ void SRAM_HOT(note_on)(uint8_t note, uint8_t velocity_in) {
     }
   }
 }
-
 void SRAM_HOT(note_off)(uint8_t note) {
   uint8_t note1_idx, note2_idx;
   get_modified_indices(note, &note1_idx, &note2_idx);
 
   if (voiceMode == 0 || voiceMode == 2) {
-    if (!monoStack.remove(note1_idx)) return;
-    
-    const uint8_t count = (voiceMode == 0) ? 1 : NUM_VOICES_TOTAL;
-
-    if (monoStack.empty()) {
-      mono_sounding_note = MONO_NOTE_NONE;
-      for (uint8_t v = 0; v < count; v++) {
-        voice_mark_off(v);
-        serial_send_note_off(v);
+    if (monoStack.remove(note1_idx)) {
+      if (monoStack.empty()) {
+        mono_sounding_note = MONO_NOTE_NONE;
+        
+        // OPTIMIZATION: Compile-time constant paths
+        if (voiceMode == 0) {
+          voice_mark_off(0);
+          serial_send_note_off(0);
+        } else {
+          #pragma GCC unroll 8
+          for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
+            voice_mark_off(v);
+            serial_send_note_off(v);
+          }
+        }
+        return;
       }
-      return;
+
+      const uint8_t alloc_mode = voiceAlloc.mode();
+      const uint8_t winner = monoStack.pick(alloc_mode); 
+      if (winner == MONO_NOTE_NONE || winner == mono_sounding_note) return;
+
+      mono_sounding_note = winner;
+      
+      const uint8_t w_idx1 = winner;
+      const uint8_t w_idx2 = get_osc2_from_osc1(winner);
+      const bool is_legato = (alloc_mode == 2);
+      const uint8_t note_flag = is_legato ? NOTE_FLAG_PORTA_ONLY : NOTE_FLAG_RETRIGGER;
+
+      // OPTIMIZATION: Hoisted logic, eliminated loop for Mono
+      if (voiceMode == 0) {
+        if (is_legato) voice_mark_regate(0, w_idx1, w_idx2);
+        else           voice_mark_on(0, w_idx1, w_idx2, velocity[0]);
+        serial_send_note_on(0, velocity[0], w_idx1, note_flag);
+      } else {
+        if (is_legato) {
+          #pragma GCC unroll 8
+          for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
+            voice_mark_regate(v, w_idx1, w_idx2);
+            serial_send_note_on(v, velocity[0], w_idx1, note_flag);
+          }
+        } else {
+          #pragma GCC unroll 8
+          for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
+            voice_mark_on(v, w_idx1, w_idx2, velocity[0]);
+            serial_send_note_on(v, velocity[0], w_idx1, note_flag);
+          }
+        }
+      }
+      return; 
     }
-
-    const uint8_t alloc_mode = voiceAlloc.mode();
-    const uint8_t winner = monoStack.pick(alloc_mode); // This returns note1_idx
-    if (winner == MONO_NOTE_NONE || winner == mono_sounding_note) return;
-
-    mono_sounding_note = winner;
-    
-    // Smoothly reconstruct fallback indices using only the winner's modified OSC1 index
-    const uint8_t w_idx1 = winner;
-    const uint8_t w_idx2 = get_osc2_from_osc1(winner);
-    
-    const bool is_legato = (alloc_mode == 2);
-    const uint8_t note_flag = is_legato ? NOTE_FLAG_PORTA_ONLY : NOTE_FLAG_RETRIGGER;
-
-    for (uint8_t v = 0; v < count; v++) {
-      if (is_legato) voice_mark_regate(v, w_idx1, w_idx2);
-      else           voice_mark_on(v, w_idx1, w_idx2, velocity[0]);
-
-      serial_send_note_on(v, velocity[0], w_idx1, note_flag);
-    }
-    return;
   }
 
-  // POLYPHONIC RELEASE
-  for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
-    // Exact match entirely on the modified version
+  // POLYPHONIC RELEASE (And Ghost-Note Fallback)
+  // OPTIMIZATION: Unroll the voice hardware array checks
+  #pragma GCC unroll 8
+  for (uint8_t i = 0; i < NUM_VOICES_TOTAL; i++) {
     if (VOICE_NOTE_OSC1[i] == note1_idx && VOICES[i] != 0) {
-      voice_mark_off((uint8_t)i);
-      serial_send_note_off((uint8_t)i);
+      voice_mark_off(i);
+      serial_send_note_off(i);
     }
   }
 }
@@ -419,6 +493,24 @@ void SRAM_HOT(voice_mark_on)(uint8_t voice, uint8_t note1_idx, uint8_t note2_idx
   adsr_note_off(voice);        // Trigger hardware/software ADSR release phase
 }
 
+// --- Voice allocation --------------------------------------------------------
+// Thin adapters over the shared allocator (DCO-SHARED-LIBRARIES/voice_alloc.h,
+// instance in voice_alloc_state.h). Every policy in VoiceAllocMode lives there;
+// these keep the sketch's gate flag, pitch table and ADSR edge flags in step
+// with the allocator's bookkeeping so no caller has to update both.
+
+// Choose a voice for an incoming note. Returns VOICE_ALLOC_NONE when the mode
+// refuses to steal.
+uint8_t voice_alloc() {
+  #ifdef ENABLE_MB_MOD_STREAM
+    // No level source on this build, so the allocator ranks release tails by
+    // elapsed time. ADSR_VCA_release is written from the CC handler, the preset
+    // load and the Mainboard block, so refresh it here rather than at each.
+    voiceAlloc.setReleaseMs(ADSR_VCA_release);
+  #endif
+    return voiceAlloc.alloc();
+  }
+  
 
 // Register note/CC/program/pitch-bend handlers on USB + DIN MIDI. USB begin is in init_usb().
 void init_midi() {

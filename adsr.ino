@@ -46,7 +46,7 @@ int16_t ADSR_VCF2_Level_q15[NUM_VOICES_TOTAL];
 
 /** @brief Volatile Q15 output level read by audio synthesis tasks for DCO
  * envelope. */
-volatile int16_t ADSR3Level_q15_volatile[NUM_VOICES_TOTAL];
+int16_t volatile ADSR3Level_q15_volatile[NUM_VOICES_TOTAL];
 
 /** @brief Volatile Q15 output level read by audio synthesis tasks for VCA
  * envelope. */
@@ -98,16 +98,16 @@ uint8_t vcf_trigger_mode = VCF_TRIGGER_PARAPHONIC_MULTI;
 int8_t ADSR3ToOscSelect = 2;
 
 /** @brief Attack time in ms (or ticks) for DCO envelope. */
-uint16_t ADSR3_attack = 0;
+uint16_t volatile ADSR3_attack = 0;
 
 /** @brief Decay time in ms (or ticks) for DCO envelope. */
-uint16_t ADSR3_decay = 0;
+uint16_t volatile  ADSR3_decay = 0;
 
 /** @brief Sustain level (0 .. 4095) for DCO envelope. */
-uint16_t ADSR3_sustain = 4095;
+uint16_t volatile  ADSR3_sustain = 4095;
 
 /** @brief Release time in ms (or ticks) for DCO envelope. */
-uint16_t ADSR3_release = 0;
+uint16_t volatile  ADSR3_release = 0;
 
 /** @brief Retrigger mode for DCO envelope (true = start from 0, false = analog
  * ramp from current level). */
@@ -119,6 +119,11 @@ int16_t ADSR3toDETUNE1;
 /** @brief Precalculated Q24 pitch depth multiplier for DCO envelope modulation.
  */
 int32_t ADSR3toDETUNE1_scale_q24;
+
+/** @brief Precalculated float pitch depth multiplier for DCO envelope modulation.
+ */
+ float ADSR3toDETUNE1_scale_f;
+
 
 /** @brief Raw pulse-width modulation depth parameter for DCO envelope (-512 ..
  * +511). */
@@ -287,8 +292,6 @@ void init_ADSR() {
  * (processing half the polyphonic voices per tick) to reduce CPU load.
  */
 
-
-
 void SRAM_HOT(ADSR_update)() {
   // Phase toggle: alternate between even and odd voices on successive ticks
   static uint8_t phase = 0;
@@ -297,14 +300,14 @@ void SRAM_HOT(ADSR_update)() {
   for (int i = phase; i < NUM_VOICES; i += 2) {
 #if ADSR_BEZIER_NATIVE_Q15
     ADSR3Level_q15_volatile[i] = (int16_t)ADSRVoices[i].adsr3_voice.getWave();
-    ADSR_VCA_Level_q15_volatile[i] =(int16_t)ADSRVoices[i].adsr_vca_voice.getWave();
+    ADSR_VCA_Level_q15[i] = (int16_t)ADSRVoices[i].adsr_vca_voice.getWave();
      /* DISABLED FOR DCO4
     ADSR_VCF2_Level_q15_volatile = (int16_t)adsr_vcf2_voice.getWave();
     */
 #else
     ADSR3Level[i] = ADSRVoices[i].adsr3_voice.getWave();
     ADSR3Level_q15_volatile[i] = ADSRVoices[i].adsr3_voice.levelQ15();
-    ADSR_VCA_Level[i] = ADSRVoices[i].adsr_vca_voice.getWave();
+    ADSR_VCA_Level[i] = (int16_t)ADSRVoices[i].adsr_vca_voice.getWave();
     ADSR_VCA_Level_q15_volatile[i] = ADSRVoices[i].adsr_vca_voice.levelQ15();
     /* DISABLED FOR DCO4
         ADSR_VCF2_Level = adsr_vcf2_voice.getWave();
@@ -312,15 +315,16 @@ void SRAM_HOT(ADSR_update)() {
     */
 #endif
   }
+  voiceAlloc.setLevelSource(ADSR_VCA_Level_q15);
 }
 
-inline void SRAM_HOT(adsr_note_on)(uint8_t voice) {
+void SRAM_HOT(adsr_note_on)(uint8_t voice) {
   ADSRVoices[voice].adsr3_voice.noteOn();
     ADSRVoices[voice].adsr_vca_voice.noteOn();
   //  ADSRVoices[voice].adsr_vcf_voice.noteOn();
 }
 
-inline void SRAM_HOT(adsr_note_off)(uint8_t voice) {
+void SRAM_HOT(adsr_note_off)(uint8_t voice) {
   ADSRVoices[voice].adsr3_voice.noteOff();
     ADSRVoices[voice].adsr_vca_voice.noteOff();
   //  ADSRVoices[voice].adsr_vcf_voice.noteOff();
@@ -332,7 +336,7 @@ inline void SRAM_HOT(adsr_note_off)(uint8_t voice) {
  * Flushes dirty envelope timing parameters ($A, D, S, R$) from ingress staging
  * variables to the active envelope instances across all voices.
  */
-inline void SRAM_HOT(ADSR_set_parameters)() {
+void SRAM_HOT(ADSR_set_parameters)() {
   static uint8_t tick = 0;
   if (++tick < 50)
     return; // Prescale to ~200 Hz

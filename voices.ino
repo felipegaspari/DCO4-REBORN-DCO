@@ -6,21 +6,19 @@
 // Enable/disable detailed DCO debug report (including OSC1 frequency stages)
 #define DCO_DEBUG_REPORT 0
 
-inline void SRAM_HOT(amp_chan_levels_fixed)(int64_t freq_q24_A, int64_t freq_q24_B,
+void SRAM_HOT(amp_chan_levels_fixed)(int64_t freq_q24_A, int64_t freq_q24_B,
                                   uint8_t oscA, uint8_t oscB, uint16_t *outA,
                                   uint16_t *outB);
 
-inline __attribute__((always_inline)) void voice_write_pw(uint8_t voice,
-                                                          uint16_t level) {
+
+void SRAM_HOT(voice_write_pw)(uint8_t voice, uint16_t level) {
   if (PW_PINS[voice] == PW_PIN_UNASSIGNED)
     return;
   pwm_set_chan_level(PW_PWM_SLICES[voice], pwm_gpio_to_channel(PW_PINS[voice]),
                      level);
 }
 
-inline __attribute__((always_inline)) void
-SRAM_HOT(voice_write_range_pair)(uint8_t dcoA, uint8_t dcoB, uint16_t chanA,
-                       uint16_t chanB) {
+void SRAM_HOT(voice_write_range_pair)(uint8_t dcoA, uint8_t dcoB, uint16_t chanA, uint16_t chanB) {
   if (char_amp_scale_q15) {
     const int32_t amp_j = character_amp_delta();
     write_range_pwm(dcoA, character_clamp_amp((int32_t)chanA + amp_j));
@@ -106,13 +104,13 @@ void init_voices() {
 #endif
 
   initMultiplierTables();
-  setVoiceMode();
+  setVoiceMode(voiceMode);
   voice_task_main();
 }
 
 // interpolation on the sNotePitches_q24 table. Used in slew-rate mode.
 // Fast 32-bit helper: convert Q16 semitone note to Q24 frequency
-static inline int64_t SRAM_HOT(noteQ16_to_freqQ24)(int32_t note_q16) {
+static int64_t SRAM_HOT(noteQ16_to_freqQ24)(int32_t note_q16) {
   const size_t NOTE_TABLE_LEN =
       sizeof(sNotePitches_q24) / sizeof(sNotePitches_q24[0]);
 
@@ -132,7 +130,7 @@ static inline int64_t SRAM_HOT(noteQ16_to_freqQ24)(int32_t note_q16) {
 }
 
 // Helper: convert float Hz to Q24 fixed-point (Hz * 2^24)
-static inline int64_t SRAM_HOT(float_to_q24)(float f) {
+static int64_t SRAM_HOT(float_to_q24)(float f) {
   return (int64_t)lrintf(f * (float)(1 << 24));
 }
 
@@ -142,7 +140,7 @@ static inline int64_t SRAM_HOT(float_to_q24)(float f) {
 // =============================================================================
 
 // Common endpoint latch
-static inline void SRAM_HOT(porta_latch_endpoints_q16)(uint8_t osc, int32_t start_q16, int32_t target_q16) {
+static void SRAM_HOT(porta_latch_endpoints_q16)(uint8_t osc, int32_t start_q16, int32_t target_q16) {
   porta_note_start_q16[osc] = start_q16;
   porta_note_stop_q16[osc] = target_q16;
   porta_note_cur_q16[osc] = start_q16;
@@ -158,7 +156,7 @@ static inline void SRAM_HOT(porta_latch_endpoints_q16)(uint8_t osc, int32_t star
 }
 
 // TIME: fixed duration T_fixed µs for any interval; linear in semitones.
-static inline void SRAM_HOT(porta_setup_time_q16)(uint8_t osc, int32_t start_q16,
+static void SRAM_HOT(porta_setup_time_q16)(uint8_t osc, int32_t start_q16,
   int32_t target_q16, int32_t T_fixed) {
 if (T_fixed < 256)
 T_fixed = 256;
@@ -174,7 +172,7 @@ porta_note_step_q16[osc] = dNote_q16 / (int32_t)u_total;
 }
 
 // SLEW: constant rate = 12 semitones / T_slew (one octave takes the slew-time knob).
-static inline void SRAM_HOT(porta_setup_slew_q16)(uint8_t osc, int32_t start_q16,
+static void SRAM_HOT(porta_setup_slew_q16)(uint8_t osc, int32_t start_q16,
   int32_t target_q16, int32_t T_slew) {
 if (T_slew < 256)
 T_slew = 256;
@@ -193,7 +191,7 @@ rate_per_u = 1;
 porta_note_step_q16[osc] = (dNote_q16 >= 0) ? rate_per_u : -rate_per_u;
 }
 
-static inline void SRAM_HOT(porta_setup_glide_q16)(uint8_t osc, int32_t start_q16,
+static void SRAM_HOT(porta_setup_glide_q16)(uint8_t osc, int32_t start_q16,
    int32_t target_q16, uint8_t mode) {
 if (mode == PORTA_MODE_TIME) {
 int32_t T =
@@ -206,7 +204,7 @@ porta_setup_slew_q16(osc, start_q16, target_q16, T);
 }
 
 // Resolve start note (Q16) directly from existing state (ZERO table searches)
-static inline int32_t SRAM_HOT(porta_resolve_start_note_q16)(uint8_t osc, int32_t target_q16) {
+static int32_t SRAM_HOT(porta_resolve_start_note_q16)(uint8_t osc, int32_t target_q16) {
   if (porta_note_valid[osc]) {
     return porta_note_cur_q16[osc];
   }
@@ -219,7 +217,7 @@ static inline int32_t SRAM_HOT(porta_resolve_start_note_q16)(uint8_t osc, int32_
 // =============================================================================
 #ifdef USE_FLOAT_VOICE_TASK
 
-static inline float SRAM_HOT(noteIndex_to_freqFloat)(float noteIndex) {
+static float SRAM_HOT(noteIndex_to_freqFloat)(float noteIndex) {
   const size_t LEN = sizeof(sNotePitches) / sizeof(sNotePitches[0]);
   if (LEN == 0)
     return 0.0f;
@@ -236,7 +234,7 @@ static inline float SRAM_HOT(noteIndex_to_freqFloat)(float noteIndex) {
   return f0 + (f1 - f0) * t;
 }
 
-static inline float SRAM_HOT(freqFloat_to_noteIndex)(float hz) {
+static float SRAM_HOT(freqFloat_to_noteIndex)(float hz) {
   const size_t LEN = sizeof(sNotePitches) / sizeof(sNotePitches[0]);
   if (LEN == 0)
     return 0.0f;
@@ -266,7 +264,7 @@ static inline float SRAM_HOT(freqFloat_to_noteIndex)(float hz) {
   return (float)lo + (hz - f0) / df;
 }
 
-static inline float SRAM_HOT(porta_resolve_start_note_f)(uint8_t osc, float target) {
+static float SRAM_HOT(porta_resolve_start_note_f)(uint8_t osc, float target) {
   if (porta_note_valid[osc]) {
     return porta_note_cur_f[osc];
   }
@@ -278,7 +276,7 @@ static inline float SRAM_HOT(porta_resolve_start_note_f)(uint8_t osc, float targ
   return target;
 }
 
-static inline void SRAM_HOT(porta_latch_endpoints_f)(uint8_t osc, float startNote,
+static void SRAM_HOT(porta_latch_endpoints_f)(uint8_t osc, float startNote,
                                            float targetNote) {
   porta_note_start_f[osc] = startNote;
   porta_note_stop_f[osc] = targetNote;
@@ -292,7 +290,7 @@ static inline void SRAM_HOT(porta_latch_endpoints_f)(uint8_t osc, float startNot
 }
 
 // TIME: fixed duration T_fixed µs for any interval; linear in semitones.
-static inline void SRAM_HOT(porta_setup_time_f)(uint8_t osc, float startNote,
+static void SRAM_HOT(porta_setup_time_f)(uint8_t osc, float startNote,
                                       float targetNote, float T_fixed) {
   if (T_fixed < 1.0f)
     T_fixed = 1.0f;
@@ -301,7 +299,7 @@ static inline void SRAM_HOT(porta_setup_time_f)(uint8_t osc, float startNote,
 }
 
 // SLEW: constant rate = 12 semitones / T_slew (one octave takes the slew-time knob).
-static inline void SRAM_HOT(porta_setup_slew_f)(uint8_t osc, float startNote,
+static void SRAM_HOT(porta_setup_slew_f)(uint8_t osc, float startNote,
                                       float targetNote, float T_slew) {
   if (T_slew < 1.0f)
     T_slew = 1.0f;
@@ -316,7 +314,7 @@ static inline void SRAM_HOT(porta_setup_slew_f)(uint8_t osc, float startNote,
   }
 }
 
-static inline void SRAM_HOT(porta_setup_glide_f)(uint8_t osc, float startNote,
+static void SRAM_HOT(porta_setup_glide_f)(uint8_t osc, float startNote,
                                        float targetNote, uint8_t mode) {
   if (mode == PORTA_MODE_TIME) {
     float T =
@@ -331,7 +329,7 @@ static inline void SRAM_HOT(porta_setup_glide_f)(uint8_t osc, float startNote,
 // Q24 → float modifier/Hz scale (multiply avoids per-sample divide by 2^24).
 static constexpr float Q24_TO_FLOAT = 1.0f / 16777216.0f;
 
-static inline float SRAM_HOT(q24_to_float)(int32_t q) { return (float)q * Q24_TO_FLOAT; }
+static float SRAM_HOT(q24_to_float)(int32_t q) { return (float)q * Q24_TO_FLOAT; }
 
 #endif // USE_FLOAT_VOICE_TASK
 
@@ -734,7 +732,7 @@ void SRAM_HOT(voice_task_fixed_point)() {
 
 // Dispatch entry point: select float vs fixed-point implementation at compile
 // time.
-inline void SRAM_HOT(voice_task_main)() {
+void SRAM_HOT(voice_task_main)() {
 #ifdef USE_FLOAT_VOICE_TASK
   #ifdef USE_VOICE_TASK_Q24
     voice_task_Q24();
@@ -773,10 +771,10 @@ void SRAM_HOT(voice_task_float)() {
   // =========================================================================
   const volatile uint8_t* __restrict vn_osc1 = VOICE_NOTE_OSC1;
   const volatile uint8_t* __restrict vn_osc2 = VOICE_NOTE_OSC2;
-  const volatile int32_t* __restrict m_pitch = matrix_pitch_mod_q24;
-  const volatile int32_t* __restrict m_osc1 = matrix_osc1_pitch_mod_q24;
-  const volatile int32_t* __restrict m_osc2 = matrix_osc2_pitch_mod_q24;
-  const volatile int32_t* __restrict m_pw = matrix_pw_mod; // Corrected to int32_t
+  const volatile float* __restrict m_pitch_f = matrix_pitch_mod_f;
+  const volatile float* __restrict m_osc1_f  = matrix_osc1_pitch_mod_f;
+  const volatile float* __restrict m_osc2_f  = matrix_osc2_pitch_mod_f;
+  const volatile int32_t* __restrict m_pw = matrix_pw_mod;
   const int16_t* __restrict adsr3_lvl = ADSR3Level_q15;
   volatile uint8_t* __restrict n_on_flag = note_on_flag;
   volatile bool* __restrict n_on_flag_f = note_on_flag_flag;
@@ -790,9 +788,9 @@ void SRAM_HOT(voice_task_float)() {
   const float unisonBase = (float)unisonDetune * UNISON_SCALE;
 
   // 3. Global LFOs 
-  const float lfo1_osc1_f = q24_to_float(lfo1_pitch_mod_q24[LFO1_PITCH_OSC1]);
-  const float lfo1_osc2_f = q24_to_float(lfo1_pitch_mod_q24[LFO1_PITCH_OSC2]);
-  const float lfo2_osc2_f = q24_to_float(lfo2_pitch_mod_q24[LFO2_PITCH_OSC2]);
+  const float lfo1_osc1_f = lfo1_pitch_mod_f[LFO1_PITCH_OSC1];
+  const float lfo1_osc2_f = lfo1_pitch_mod_f[LFO1_PITCH_OSC2];
+  const float lfo2_osc2_f = lfo2_pitch_mod_f[LFO2_PITCH_OSC2];
 
   // 4. Constant Epsilon
   static constexpr float EPS_FLOAT = (float)Q24_ONE_EPS * (1.0f / 16777216.0f);
@@ -800,9 +798,6 @@ void SRAM_HOT(voice_task_float)() {
   // 5. Global PWM LFO delta
   const int32_t lfo2_pw_delta = ((int32_t)LFO2Level * (int32_t)LFO2toPW) >> 15;
 
-  // 6. Pre-scaled Modifiers (Avoid 64-bit integer math in the loop!)
-  const float adsr3_to_pitch_scale_f = q24_to_float(ADSR3toDETUNE1_scale_q24) * (1.0f / 32768.0f);
-  const float drift_scale_f = q24_to_float(drift_pitch_scale_q24) * (1.0f / 32768.0f);
   
   // Character Engine Output
   const float char_pitch_delta_f = char_pitch_scale_q15 ? character_pitch_delta_float() : 0.0f;
@@ -952,15 +947,14 @@ void SRAM_HOT(voice_task_float)() {
     BENCH_END(vt_portamento);
 
     BENCH_BEGIN(vt_adsr_mod);
-    float ADSRModifier = (float)adsr3_lvl[i] * adsr3_to_pitch_scale_f;
-    // Conditional multiply resolves down to a 1-cycle MOV check
+    float ADSRModifier = (float)adsr3_lvl[i] * ADSR3toDETUNE1_scale_f;
     float ADSRModifierOSC1 = adsr_osc1_en ? ADSRModifier : 0.0f;
     float ADSRModifierOSC2 = adsr_osc2_en ? ADSRModifier : 0.0f;
     BENCH_END(vt_adsr_mod);
     
     BENCH_BEGIN(vt_drift_mod);
-    float DETUNE_DRIFT_OSC1 = (float)LFO_DRIFT_LEVEL[DCO_A] * drift_scale_f;
-    float DETUNE_DRIFT_OSC2 = (float)LFO_DRIFT_LEVEL[DCO_B] * drift_scale_f;
+    float DETUNE_DRIFT_OSC1 = (float)LFO_DRIFT_LEVEL[DCO_A] * drift_pitch_scale_f;
+    float DETUNE_DRIFT_OSC2 = (float)LFO_DRIFT_LEVEL[DCO_B] * drift_pitch_scale_f;
     BENCH_END(vt_drift_mod);
 
     BENCH_BEGIN(vt_unison_mod);
@@ -974,17 +968,16 @@ void SRAM_HOT(voice_task_float)() {
     float freqModifiers2;
     {
       BENCH_BEGIN(vt_modifiers);
-      // =========================================================================
-      // Q24 Type Safety Target: Combine integer arrays statically *first*, 
-      // then trigger exactly one VCVT hardware float conversion per channel block.
-      // =========================================================================
-      float matrix_osc1_f = q24_to_float(m_pitch[i] + m_osc1[i]);
-      float matrix_osc2_f = q24_to_float(m_pitch[i] + m_osc2[i]);
-      
-      float modifiersBase = calcPitchbend + EPS_FLOAT + unisonMODIFIER + char_pitch_delta_f;
-      
-      freqModifiers1 = ADSRModifierOSC1 + DETUNE_DRIFT_OSC1 + modifiersBase + lfo1_osc1_f + matrix_osc1_f;
-      freqModifiers2 = ADSRModifierOSC2 + DETUNE_DRIFT_OSC2 + modifiersBase + lfo1_osc2_f + lfo2_osc2_f + matrix_osc2_f;
+// Pure float mod matrix sums (1.0f = 1 Octave, 0 conversions)
+const float matrix_osc1_f = matrix_pitch_mod_f[i] + matrix_osc1_pitch_mod_f[i];
+const float matrix_osc2_f = matrix_pitch_mod_f[i] + matrix_osc2_pitch_mod_f[i];
+
+float modifiersBase = calcPitchbend + EPS_FLOAT + unisonMODIFIER + char_pitch_delta_f;
+
+// Preserving your original routing: lfo2 is hardwired to OSC2 (`freqModifiers2`), 
+// while matrix/lfo1 hit both or respective oscillators:
+freqModifiers1 = ADSRModifierOSC1 + DETUNE_DRIFT_OSC1 + modifiersBase + lfo1_osc1_f + matrix_osc1_f;
+freqModifiers2 = ADSRModifierOSC2 + DETUNE_DRIFT_OSC2 + modifiersBase + lfo1_osc2_f + lfo2_osc2_f + matrix_osc2_f;
       BENCH_END(vt_modifiers);
     }
 
@@ -1471,53 +1464,6 @@ void SRAM_HOT(voice_task_Q24)() {
 }
 #endif // USE_FLOAT_VOICE_TASK
 
-// --- Voice allocation --------------------------------------------------------
-// Thin adapters over the shared allocator (DCO-SHARED-LIBRARIES/voice_alloc.h,
-// instance in voice_alloc_state.h). Every policy in VoiceAllocMode lives there;
-// these keep the sketch's gate flag, pitch table and ADSR edge flags in step
-// with the allocator's bookkeeping so no caller has to update both.
-
-// Choose a voice for an incoming note. Returns VOICE_ALLOC_NONE when the mode
-// refuses to steal.
-uint8_t voice_alloc() {
-#ifdef ENABLE_MB_MOD_STREAM
-  // No level source on this build, so the allocator ranks release tails by
-  // elapsed time. ADSR_VCA_release is written from the CC handler, the preset
-  // load and the Mainboard block, so refresh it here rather than at each.
-  voiceAlloc.setReleaseMs(ADSR_VCA_release);
-#endif
-  return voiceAlloc.alloc();
-}
-
-// Map voiceMode → NUM_VOICES / STACK_VOICES. Called from init_voices and
-// apply_param_voice_mode.
-//   0 mono:  one MIDI voice → osc pair 0/1
-//   1 poly:  NUM_VOICES_TOTAL independent 2-osc voices
-//   2 stack: all voices, same note
-inline void setVoiceMode() {
-  // Resync allocation state to the gates: a slot that NUM_VOICES dropped
-  // mid-note would otherwise come back HELD when the count grows again.
-    voiceAlloc.resyncFromGates(VOICES);
-  
-    switch (voiceMode) {
-      case 0: // Mono
-        NUM_VOICES = 1;
-        STACK_VOICES = 1;
-        mono_note_stack_clear();
-        break;
-      case 1: // Poly
-        NUM_VOICES = NUM_VOICES_TOTAL;
-        STACK_VOICES = 1;
-        mono_note_stack_clear();
-        break;
-      case 2: // Unison / Stack
-        NUM_VOICES = NUM_VOICES_TOTAL;
-        STACK_VOICES = NUM_VOICES_TOTAL;
-        mono_note_stack_clear();
-        break;
-    }
-    voiceAlloc.setVoiceCount(NUM_VOICES);
-  }
 
 // Rebuild the PIO sync topology and retrigger voices.
 // Called from apply_param_sync_mode (Serial2).
@@ -1541,7 +1487,7 @@ void SRAM_HOT(setSyncMode)() {
 
 // One osc: shipping FIXED = Q24→Q8 lookup. With USE_FLOAT_AMP_COMP, non-FIXED
 // methods take Q24→Hz then get_chan_level_by_method (cmds 20–22).
-inline __attribute__((always_inline)) uint16_t SRAM_HOT(amp_level_q24)(int64_t freq_q24,
+uint16_t SRAM_HOT(amp_level_q24)(int64_t freq_q24,
                                                              uint8_t osc) {
 #ifdef USE_FLOAT_AMP_COMP
   if (amp_comp_method != AMP_COMP_FIXED) {

@@ -59,6 +59,9 @@
 #ifndef USE_FLOAT_CV_OUTS
 #define USE_FLOAT_CV_OUTS
 #endif
+#ifndef USE_MOD_MATRIX_FLOAT_ENGINE
+#define USE_MOD_MATRIX_FLOAT_ENGINE
+#endif
 #else
 // RP2040 / fallback: fixed voice + lean Q8 amp (no float amp tables / LUT RAM).
 // CV outs stay fixed-point (no USE_FLOAT_CV_OUTS) — soft-float would choke Core1.

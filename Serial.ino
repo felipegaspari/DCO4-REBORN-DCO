@@ -248,7 +248,7 @@ void __not_in_flash_func(serialSendParam32)(byte paramNumber, uint32_t paramValu
   }
 }
 
-static inline bool SRAM_HOT(dco_should_forward_usb_param)(uint8_t id) {
+static bool SRAM_HOT(dco_should_forward_usb_param)(uint8_t id) {
   // 1. All patch sound parameters (0..179)
   if (preset_param_is_persistable(id)) {
     return true;

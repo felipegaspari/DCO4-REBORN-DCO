@@ -50,7 +50,7 @@ static constexpr uint16_t DIV_COUNTER_PW = 1024;
 
 // Reset pulse width in system clock cycles (Y). Runtime-settable via
 // PARAM_DEBUG_COMMAND 160 with value in [200, 50000] (dco_control Calibration).
-uint32_t pioPulseLength = 6000;
+uint32_t pioPulseLength = 10000;
 
 // --- PIO Program Timing Constants ---
 // `jmp x-- lp` executes X+1 times: it jumps while X is non-zero, then spends one

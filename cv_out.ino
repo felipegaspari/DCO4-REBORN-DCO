@@ -17,34 +17,53 @@
  uint8_t  ADSR2AttackCurveVal = 4, ADSR2DecayCurveVal = 6, ADSR2ReleaseCurveVal = 1;
  uint8_t  ADSR3AttackCurveVal = 7, ADSR3DecayCurveVal = 7, ADSR3ReleaseCurveVal = 7;
  
- uint16_t CUTOFF = 1024, RESONANCE = 0, LFO2toVCF = 0, VCALevel = 4095, LFO1toVCA = 0;
- int16_t  ADSR2toVCF = 0, ADSR1toVCA = 0;
+volatile uint16_t CUTOFF = 1024, RESONANCE = 0, LFO2toVCF = 0, VCALevel = 4095, LFO1toVCA = 0;
+volatile int16_t  ADSR2toVCF = 0, ADSR1toVCA = 0;
  uint16_t DIST_DRIVE = 0, DIST_MIX = 0;
  uint8_t  FILTER_MODE = 0;
  
- int32_t  ADSR2toVCF_scale_q15 = 0, LFO2toVCF_scale_q15 = 0, LFO1toVCA_scale_q15 = 0;
- int32_t  velocityToVCF_q15 = 0, velocityToVCA_q15 = 0, vcf_drift_scale_q15 = 0;
+volatile int32_t  ADSR2toVCF_scale_q15 = 0, LFO2toVCF_scale_q15 = 0, LFO1toVCA_scale_q15 = 0;
+volatile int32_t  velocityToVCF_q15 = 0, velocityToVCA_q15 = 0, vcf_drift_scale_q15 = 0;
  volatile int16_t VCF_DRIFT[NUM_VOICES_TOTAL] = {0};
  
  // Hardware modulation delta buffers
- volatile int32_t matrix_pitch_mod_q24[NUM_VOICES_TOTAL]      = {0};
- volatile int32_t matrix_osc1_pitch_mod_q24[NUM_VOICES_TOTAL] = {0};
- volatile int32_t matrix_osc2_pitch_mod_q24[NUM_VOICES_TOTAL] = {0};
- volatile int32_t matrix_pw_mod[NUM_VOICES_TOTAL]             = {0};
+ #if defined(USE_FLOAT_VOICE_TASK)
+ volatile float matrix_pitch_mod_f[NUM_VOICES_TOTAL]           = {0};
+ volatile float matrix_osc1_pitch_mod_f[NUM_VOICES_TOTAL]      = {0};
+ volatile float matrix_osc2_pitch_mod_f[NUM_VOICES_TOTAL]      = {0};
+ #endif
  
+ volatile int32_t matrix_pitch_mod_q24[NUM_VOICES_TOTAL]       = {0};
+ volatile int32_t matrix_osc1_pitch_mod_q24[NUM_VOICES_TOTAL]  = {0};
+ volatile int32_t matrix_osc2_pitch_mod_q24[NUM_VOICES_TOTAL]  = {0};
+ volatile int32_t matrix_pw_mod[NUM_VOICES_TOTAL]              = {0};
+
  bool     RESONANCEAmpCompensation = true;
- int16_t  VCAResonanceCompensation = 100, VCFKeytrack = 0;
+ volatile int16_t  VCAResonanceCompensation = 100, VCFKeytrack = 0;
  int8_t   velocityToVCFVal = 0, velocityToVCAVal = 0;
  
- uint16_t VCA_PWM[NUM_VOICES_TOTAL]       = {0};
- uint16_t VCF_PWM[NUM_VOICES_TOTAL]       = {0};
- uint16_t RESONANCE_PWM[NUM_FILTERS]      = {0};
- uint16_t AS2164_VCA_linearize_table[4096] = {0};
+ SRAM_DATA uint16_t VCA_PWM[NUM_VOICES_TOTAL]       = {0};
+ SRAM_DATA uint16_t VCF_PWM[NUM_VOICES_TOTAL]       = {0};
+ SRAM_DATA uint16_t RESONANCE_PWM[NUM_FILTERS]      = {0};
+ SRAM_DATA uint16_t AS2164_VCA_linearize_table[4096] = {0};
  
- int16_t  OSC1LevelVal = 0, OSC2LevelVal = 0, OSC3LevelVal = 0, SubLevelVal = 0;
- uint16_t OSC1Level = 0, OSC2Level = 0, OSC3Level = 0, SubLevel = 0;
+ volatile int16_t  OSC1LevelVal = 0, OSC2LevelVal = 0, OSC3LevelVal = 0, SubLevelVal = 0;
+ volatile uint16_t OSC1Level = 0, OSC2Level = 0, OSC3Level = 0, SubLevel = 0;
  bool     ADSR3Enabled = false;
  
+ // =============================================================================
+// MODULATION MATRIX STORAGE DEFINITIONS (Instantiated for DCO)
+// =============================================================================
+SRAM_DATA ModSlot mod_slots[8];
+SRAM_DATA int32_t voice_mod_sums[MAX_SUPPORTED_VOICES][MOD_DEST_COUNT];
+SRAM_DATA int32_t prev_depth_mods[MAX_SUPPORTED_VOICES][8];
+
+SRAM_DATA int16_t aftertouch_q15 = 0;
+SRAM_DATA int16_t mod_wheel_q15  = 0;
+SRAM_DATA int16_t expression_q15 = 0;
+SRAM_DATA int16_t breath_q15     = 0;
+SRAM_DATA int16_t random_sh_q15[MAX_SUPPORTED_VOICES] = {0};
+
  // =============================================================================
  // 2. BOOT & SCALE INITIALIZATION
  // =============================================================================
@@ -63,18 +82,25 @@
  }
  #endif
  
- void init_cv_out() {
- #ifdef ENABLE_CV_OUTS
-   generateBezierArray({ 0, 4095 }, { 4095, 0 }, { 150, 1420 }, { -235, 815 }, 4096, AS2164_VCA_linearize_table);
-   cv_update_mod_scales();
- #endif
-   for (uint8_t i = 0; i < NUM_VOICES_TOTAL; i++) {
-     matrix_pitch_mod_q24[i]      = 0;
-     matrix_osc1_pitch_mod_q24[i] = 0;
-     matrix_osc2_pitch_mod_q24[i] = 0;
-     matrix_pw_mod[i]             = 0;
-   }
- }
+void init_cv_out() {
+#ifdef ENABLE_CV_OUTS
+  generateBezierArray({ 0, 4095 }, { 4095, 0 }, { 150, 1420 }, { -235, 815 }, 4096, AS2164_VCA_linearize_table);
+  cv_update_mod_scales();
+#endif
+
+  for (uint8_t i = 0; i < NUM_VOICES_TOTAL; i++) {
+#if defined(USE_FLOAT_VOICE_TASK)
+    matrix_pitch_mod_f[i]      = 0.0f;
+    matrix_osc1_pitch_mod_f[i] = 0.0f;
+    matrix_osc2_pitch_mod_f[i] = 0.0f;
+#else
+    matrix_pitch_mod_q24[i]      = 0;
+    matrix_osc1_pitch_mod_q24[i] = 0;
+    matrix_osc2_pitch_mod_q24[i] = 0;
+#endif
+    matrix_pw_mod[i] = 0;
+  }
+}
  
  void cv_bake_adsr2_to_vcf_scale() { ADSR2toVCF_scale_q15 = (int32_t)ADSR2toVCF << 3; }
  void cv_bake_lfo2_to_vcf_scale()  { LFO2toVCF_scale_q15  = -((int32_t)LFO2toVCF << 2); }
@@ -93,89 +119,108 @@ void SRAM_HOT(update_CV_outs)() {
 
   BENCH_BEGIN(cv_ingest);
 
+    // =========================================================================
     // A. Zero Modulation on Calibration
+    // =========================================================================
     if (__builtin_expect(manualCalibrationFlag || calibrationFlag, 0)) {
       for (uint8_t i = 0; i < NUM_VOICES_TOTAL; i++) {
         mod_matrix_clear_voice(i);
+#if defined(USE_FLOAT_VOICE_TASK)
+        matrix_pitch_mod_f[i]      = 0.0f;
+        matrix_osc1_pitch_mod_f[i] = 0.0f;
+        matrix_osc2_pitch_mod_f[i] = 0.0f;
+#else
         matrix_pitch_mod_q24[i]      = 0;
         matrix_osc1_pitch_mod_q24[i] = 0;
         matrix_osc2_pitch_mod_q24[i] = 0;
-        matrix_pw_mod[i]             = 0;
+#endif
+        matrix_pw_mod[i] = 0;
       }
       return;
     }
   
-    // B. Ingest All Polyphonic Voice Sources (Optimized SoA Write)
+    // =========================================================================
+    // B. Ingest All Polyphonic Voice Sources (100% Integer Q15 - UNCHANGED)
+    // =========================================================================
     ModSources sources;
-      // Write Globals ONCE (Eliminates redundant stack copies)
-      sources.lfo1         = LFO1Level;
-      sources.lfo2         = LFO2Level;
-      sources.lfo3         = LFO3Level;             
-      sources.noise        = (int16_t)noiseLevel[0];         
-      sources.pitch_bend   = (int16_t)((int32_t)midi_pitch_bend - 8192);
-      sources.drift_global = LFO_DRIFT_LEVEL[0];    
-      sources.expression   = expression_q15;        
-      sources.breath       = breath_q15;            
-  
-      // Write Voice-specifics
-      for (uint8_t i = 0; i < NUM_VOICES_TOTAL; i++) {
-        const uint8_t oscA = (uint8_t)(i * 2);
-  
-        sources.drift_voice[i]   = LFO_DRIFT_LEVEL[oscA];
-        sources.env_vca[i]       = ADSR_VCA_Level_q15[i];
-        sources.env_dco[i]       = ADSR3Level_q15[i];
-        sources.env_vcf[i]       = ADSR_VCF_Level_q15[i]; 
-        sources.velocity[i]      = velocity[i];
-        sources.keytrack_note[i] = VOICE_NOTES[i] ? VOICE_NOTES[i] : 60;
-      }
-    
-      BENCH_END(cv_ingest);
-    // C. Execute Matrix Engine (Pass pointer)
+    sources.lfo1         = LFO1Level;
+    sources.lfo2         = LFO2Level;
+    sources.lfo3         = LFO3Level;             
+    sources.noise        = (int16_t)noiseLevel[0];         
+    sources.pitch_bend   = (int16_t)((int32_t)midi_pitch_bend - 8192);
+    sources.drift_global = LFO_DRIFT_LEVEL[0];    
+    sources.expression   = expression_q15;        
+    sources.breath       = breath_q15;            
+
+    for (uint8_t i = 0; i < NUM_VOICES_TOTAL; i++) {
+      const uint8_t oscA = (uint8_t)(i * 2);
+      sources.drift_voice[i]   = LFO_DRIFT_LEVEL[oscA];
+      sources.env_vca[i]       = ADSR_VCA_Level_q15[i];
+      sources.env_dco[i]       = ADSR3Level_q15[i];
+      sources.env_vcf[i]       = ADSR_VCF_Level_q15[i]; 
+      sources.velocity[i]      = velocity[i];
+      sources.keytrack_note[i] = VOICE_NOTES[i] ? VOICE_NOTES[i] : 60;
+    }
+    BENCH_END(cv_ingest);
+
+    // =========================================================================
+    // C. Execute Matrix Engine (1-Cycle Integer MAC - UNCHANGED)
+    // =========================================================================
     {
       BENCH_BEGIN(cv_matrix);
       mod_matrix_accumulate_all(&sources, NUM_VOICES_TOTAL);
       BENCH_END(cv_matrix);
     }
   
-    // D. Extract Hardware Deltas
+    // =========================================================================
+    // D. Extract Hardware Deltas (Branch between Float & Q24)
+    // =========================================================================
     {
       BENCH_BEGIN(cv_deltas);
+      _Pragma("GCC unroll 4")
       for (uint8_t i = 0; i < NUM_VOICES_TOTAL; i++) {
+#if defined(USE_FLOAT_VOICE_TASK)
+        // 2 CPU cycles per destination: Converts raw int32 sum to Float Octaves (1.0f = 1 Octave)
+        matrix_pitch_mod_f[i]      = mod_matrix_get_dest_float<DEST_PITCH>(i);
+        matrix_osc1_pitch_mod_f[i] = mod_matrix_get_dest_float<DEST_OSC1_PITCH>(i);
+        matrix_osc2_pitch_mod_f[i] = mod_matrix_get_dest_float<DEST_OSC2_PITCH>(i);
+#else
+        // RP2040 Q24 bit-shift path
         matrix_pitch_mod_q24[i]      = mod_matrix_get_dest_fast<DEST_PITCH>(i);
         matrix_osc1_pitch_mod_q24[i] = mod_matrix_get_dest_fast<DEST_OSC1_PITCH>(i);
         matrix_osc2_pitch_mod_q24[i] = mod_matrix_get_dest_fast<DEST_OSC2_PITCH>(i);
-        matrix_pw_mod[i]             = mod_matrix_get_dest_fast<DEST_PW>(i);
+#endif
+        matrix_pw_mod[i] = mod_matrix_get_dest_fast<DEST_PW>(i);
       }
+      __dmb(); // Memory barrier: Ensure Core 1 voice task reads fresh float deltas
       BENCH_END(cv_deltas);
     }
   
-    // E. Control-Rate 1ms Sub-Loop (Dynamic LFO Rates)
+    // =========================================================================
+    // E. Control-Rate 1ms Sub-Loop (Dynamic LFO Rates - UNCHANGED)
+    // =========================================================================
     {
-      
       static uint32_t last_1ms_tick = 0;
       const uint32_t now_us = micros();
       if (now_us - last_1ms_tick >= 201) {
         BENCH_BEGIN(cv_lfo_subloop);
         last_1ms_tick = now_us;
   
-        // LFO 1 Dynamic Speed
         int32_t l1_speed_mod = (int32_t)LFO1SpeedVal + mod_matrix_get_dest_fast<DEST_LFO1_SPEED>(0);
         l1_speed_mod = constrain(l1_speed_mod, 0, 4095);
         LFO1_class.setMode0Freq(fast_exp_speed_5000((uint16_t)l1_speed_mod), now_us);
   
-        // LFO 2 Dynamic Speed
         int32_t l2_speed_mod = (int32_t)LFO2SpeedVal + mod_matrix_get_dest_fast<DEST_LFO2_SPEED>(0);
         l2_speed_mod = constrain(l2_speed_mod, 0, 4095);
         LFO2_class.setMode0Freq(fast_exp_speed_5000((uint16_t)l2_speed_mod), now_us);
   
-        // LFO 3 Dynamic Speed
         int32_t l3_speed_mod = (int32_t)LFO3SpeedVal + mod_matrix_get_dest_fast<DEST_LFO3_SPEED>(0);
         l3_speed_mod = constrain(l3_speed_mod, 0, 4095);
         LFO3_class.setMode0Freq(fast_exp_speed_5000((uint16_t)l3_speed_mod), now_us);
         BENCH_END(cv_lfo_subloop);
       }
     }
-  }
+}
  
  void update_CV_outs_manual_calibration() {
  #ifndef ENABLE_CV_OUTS

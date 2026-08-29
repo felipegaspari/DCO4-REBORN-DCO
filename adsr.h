@@ -104,20 +104,29 @@ extern uint16_t ADSRMinLevel;
 // =================================================================
 extern int8_t ADSR3ToOscSelect; // 0=OSC1, 1=OSC2, 2=OSC1+2, 3=OSC3, 4=all
 
-extern uint16_t ADSR3_attack;
-extern uint16_t ADSR3_decay;
-extern uint16_t ADSR3_sustain;
-extern uint16_t ADSR3_release;
+extern volatile uint16_t ADSR3_attack;
+extern volatile uint16_t ADSR3_decay;
+extern volatile uint16_t ADSR3_sustain;
+extern volatile uint16_t ADSR3_release;
 extern bool     ADSR3Restart;
 
 extern int16_t ADSR3toDETUNE1;
 extern int32_t ADSR3toDETUNE1_scale_q24;
+extern float   ADSR3toDETUNE1_scale_f;
 extern int16_t ADSR3toPWM;
 extern int32_t ADSR3toPWM_scale;
 
 uint8_t ADSR1Mode = 0;
 uint8_t ADSR2Mode = 0;
 uint8_t ADSR3Mode = 0;
+
+///////////////////////////////////////////////////////////////////////////
+// VOICE ALLOCATION 
+// ==================================================================
+int16_t live_vca_levels[NUM_VOICES_TOTAL]; // Range 0 to 32767 (Q15)
+
+//You can pass it to the allocator during adsr update function
+// voiceAlloc.setLevelSource(live_vca_levels);
 
 // =================================================================
 // DIRTY FLAGS (Core 0 write -> Core 1 apply)
@@ -142,7 +151,7 @@ uint8_t ADSR3Mode = 0;
 extern volatile uint16_t adsr_params_dirty;
 
 /** @brief Flag parameters for Core 1 deferred update */
-static inline void SRAM_HOT(mark_adsr_params_dirty)(uint16_t mask) {
+static void SRAM_HOT(mark_adsr_params_dirty)(uint16_t mask) {
   adsr_params_dirty |= mask;
 }
 
