@@ -12,14 +12,14 @@
 // ENGINE — pitch mode ids (needed by board defaults + overrides below)
 // =============================================================================
 // Deep detail: docs/ENGINE_OPTIONS.md
-//   0 FLOAT (walk find; natural modifier→ratio; needs float voice)
+//   0 FLOAT (updated no docs)
 //   1 RATIO_Q16 (slopeQ16 + fused y→ratio; fixed default / float A/B)
 //   2 Q12 (slope A/B: IntQ16 y + reciprocal; float A/B OK)
-//   3 FLOAT_FAST (trunc+clamp±1 find; same float tables; needs float voice)
-#define PITCH_INTERP_FLOAT 0
+//   3 FLOAT_CACHED (trunc+clamp±1 find; same float tables; needs float voice)
+#define PITCH_INTERP_FLOAT 0 /// default for rp2350, much faster than cached
 #define PITCH_INTERP_RATIO_Q16 1
 #define PITCH_INTERP_Q12 2
-#define PITCH_INTERP_FLOAT_FAST 3
+#define PITCH_INTERP_FLOAT_CACHED 3
 
 // Clkdiv methods (CLKDIV_MODE). Accuracy order. Fixed: Q24 via clkdiv_live_total_cycles.
 // Float: Hz via clkdiv_live_hz_total_cycles (Q16/Q8/FAST_Q4 convert Hz→Q24).
@@ -45,13 +45,13 @@
 #define USE_FLOAT_VOICE_TASK
 #endif
 #ifndef PITCH_INTERP_MODE
-#define PITCH_INTERP_MODE PITCH_INTERP_FLOAT_FAST
+#define PITCH_INTERP_MODE PITCH_INTERP_FLOAT
 #endif
 #ifndef USE_FLOAT_AMP_COMP
 #define USE_FLOAT_AMP_COMP
 #endif
 #ifndef AMP_COMP_METHOD_DEFAULT
-#define AMP_COMP_METHOD_DEFAULT 0  // FLOAT_QUAD (0); LUT=1, FIXED=2 — cmds 20–22
+#define AMP_COMP_METHOD_DEFAULT 1  // FLOAT_QUAD (0); LUT=1, FIXED=2 — cmds 20–22
 #endif
 #ifndef CLKDIV_MODE
 #define CLKDIV_MODE CLKDIV_FLOAT  // native Hz on float voice
@@ -100,14 +100,14 @@
 // Pitch A/B (ids above; default already set — #undef then redefine):
 // #undef PITCH_INTERP_MODE
 // #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT       // walk find A/B (needs float voice)
-// #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT_FAST  // trunc+clamp±1 (needs float voice)
+// #define PITCH_INTERP_MODE PITCH_INTERP_FLOAT_CACHED  // trunc+clamp±1 (needs float voice)
 // #define PITCH_INTERP_MODE PITCH_INTERP_RATIO_Q16   // shipping default both MCUs
 // #define PITCH_INTERP_MODE PITCH_INTERP_Q12
 
 // =============================================================================
 // ENGINE — guards
 // =============================================================================
-#if (PITCH_INTERP_MODE == PITCH_INTERP_FLOAT || PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST) && !defined(USE_FLOAT_VOICE_TASK)
+#if (PITCH_INTERP_MODE == PITCH_INTERP_FLOAT || PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_CACHED) && !defined(USE_FLOAT_VOICE_TASK)
 #error "PITCH_INTERP_FLOAT / FLOAT_FAST require USE_FLOAT_VOICE_TASK (board default or override)"
 #endif
 #if CLKDIV_MODE > 4
@@ -182,13 +182,34 @@
 // BENCH_USE_SYSTICK: 1 = SysTick for PERIOD + stages; 0 = 1 us timer for all probes.
 // Dump window (1 s gate) always uses bench_us_now(). BENCH_PERIOD_MAX_US: discard PERIOD
 // samples longer than this (autotune / wrap-looking stalls).
+// ENABLE_SWD_TELEMETRY : Enable SWD telemetry for PlotJuggler
 
 #define BENCHMARKING_ENABLED
 
+
 #ifdef BENCHMARKING_ENABLED
+// #define ENABLE_SWD_TELEMETRY
+// #define ENABLE_SWD_PERIOD 
+
 #define RUNNING_AVERAGE
-// #define RUNNING_AVERAGE_FINE
 #define RUNNING_AVERAGE_PERIOD
+
+#if defined(ENABLE_SWD_TELEMETRY)
+  // SWD telemetry enabled, use its specific functions.
+#elif defined(RUNNING_AVERAGE_PERIOD)
+  // Only period probes active, no fine-grained sampling.
+#define RUNNING_AVERAGE_PERIOD
+#elif defined(RUNNING_AVERAGE_FINE)
+  // Fine-grained sampling enabled.
+#define RUNNING_AVERAGE_FINE
+#define RUNNING_AVERAGE
+#elif defined(RUNNING_AVERAGE)
+  // Basic running average sampling enabled.
+#else
+  // BENCHMARKING_ENABLED is defined, but no specific mode selected.
+  // Default to RUNNING_AVERAGE_PERIOD for minimal overhead.
+  // #define RUNNING_AVERAGE_PERIOD
+#endif
 
 // #define BENCH_PATH_STATS
 
@@ -204,15 +225,16 @@
 // ENABLE_MEM_DIAG: SRAM/heap dump (cmd 13) + loop/loop1 polls. Default on.
 // Comment out for a zero-cost match to pre-mem_diag period-only dumps.
 // Runtime 14/15 disable/enable polls without rebuild (dump 13 ignored while off).
-#define ENABLE_MEM_DIAG
+//#define ENABLE_MEM_DIAG
 
 // Amp-comp speed/accuracy reports (debug cmds 24–25); needs RUNNING_AVERAGE + USE_FLOAT_AMP_COMP.
-// #define AMP_COMP_BENCHMARK
+//#define AMP_COMP_BENCHMARK
 
 #ifdef AMP_COMP_BENCHMARK
 #define USE_FLOAT_AMP_COMP
 #endif
 #endif 
+
 // =============================================================================
 // BOARD / IO
 // =============================================================================
@@ -281,7 +303,7 @@
 // #define PW_SWEEP_MODE_DEFAULT PW_SWEEP_HALF_HIGH
 
 // Debug level for autotune
-#define AUTOTUNE_DEBUG_LEVEL 4
+#define AUTOTUNE_DEBUG_LEVEL 2
 
 // =======================================================================
 // PRESETS OPTIONS
@@ -355,20 +377,40 @@
 #include "midi_cc.h"
 #include "midi_cc_map.h"
 #include "PWM.h"
+#include "voices.h"
 #include "state_machines.h"
 #include "_shared/utils.h"
 #include "Timer_micros.h"
-#include "voices.h"
+
 #include "cv_state.h"
 #include "cv_out.h"
 
+
+#if defined(BENCHMARKING_ENABLED) && defined(ENABLE_SWD_TELEMETRY)
+extern "C" {
+    volatile __attribute__((used)) PicoBenchTelemetry bench_telemetry = {};
+    volatile __attribute__((used)) const char bench_meta_json[] = BENCH_META_JSON_STR;
+    volatile uint32_t bench_acc[BENCH_COUNT] = {0};
+    const uint8_t bench_probe_core[BENCH_COUNT] = {
+    #define BENCH_X_CORE(id, core, kind, tier, parent, label) core,
+      BENCH_PROBES(BENCH_X_CORE)
+    #undef BENCH_X_CORE
+    };
+}
+#endif
 // ****************************************************************************************** //
 
 // Core 0 boot: USB, UART serial, MIDI handlers, LFOs, calibration input pin.
 void setup() {
   sys_clock_hz_refresh();  // Arduino already set clk_sys; cache real Hz for clkdiv
   // EEPROM.begin(512);
-  bench_init_core();  // SysTick is per core; core 1 arms its own in setup1()
+  #ifdef BENCHMARKING_ENABLED
+  #if defined(ENABLE_SWD_TELEMETRY)
+  volatile char _keep_json = bench_meta_json[0]; // Fools the linker into keeping the JSON!
+  (void)_keep_json;
+  #endif
+    bench_init_core();  // SysTick is per core; core 1 arms its own in setup1()
+  #endif
   init_micros_timers();
   init_usb();
   init_serial();
@@ -387,7 +429,8 @@ void setup() {
 
 
   pinMode(DCO_calibration_pin, INPUT);
-
+  pinMode(24, OUTPUT);
+  digitalWrite(24, HIGH);
 }
 
 // Core 1 boot: LittleFS cal load, ADSR, amp-comp precompute, PWM/PIO, voices.
@@ -395,7 +438,9 @@ void setup1() {
 
   sys_clock_hz_refresh();  // Arduino already set clk_sys; cache real Hz for clkdiv
 
-  bench_init_core();
+  #ifdef BENCHMARKING_ENABLED
+    bench_init_core();
+  #endif
   init_micros_timers();
 
   // Create voiceTables only if the file is missing (before init_FS stubs it).
@@ -428,6 +473,7 @@ void setup1() {
 }
 
 // Core 0 forever loop: MIDI every iter; Serial2 + USB CDC on 1 ms; ~50 µs LFO1 + LFO2 + drift.
+// Core 0 forever loop: MIDI every iter; Serial2 + USB CDC on 1 ms; ~50 µs LFO1 + LFO2 + drift.
 void SRAM_HOT(loop)() {
   BENCH_PERIOD(loop0_period);
   BENCH_SAMPLE_TICK();
@@ -438,33 +484,33 @@ void SRAM_HOT(loop)() {
     BENCH_END(loop0_microsTimer);
   }
 
- {
-  BENCH_BEGIN(loop0_midi);
-
-  // 1. USB MIDI (TinyUSB)
   {
-    BENCH_BEGIN(loop0_midi_usb);
-    if (TinyUSBDevice.mounted()) {
+    BENCH_BEGIN(loop0_midi);
+
+    // 1. USB MIDI (TinyUSB)
+    {
+      BENCH_BEGIN(loop0_midi_usb);
+      if (TinyUSBDevice.mounted()) {
+        uint8_t midi_budget = MIDI_DRAIN_BYTE_BUDGET;
+        while (midi_budget > 0 && MIDI_USB.read()) {
+          midi_budget--;
+        }
+      }
+      BENCH_END(loop0_midi_usb);
+    }
+
+    // 2. Hardware DIN MIDI (Lock-Free SRAM Ring Buffer)
+    {
+      BENCH_BEGIN(loop0_midi_din);
       uint8_t midi_budget = MIDI_DRAIN_BYTE_BUDGET;
-      while (midi_budget > 0 && MIDI_USB.read()) {
+      while (midi_budget > 0 && MIDI_SERIAL.read()) {
         midi_budget--;
       }
+      BENCH_END(loop0_midi_din);
     }
-    BENCH_END(loop0_midi_usb);
-  }
 
-  // 2. Hardware DIN MIDI (Lock-Free SRAM Ring Buffer)
-  {
-    BENCH_BEGIN(loop0_midi_din);
-    uint8_t midi_budget = MIDI_DRAIN_BYTE_BUDGET;
-    while (midi_budget > 0 && MIDI_SERIAL.read()) {
-      midi_budget--;
-    }
-    BENCH_END(loop0_midi_din);
+    BENCH_END(loop0_midi);
   }
-
-  BENCH_END(loop0_midi);
-}
 
   {
     BENCH_BEGIN(loop0_serial);
@@ -518,9 +564,9 @@ void SRAM_HOT(loop)() {
     BENCH_BEGIN(loop0_noise);
     {
       #if NOISE_ENGINE == 0
-      BENCH_BEGIN(loop1_noise_refill);
+      BENCH_BEGIN(loop0_noise_refill);
       dcoNoisePioRefill();
-      BENCH_END(loop1_noise_refill);
+      BENCH_END(loop0_noise_refill);
       #endif
     }
     noiseLevel[0] = noise0.next();
@@ -560,29 +606,36 @@ void SRAM_HOT(loop1)() {
     return; // EARLY EXIT: voice_task_main() is never reached while calibrating!
   }
 
-  pio_defer_service();
+  {
+    BENCH_BEGIN(loop1_pio_defer);
+    pio_defer_service();
+    BENCH_END(loop1_pio_defer);
+  }
 
   if (timer50microsFlag2 == 1) {
     // BENCH_BEGIN(loop1_cv_outs);
     // update_CV_outs();
     // BENCH_END(loop1_cv_outs);
 
+    BENCH_BEGIN(loop1_adsr_sync);
     for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
       ADSR3Level_q15[i] = ADSR3Level_q15_volatile[i];
       ADSR_VCA_Level_q15[i] = ADSR_VCA_Level_q15_volatile[i];
       ADSR_VCF_Level_q15[i] = ADSR_VCF_Level_q15_volatile[i];
       ADSR_VCF2_Level_q15[i] = ADSR_VCF2_Level_q15_volatile[i];
-      }
-
-   }
+    }
+    BENCH_END(loop1_adsr_sync);
+  }
 
   {
-    BENCH_BEGIN(voice_task);
+    BENCH_BEGIN(loop1_voice_task);
     voice_task_main();
-    BENCH_END(voice_task);
+    BENCH_END(loop1_voice_task);
   }
 
   // Hand this core's counters to core 0, which does all the printing.
+  BENCH_BEGIN(loop1_housekeeping);
   bench_service(1);
   mem_diag_poll_core1();
+  BENCH_END(loop1_housekeeping);
 }

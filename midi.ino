@@ -290,83 +290,84 @@ static uint8_t SRAM_HOT(get_osc2_from_osc1)(uint8_t idx1) {
 // NOTE ON / OFF ROUTINES
 // ===========================================================================
 
-void SRAM_HOT(note_on)(uint8_t note, uint8_t velocity_in) {
+void SRAM_HOT(note_on)(uint8_t raw_note, uint8_t velocity_in) {
   const uint8_t alloc_mode = voiceAlloc.mode();
-  
-  uint8_t note1_idx, note2_idx;
-  get_modified_indices(note, &note1_idx, &note2_idx);
 
   switch (voiceMode) {
     case 0:  // MONO
     case 2:  // UNISON
     {
-      if (!monoStack.push(note1_idx, alloc_mode)) return;
+      if (!monoStack.push(raw_note, alloc_mode)) return;
       const uint8_t winner = monoStack.pick(alloc_mode); 
-      
       if (winner == MONO_NOTE_NONE || winner == mono_sounding_note) return;
-      
+
       const bool is_legato = (alloc_mode == 2) && (mono_sounding_note != MONO_NOTE_NONE);
       mono_sounding_note = winner;
 
-      if (winner != note1_idx) {
-        note1_idx = winner;
-        note2_idx = get_osc2_from_osc1(winner);
-      }
+      // 1. Calculate final index WITH base offset (-36)
+      int n1 = (int)winner + (int)octave_shift - 36;
+      // 2. Fold ONLY if it exceeds the real 136-entry table bounds (0..135)
+      while (n1 > NOTE_PITCH_TABLE_MAX_SIZE) n1 -= 12;
+      while (n1 < 0)         n1 += 12;
+
+      // 3. OSC2 Interval (centered around 36 for unison)
+      int n2 = n1 + ((int)OSC2_interval - 36);
+      while (n2 > NOTE_PITCH_TABLE_MAX_SIZE) n2 -= 12;
+      while (n2 < 0)         n2 += 12;
 
       const uint8_t note_flag = is_legato ? NOTE_FLAG_PORTA_ONLY : NOTE_FLAG_RETRIGGER;
 
-      // OPTIMIZATION: Split the routes so loops use compile-time constants.
-      if (voiceMode == 0) { // MONO: No loop needed, perfectly inlined.
-        if (is_legato) voice_mark_regate(0, note1_idx, note2_idx);
-        else           voice_mark_on(0, note1_idx, note2_idx, velocity_in);
-        serial_send_note_on(0, velocity_in, note1_idx, note_flag);
-      } 
-      else { // UNISON: Compile-time loop boundary allows pragma unrolling.
-        if (is_legato) {
-          #pragma GCC unroll 8
-          for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
-            voice_mark_regate(v, note1_idx, note2_idx);
-            serial_send_note_on(v, velocity_in, note1_idx, note_flag);
-          }
-        } else {
-          #pragma GCC unroll 8
-          for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
-            voice_mark_on(v, note1_idx, note2_idx, velocity_in);
-            serial_send_note_on(v, velocity_in, note1_idx, note_flag);
-          }
+      if (voiceMode == 0) {
+        if (is_legato) voice_mark_regate(0, winner, (uint8_t)n1, (uint8_t)n2);
+        else           voice_mark_on(0, winner, (uint8_t)n1, (uint8_t)n2, velocity_in);
+        serial_send_note_on(0, velocity_in, (uint8_t)n1, note_flag);
+      } else {
+        #pragma GCC unroll 8
+        for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
+          if (is_legato) voice_mark_regate(v, winner, (uint8_t)n1, (uint8_t)n2);
+          else           voice_mark_on(v, winner, (uint8_t)n1, (uint8_t)n2, velocity_in);
+          serial_send_note_on(v, velocity_in, (uint8_t)n1, note_flag);
         }
       }
       break;
     }
 
-    case 1:  
+    case 1:  // POLY
     {
-      const uint8_t held = voiceAlloc.findNote(note1_idx);
+      const uint8_t held = voiceAlloc.findNote(raw_note);
+
+      int n1 = (int)raw_note + (int)octave_shift - 36;
+      while (n1 > NOTE_PITCH_TABLE_MAX_SIZE) n1 -= 12;
+      while (n1 < 0)         n1 += 12;
+
+      int n2 = n1 + ((int)OSC2_interval - 36);
+      while (n2 > NOTE_PITCH_TABLE_MAX_SIZE) n2 -= 12;
+      while (n2 < 0)         n2 += 12;
+
       if (held != VOICE_ALLOC_NONE) {
-        voice_mark_on(held, note1_idx, note2_idx, velocity_in);
-        serial_send_note_on(held, velocity_in, note1_idx, NOTE_FLAG_RETRIGGER);
+        voice_mark_on(held, raw_note, (uint8_t)n1, (uint8_t)n2, velocity_in);
+        serial_send_note_on(held, velocity_in, (uint8_t)n1, NOTE_FLAG_RETRIGGER);
         return;
       }
 
       const uint8_t voice_num = voice_alloc();
       if (voice_num == VOICE_ALLOC_NONE) return;
 
-      voice_mark_on(voice_num, note1_idx, note2_idx, velocity_in);
-      serial_send_note_on(voice_num, velocity_in, note1_idx, NOTE_FLAG_RETRIGGER);
+      voice_mark_on(voice_num, raw_note, (uint8_t)n1, (uint8_t)n2, velocity_in);
+      serial_send_note_on(voice_num, velocity_in, (uint8_t)n1, NOTE_FLAG_RETRIGGER);
       break;
     }
   }
 }
-void SRAM_HOT(note_off)(uint8_t note) {
-  uint8_t note1_idx, note2_idx;
-  get_modified_indices(note, &note1_idx, &note2_idx);
 
+// ===========================================================================
+// NOTE OFF
+// ===========================================================================
+void SRAM_HOT(note_off)(uint8_t raw_note) {
   if (voiceMode == 0 || voiceMode == 2) {
-    if (monoStack.remove(note1_idx)) {
+    if (monoStack.remove(raw_note)) {
       if (monoStack.empty()) {
         mono_sounding_note = MONO_NOTE_NONE;
-        
-        // OPTIMIZATION: Compile-time constant paths
         if (voiceMode == 0) {
           voice_mark_off(0);
           serial_send_note_off(0);
@@ -385,47 +386,43 @@ void SRAM_HOT(note_off)(uint8_t note) {
       if (winner == MONO_NOTE_NONE || winner == mono_sounding_note) return;
 
       mono_sounding_note = winner;
-      
-      const uint8_t w_idx1 = winner;
-      const uint8_t w_idx2 = get_osc2_from_osc1(winner);
+
+      int n1 = (int)winner + (int)octave_shift - 36;
+      while (n1 > NOTE_PITCH_TABLE_MAX_SIZE) n1 -= 12;
+      while (n1 < 0)         n1 += 12;
+
+      int n2 = n1 + ((int)OSC2_interval - 36);
+      while (n2 > NOTE_PITCH_TABLE_MAX_SIZE) n2 -= 12;
+      while (n2 < 0)         n2 += 12;
+
       const bool is_legato = (alloc_mode == 2);
       const uint8_t note_flag = is_legato ? NOTE_FLAG_PORTA_ONLY : NOTE_FLAG_RETRIGGER;
 
-      // OPTIMIZATION: Hoisted logic, eliminated loop for Mono
       if (voiceMode == 0) {
-        if (is_legato) voice_mark_regate(0, w_idx1, w_idx2);
-        else           voice_mark_on(0, w_idx1, w_idx2, velocity[0]);
-        serial_send_note_on(0, velocity[0], w_idx1, note_flag);
+        if (is_legato) voice_mark_regate(0, winner, (uint8_t)n1, (uint8_t)n2);
+        else           voice_mark_on(0, winner, (uint8_t)n1, (uint8_t)n2, velocity[0]);
+        serial_send_note_on(0, velocity[0], (uint8_t)n1, note_flag);
       } else {
-        if (is_legato) {
-          #pragma GCC unroll 8
-          for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
-            voice_mark_regate(v, w_idx1, w_idx2);
-            serial_send_note_on(v, velocity[0], w_idx1, note_flag);
-          }
-        } else {
-          #pragma GCC unroll 8
-          for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
-            voice_mark_on(v, w_idx1, w_idx2, velocity[0]);
-            serial_send_note_on(v, velocity[0], w_idx1, note_flag);
-          }
+        #pragma GCC unroll 8
+        for (uint8_t v = 0; v < NUM_VOICES_TOTAL; v++) {
+          if (is_legato) voice_mark_regate(v, winner, (uint8_t)n1, (uint8_t)n2);
+          else           voice_mark_on(v, winner, (uint8_t)n1, (uint8_t)n2, velocity[0]);
+          serial_send_note_on(v, velocity[0], (uint8_t)n1, note_flag);
         }
       }
       return; 
     }
   }
 
-  // POLYPHONIC RELEASE (And Ghost-Note Fallback)
-  // OPTIMIZATION: Unroll the voice hardware array checks
+  // POLYPHONIC RELEASE: Direct scan (zero math overhead)
   #pragma GCC unroll 8
   for (uint8_t i = 0; i < NUM_VOICES_TOTAL; i++) {
-    if (VOICE_NOTE_OSC1[i] == note1_idx && VOICES[i] != 0) {
+    if (VOICE_RAW_NOTE[i] == raw_note && VOICES[i] != 0) {
       voice_mark_off(i);
       serial_send_note_off(i);
     }
   }
 }
-
 // ===========================================================================
 // VOICE HARDWARE UPDATERS
 // ===========================================================================
@@ -438,10 +435,10 @@ void SRAM_HOT(note_off)(uint8_t note) {
  * @param note2_idx   Pre-baked DCO pitch table index for OSC2 (includes interval).
  * @param velocity_in Key strike velocity (1..127).
  */
-void SRAM_HOT(voice_mark_on)(uint8_t voice, uint8_t note1_idx, uint8_t note2_idx, uint8_t velocity_in) {
-  //Serial.printf("   --> Voice Mark On: Voice=%d | PitchIdx1=%d | PitchIdx2=%d | Velocity=%d\n", voice, note1_idx, note2_idx, velocity_in);
+ void SRAM_HOT(voice_mark_on)(uint8_t voice, uint8_t raw_note, uint8_t note1_idx, uint8_t note2_idx, uint8_t velocity_in) {
   VOICES[voice] = 1;
-  VOICE_NOTE_OSC1[voice] = note1_idx;
+  VOICE_RAW_NOTE[voice] = raw_note;      // <-- TRACK RAW NOTE FOR SAFE RELEASES
+  VOICE_NOTE_OSC1[voice] = note1_idx;    // <-- MODIFIED INDEX FOR HARDWARE PITCH
   VOICE_NOTE_OSC2[voice] = note2_idx;
   velocity[voice] = velocity_in;
   __dmb();
@@ -450,7 +447,8 @@ void SRAM_HOT(voice_mark_on)(uint8_t voice, uint8_t note1_idx, uint8_t note2_idx
   noteStart[voice] = 1;
   noteEnd[voice] = 0;
 
-  voiceAlloc.markOn(voice, note1_idx); // Allocator purely tracks the modified version
+  // Voice Allocator now safely tracks the pure MIDI key
+  voiceAlloc.markOn(voice, raw_note); 
   adsr_note_on(voice);
   mod_matrix_on_note_on(voice);
 }
@@ -466,14 +464,15 @@ void SRAM_HOT(voice_mark_on)(uint8_t voice, uint8_t note1_idx, uint8_t note2_idx
  * @param note1_idx Pre-baked DCO pitch table index for OSC1 (0..TABLE_LEN - 1).
  * @param note2_idx Pre-baked DCO pitch table index for OSC2 (includes interval).
  */
- void SRAM_HOT(voice_mark_regate)(uint8_t voice, uint8_t note1_idx, uint8_t note2_idx) {
+ void SRAM_HOT(voice_mark_regate)(uint8_t voice, uint8_t raw_note, uint8_t note1_idx, uint8_t note2_idx) {
   VOICES[voice] = 1;
+  VOICE_RAW_NOTE[voice] = raw_note;
   VOICE_NOTE_OSC1[voice] = note1_idx;
   VOICE_NOTE_OSC2[voice] = note2_idx;
   
   noteEnd[voice] = 0;
   
-  voiceAlloc.regate(voice, note1_idx);
+  voiceAlloc.regate(voice, raw_note);
 }
 
 /**

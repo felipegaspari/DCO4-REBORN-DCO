@@ -11,7 +11,7 @@ volatile bool pitch_interp_bench_accuracy_pending = false;
 
 enum : uint8_t {
   PITCH_BENCH_FLOAT = 0,       // legacy walk + bsearch
-  PITCH_BENCH_FLOAT_FAST,      // trunc+clamp±1 find (matches live _fast)
+  PITCH_BENCH_FLOAT_CACHED,      // trunc+clamp±1 find (matches live _fast)
   PITCH_BENCH_RATIO_Q16,
   PITCH_BENCH_Q12,
   PITCH_BENCH_METHODS,         // speed rows: FLOAT / FLOAT_FAST / RATIO / Q12
@@ -63,7 +63,7 @@ static constexpr double PIB_HIST_MAX_CENTS = 2.0;
 static const char *pitch_bench_method_name(uint8_t m) {
   switch (m) {
     case PITCH_BENCH_FLOAT:       return "FLOAT";
-    case PITCH_BENCH_FLOAT_FAST:  return "FLOAT_FAST";
+    case PITCH_BENCH_FLOAT_CACHED:  return "FLOAT_CACHED";
     case PITCH_BENCH_RATIO_Q16:   return "RATIO_Q16";
     case PITCH_BENCH_Q12:         return "Q12";
     default:                      return "?";
@@ -73,8 +73,8 @@ static const char *pitch_bench_method_name(uint8_t m) {
 static const char *pitch_bench_live_mode_name() {
 #if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
   return "FLOAT";
-#elif PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
-  return "FLOAT_FAST";
+#elif PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_CACHED
+  return "FLOAT_CACHED";
 #elif PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
   return "RATIO_Q16";
 #elif PITCH_INTERP_MODE == PITCH_INTERP_Q12
@@ -292,7 +292,7 @@ static float pitch_bench_call(uint8_t method, float modifier, int dco) {
   switch (method) {
     case PITCH_BENCH_FLOAT:
       return pib_interp_float(modifier, dco);
-    case PITCH_BENCH_FLOAT_FAST:
+    case PITCH_BENCH_FLOAT_CACHED:
       return pib_interp_float_fast(modifier, dco);
     case PITCH_BENCH_RATIO_Q16: {
       int32_t xQ16 = (int32_t)lroundf(modifier * 65536.0f);
@@ -397,7 +397,7 @@ static void pib_speed_run(uint8_t method, float modStep, int32_t xIntStep, int32
            mod += modStep) {
         if (method == PITCH_BENCH_FLOAT) {
           sink += pib_interp_float(mod, o);
-        } else if (method == PITCH_BENCH_FLOAT_FAST) {
+        } else if (method == PITCH_BENCH_FLOAT_CACHED) {
           sink += pib_interp_float_fast(mod, o);
         } else if (method == PITCH_BENCH_RATIO_Q16) {
           int32_t xQ16 = (int32_t)lroundf(mod * 65536.0f);
@@ -414,14 +414,14 @@ static void pib_speed_run(uint8_t method, float modStep, int32_t xIntStep, int32
   (void)sink;
 #else
   // Fixed voice: FLOAT / FLOAT_FAST are soft-float refs (not selectable pitch modes).
-  if (method == PITCH_BENCH_FLOAT || method == PITCH_BENCH_FLOAT_FAST) {
+  if (method == PITCH_BENCH_FLOAT || method == PITCH_BENCH_FLOAT_CACHED) {
     volatile float sink = 0.0f;
     for (uint32_t r = 0; r < repeats; ++r) {
       for (uint8_t o = 0; o < PIB_BENCH_OSCS; ++o) {
         for (float mod = PITCH_BENCH_MOD_MIN;
              mod <= PITCH_BENCH_MOD_MAX + 0.5f * modStep;
              mod += modStep) {
-          sink += (method == PITCH_BENCH_FLOAT_FAST)
+          sink += (method == PITCH_BENCH_FLOAT_CACHED)
                       ? pib_interp_float_fast(mod, o)
                       : pib_interp_float(mod, o);
           ++calls;
@@ -559,10 +559,10 @@ void pitch_interp_bench_run_accuracy() {
   // vs FLOAT (legacy walk): FLOAT_FAST should be ~0¢; RATIO/Q12 show table gap.
   // vs private Q20 ref: float + int modes (FLOAT/FLOAT_FAST ≈ same table-gap cents).
   static const uint8_t kVsFloat[] = {
-    PITCH_BENCH_FLOAT_FAST, PITCH_BENCH_RATIO_Q16, PITCH_BENCH_Q12
+    PITCH_BENCH_FLOAT_CACHED, PITCH_BENCH_RATIO_Q16, PITCH_BENCH_Q12
   };
   static const uint8_t kSlopeCand[] = {
-    PITCH_BENCH_FLOAT, PITCH_BENCH_FLOAT_FAST, PITCH_BENCH_RATIO_Q16, PITCH_BENCH_Q12
+    PITCH_BENCH_FLOAT, PITCH_BENCH_FLOAT_CACHED, PITCH_BENCH_RATIO_Q16, PITCH_BENCH_Q12
   };
   static constexpr int N_VS_FLOAT = 3;
   static constexpr int N_SLOPE = 4;

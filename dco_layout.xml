@@ -1,0 +1,131 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root>
+ <tabbed_widget name="Main Window">
+  <Tab tab_name="Core 0 Profiling" containers="1">
+   <Container>
+    <DockSplitter>
+     <DockArea name="Core 0 Traces">
+      <plot>
+       <curve name="Core 0/loop period/_Total"/>
+       <curve name="Core 0/loop period/_Total/_avg"/>
+       <curve name="Core 0/loop period/microsTimer"/>
+       <curve name="Core 0/loop period/microsTimer/_avg"/>
+       <curve name="Core 0/loop period/MIDI read/_Total"/>
+       <curve name="Core 0/loop period/MIDI read/_Total/_avg"/>
+       <curve name="Core 0/loop period/MIDI read/MIDI USB"/>
+       <curve name="Core 0/loop period/MIDI read/MIDI USB/_avg"/>
+       <curve name="Core 0/loop period/MIDI read/MIDI DIN Serial"/>
+       <curve name="Core 0/loop period/MIDI read/MIDI DIN Serial/_avg"/>
+       <curve name="Core 0/loop period/serial panel/USB"/>
+       <curve name="Core 0/loop period/serial panel/USB/_avg"/>
+       <curve name="Core 0/loop period/LFO1"/>
+       <curve name="Core 0/loop period/LFO1/_avg"/>
+       <curve name="Core 0/loop period/LFO2"/>
+       <curve name="Core 0/loop period/LFO2/_avg"/>
+       <curve name="Core 0/loop period/drift LFOs"/>
+       <curve name="Core 0/loop period/drift LFOs/_avg"/>
+       <curve name="Core 0/loop period/ADSR_update"/>
+       <curve name="Core 0/loop period/ADSR_update/_avg"/>
+       <curve name="Core 0/loop period/noise_gens/_Total"/>
+       <curve name="Core 0/loop period/noise_gens/_Total/_avg"/>
+       <curve name="Core 0/loop period/noise_gens/noise refill"/>
+       <curve name="Core 0/loop period/noise_gens/noise refill/_avg"/>
+       <curve name="Core 0/loop period/update_CV_outs/_Total"/>
+       <curve name="Core 0/loop period/update_CV_outs/_Total/_avg"/>
+       <curve name="Core 0/loop period/set_parameters"/>
+       <curve name="Core 0/loop period/set_parameters/_avg"/>
+       <curve name="Core 0/loop period/core0 housekeep"/>
+       <curve name="Core 0/loop period/core0 housekeep/_avg"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv src ingest"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv src ingest/_avg"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv mod matrix/_Total"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv mod matrix/_Total/_avg"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv extract deltas"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv extract deltas/_avg"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv lfo subloop"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv lfo subloop/_avg"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv mod matrix/matrix memset/prep"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv mod matrix/matrix memset/prep/_avg"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv mod matrix/matrix slot accum"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv mod matrix/matrix slot accum/_avg"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv mod matrix/matrix depth mod"/>
+       <curve name="Core 0/loop period/update_CV_outs/cv mod matrix/matrix depth mod/_avg"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <Tab tab_name="Core 1 Profiling" containers="1">
+   <Container>
+    <DockSplitter>
+     <DockArea name="Core 1 Traces">
+      <plot>
+       <curve name="Core 1/loop1 period/_Total"/>
+       <curve name="Core 1/loop1 period/_Total/_avg"/>
+       <curve name="Core 1/loop1 period/microsTimer2"/>
+       <curve name="Core 1/loop1 period/microsTimer2/_avg"/>
+       <curve name="Core 1/loop1 period/pio defer service"/>
+       <curve name="Core 1/loop1 period/pio defer service/_avg"/>
+       <curve name="Core 1/loop1 period/adsr volatile sync"/>
+       <curve name="Core 1/loop1 period/adsr volatile sync/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/_Total"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/_Total/_avg"/>
+       <curve name="Core 1/loop1 period/core1 housekeep"/>
+       <curve name="Core 1/loop1 period/core1 housekeep/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/task init"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/task init/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/pitch bend"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/pitch bend/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/pointer hoisting"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/pointer hoisting/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/OSC2/3 detune"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/OSC2/3 detune/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/loop note prep"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/loop note prep/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/portamento"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/portamento/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/ADSR modifier"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/ADSR modifier/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/drift modifier"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/drift modifier/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/unison modifier"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/unison modifier/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/modifier sum"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/modifier sum/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/table x scaling"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/table x scaling/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/ratio interpolate"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/ratio interpolate/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/apply ratio"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/apply ratio/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/cross mod"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/cross mod/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/clkdiv math"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/clkdiv math/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/note-on retrigger/_Total"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/note-on retrigger/_Total/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/note-on retrigger/phase align"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/note-on retrigger/phase align/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/note-on retrigger/retrig period split"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/note-on retrigger/retrig period split/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/amp comp"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/amp comp/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/retrig SM apply"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/retrig SM apply/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/PIO put/exec"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/PIO put/exec/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/RANGE PWM"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/RANGE PWM/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/PW arithmetic"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/PW arithmetic/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/PW level + write"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/PW level + write/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/task teardown"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/task teardown/_avg"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+ </tabbed_widget>
+</root>

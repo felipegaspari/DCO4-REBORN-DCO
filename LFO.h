@@ -40,32 +40,39 @@ enum Lfo2PitchSlot : uint8_t {
   LFO2_PITCH_SLOT_COUNT = 2,
 };
 
+
 // =============================================================================
-// Depth scales (tune musical travel — live wave is always full-scale Q15)
+// Depth scales (Musical travel: 1.0f = 1.0 Octave)
 // =============================================================================
-static constexpr int32_t LFO1_PITCH_DEPTH_SCALE = 67200;
-static constexpr int32_t LFO2_PITCH_DEPTH_SCALE = 11200;
+static constexpr float LFO_COARSE_2_OCTAVES = 2.0f;           // +/- 2.0 Octaves (Fine)
+static constexpr float LFO_4_OCTAVES = 4.0f;     // +/- 4.0 Octaves (Coarse / Global)
+static constexpr float LFO_VIBRATO_2_SEMITONES = 2.0f / 12.0f;   // +/- 2.0 Semitones (Vibrato)
 
-static constexpr float ADSR_PITCH_MAX_OCTAVES = 2.0f;
-static constexpr uint16_t ADSR_PITCH_DEPTH_PANEL_FULL = 511;
-static constexpr int32_t DRIFT_PITCH_DEPTH_SCALE = 1000;
-static constexpr int32_t DRIFT_PITCH_UNIT_Q24 =
-   (int32_t)(0.0000005f * (float)(1 << 24) + 0.5f);
+// Q24 scales (1.0 Octave = 1 << 24 = 16777216)
+static constexpr int32_t LFO_COARSE_2_OCTAVES_Q24 = (int32_t)(LFO_COARSE_2_OCTAVES * 16777216.0f + 0.5f);
+static constexpr int32_t LFO_4_OCTAVES_Q24 = (int32_t)(LFO_4_OCTAVES * 16777216.0f + 0.5f);
+static constexpr int32_t LFO_VIBRATO_2_SEMITONES_Q24 = (int32_t)(LFO_VIBRATO_2_SEMITONES * 16777216.0f + 0.5f);
 
-// Q24 to float octave conversion factor (1.0f = 1 Octave)
-static constexpr float Q24_TO_OCTAVE_F = 1.0f / 16777216.0f;
-
-static int32_t SRAM_HOT(lfo_pitch_depth_q24)(float amt, int32_t depth_scale) {
-  return (int32_t)(amt * (float)depth_scale * (float)(1 << 24) + 0.5f);
+// -----------------------------------------------------------------------------
+// Normalized quadratic depth: Output is strictly 0.0f to 1.0f
+// -----------------------------------------------------------------------------
+template <uint32_t MaxVal>
+static inline __attribute__((always_inline)) float SRAM_HOT(fast_lfo_depth_norm)(uint32_t v) {
+    uint32_t sq = v * v;
+    sq = (v > 1) ? sq : 0; // Branchless IT Block override
+    constexpr float scalar = 1.0f / (float)(MaxVal * MaxVal);
+    return (float)sq * scalar;
 }
 
 #if defined(USE_FLOAT_VOICE_TASK)
-static float lfo_pitch_depth_f(float amt, int32_t depth_scale) {
-  // Converts amt (0..1.0) and depth_scale to Octaves per Q15 unit
-  static constexpr float Q24_TO_OCTAVE_PER_Q15 = Q24_TO_OCTAVE_F / 32768.0f;
-  return amt * (float)depth_scale * (float)(1 << 24) * Q24_TO_OCTAVE_PER_Q15;
+static inline float SRAM_HOT(lfo_pitch_depth_f)(float amt_norm, float max_octaves) {
+  return (amt_norm * max_octaves) * (1.0f / 32768.0f);
 }
 #endif
+
+static inline int32_t SRAM_HOT(lfo_pitch_depth_q24)(float amt_norm, int32_t max_depth_q24) {
+  return (int32_t)(amt_norm * (float)max_depth_q24 + 0.5f);
+}
 
 static int32_t SRAM_HOT(applyDepthQ24)(int16_t wave_q15, int32_t depth_q24) {
   const int32_t w = (int32_t)wave_q15;

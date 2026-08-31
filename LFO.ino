@@ -44,31 +44,15 @@ void SRAM_HOT(LFO1)() {
 #if defined(USE_VOICE_ENGINE_FLOAT) || defined(USE_FLOAT_VOICE_TASK)
   const float wave = (float)LFO1Level;
 
-  // Check if per-oscillator overrides are active
-  if (LFO1toOSC1_f == 0.0f && LFO1toOSC2_f == 0.0f && LFO1toOSC3_f == 0.0f) {
-    // Exactly 1 VMUL.F32 hardware instruction
-    const float m_f = wave * LFO1toDCO_f;
-    lfo1_pitch_mod_f[LFO1_PITCH_OSC1] = m_f;
-    lfo1_pitch_mod_f[LFO1_PITCH_OSC2] = m_f;
-    lfo1_pitch_mod_f[LFO1_PITCH_OSC3] = m_f;
-  } else {
-    // 1 VADD.F32 + 1 VMUL.F32 per slot
-    lfo1_pitch_mod_f[LFO1_PITCH_OSC1] = wave * (LFO1toDCO_f + LFO1toOSC1_f);
-    lfo1_pitch_mod_f[LFO1_PITCH_OSC2] = wave * (LFO1toDCO_f + LFO1toOSC2_f);
-    lfo1_pitch_mod_f[LFO1_PITCH_OSC3] = wave * (LFO1toDCO_f + LFO1toOSC3_f);
-  }
+  // No branches! 1 VADD.F32 + 1 VMUL.F32 per slot execution.
+  lfo1_pitch_mod_f[LFO1_PITCH_OSC1] = wave * (LFO1toDCO_f + LFO1toOSC1_f);
+  lfo1_pitch_mod_f[LFO1_PITCH_OSC2] = wave * (LFO1toDCO_f + LFO1toOSC2_f);
+  lfo1_pitch_mod_f[LFO1_PITCH_OSC3] = wave * (LFO1toDCO_f + LFO1toOSC3_f);
 #else
-  // RP2040 fixed-point fallback remains untouched
-  if (LFO1toOSC1_q24 == 0 && LFO1toOSC2_q24 == 0 && LFO1toOSC3_q24 == 0) {
-    const int32_t m = applyDepthQ24(LFO1Level, LFO1toDCO_q24);
-    lfo1_pitch_mod_q24[LFO1_PITCH_OSC1] = m;
-    lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] = m;
-    lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] = m;
-  } else {
-    lfo1_pitch_mod_q24[LFO1_PITCH_OSC1] = applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC1_q24);
-    lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] = applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC2_q24);
-    lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] = applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC3_q24);
-  }
+  // RP2040 fixed-point fallback (Branchless)
+  lfo1_pitch_mod_q24[LFO1_PITCH_OSC1] = applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC1_q24);
+  lfo1_pitch_mod_q24[LFO1_PITCH_OSC2] = applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC2_q24);
+  lfo1_pitch_mod_q24[LFO1_PITCH_OSC3] = applyDepthQ24(LFO1Level, LFO1toDCO_q24 + LFO1toOSC3_q24);
 #endif
   __dmb();
 }

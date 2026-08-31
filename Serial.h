@@ -38,7 +38,6 @@ void SRAM_HOT(serial_send_screen_signal_to_mb)(uint8_t signal);
 void SRAM_HOT(serial_send_note_on)(uint8_t voice, uint8_t velocity, uint8_t note, uint8_t flags);
 void SRAM_HOT(serial_send_note_off)(uint8_t voice);
 void SRAM_HOT(serial_send_expression)();
-void mb_bench_text_drain();
 
 void SRAM_HOT(serial_send_patch_osc_block_to_mb)();
 void SRAM_HOT(serial_send_patch_lfo_block_to_mb)();

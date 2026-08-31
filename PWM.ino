@@ -11,6 +11,9 @@ static int range_dma_data[NUM_OSCILLATORS] = { -1, -1, -1 };
 static int range_dma_ctrl[NUM_OSCILLATORS] = { -1, -1, -1 };
 static bool range_pio_ready = false;
 
+PwmRoutePlan active_voice_routes[12];
+uint8_t num_voice_routes = 0;
+
 void range_pio_set_level(uint8_t osc, uint16_t level) {
   if (osc >= NUM_OSCILLATORS) {
     return;
@@ -95,10 +98,8 @@ void init_range_pio_dither() {
 #endif  // RANGE0_PIO_DITHER_TEST
 
 // Configure range PWM (per DCO, DIV_COUNTER) and PW PWM (per osc, DIV_COUNTER_PW). Called from setup1().
-void init_pwm()
-{
-  for (int i = 0; i < NUM_OSCILLATORS; i++)
-  {
+void init_pwm() {
+  for (int i = 0; i < NUM_OSCILLATORS; i++) {
 #ifdef RANGE0_PIO_DITHER_TEST
     RANGE_PWM_SLICES[i] = 0xFF;
     RANGE_PWM_CHANNELS[i] = 0;
@@ -121,6 +122,44 @@ void init_pwm()
     PW_PWM_SLICES[i] = pwm_gpio_to_slice_num(PW_PINS[i]);
     pwm_set_wrap(PW_PWM_SLICES[i], DIV_COUNTER_PW);
     pwm_set_enabled(PW_PWM_SLICES[i], true);
+  }
+
+// =========================================================================
+  // BIND DIRECT HARDWARE POINTERS (Evaluated once at boot)
+  // =========================================================================
+  num_voice_routes = 0;
+
+  for (int s = 0; s < 12; s++) {
+    const uint16_t* p_a = &PWM_STATIC_ZERO;
+    const uint16_t* p_b = &PWM_STATIC_ZERO;
+    bool slice_used = false;
+
+    // 1. Check Range Oscillators
+    for (int i = 0; i < NUM_OSCILLATORS; i++) {
+      if (RANGE_PWM_SLICES[i] != 0xFF && RANGE_PWM_SLICES[i] == s) {
+        if (RANGE_PWM_CHANNELS[i] == 0) p_a = &RANGE_PWM[i];
+        else                            p_b = &RANGE_PWM[i];
+        slice_used = true;
+      }
+    }
+
+    // 2. Check PW Channels
+    for (int i = 0; i < NUM_PW_CHANNELS; i++) {
+      if (PW_PWM_SLICES[i] != 0xFF && PW_PWM_SLICES[i] == s) {
+        uint8_t chan = PW_PINS[i] & 1u;
+        if (chan == 0) p_a = &PW_PWM[i];
+        else           p_b = &PW_PWM[i];
+        slice_used = true;
+      }
+    }
+
+    // 3. Store direct pointers
+    if (slice_used) {
+      active_voice_routes[num_voice_routes].hw_cc = &pwm_hw->slice[s].cc;
+      active_voice_routes[num_voice_routes].src_a = p_a;
+      active_voice_routes[num_voice_routes].src_b = p_b;
+      num_voice_routes++;
+    }
   }
 
 #ifdef ENABLE_CV_OUTS

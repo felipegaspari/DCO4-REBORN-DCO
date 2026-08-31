@@ -78,9 +78,9 @@
   static constexpr float DRIFT_PITCH_PER_Q15 = (0.0000005f * 1000.0f) / 32768.0f;
   drift_pitch_scale_f = (float)analogDrift * DRIFT_PITCH_PER_Q15;
 #else
-  static constexpr int32_t DRIFT_SCALE_MULT =
-      (int32_t)(DRIFT_PITCH_UNIT_Q24 * DRIFT_PITCH_DEPTH_SCALE);
-  drift_pitch_scale_q24 = (int32_t)((int32_t)analogDrift * DRIFT_SCALE_MULT);
+  // static constexpr int32_t DRIFT_SCALE_MULT =
+  //     (int32_t)(DRIFT_PITCH_UNIT_Q24 * DRIFT_PITCH_DEPTH_SCALE);                //// NEEDS FIX !!!
+  // drift_pitch_scale_q24 = (int32_t)((int32_t)analogDrift * DRIFT_SCALE_MULT);
  // vcf_drift_scale_q15 = (int32_t)analogDrift;
 #endif
 }
@@ -139,6 +139,11 @@ static void SRAM_HOT(apply_param_soft_sync)(int16_t v) {
    softSyncChunks = (uint8_t)v;
    setSyncMode();
 }
+
+static void SRAM_HOT(apply_param_crossmod_depth)(int16_t v) {
+  crossmod_depth = (int16_t)v;
+}
+
  static void SRAM_HOT(apply_param_subosc_divide)(int16_t v) { subOscDivide = (uint8_t)v; }
  
  // =============================================================================
@@ -167,68 +172,85 @@ static void SRAM_HOT(apply_param_soft_sync)(int16_t v) {
    LFO2_class.setMode0Freq(LFO2Speed, micros());
  }
  
- static void SRAM_HOT(apply_param_lfo1_to_dco)(int16_t v) {
-  LFO1toDCOVal = (uint16_t)v;
+// =============================================================================
+// 2. LFO SPEEDS, WAVEFORMS & PITCH DEPTHS
+// =============================================================================
+
+// --- LFO1 Pitch Appliers (4 Octaves Max) ---
+
+// --- LFO1 Pitch Appliers ---
+
+static void SRAM_HOT(apply_param_lfo1_to_dco)(int16_t v) {
+  LFO1toDCOVal = (uint16_t)constrain(v, 0, 511);
 #if defined(USE_FLOAT_VOICE_TASK)
-  LFO1toDCO_f = lfo_pitch_depth_f(fast_lfo_depth_amt(LFO1toDCOVal), LFO1_PITCH_DEPTH_SCALE);
+  LFO1toDCO_f = lfo_pitch_depth_f(fast_lfo_depth_norm<511>(LFO1toDCOVal), LFO_4_OCTAVES);
 #else
-  LFO1toDCO_q24 = lfo_pitch_depth_q24(fast_lfo_depth_amt(LFO1toDCOVal), LFO1_PITCH_DEPTH_SCALE);
+  LFO1toDCO_q24 = lfo_pitch_depth_q24(fast_lfo_depth_norm<511>(LFO1toDCOVal), LFO_4_OCTAVES_Q24);
 #endif
 }
 
 static void SRAM_HOT(apply_param_lfo1_to_osc1)(int16_t v) {
+  uint16_t val = (uint16_t)constrain(v, 0, 255);
 #if defined(USE_FLOAT_VOICE_TASK)
-  LFO1toOSC1_f = lfo_pitch_depth_f(fast_lfo_depth_amt(constrain(v, 0, 255)), LFO1_PITCH_DEPTH_SCALE);
+  LFO1toOSC1_f = lfo_pitch_depth_f(fast_lfo_depth_norm<255>(val), LFO_4_OCTAVES);
 #else
-  LFO1toOSC1_q24 = lfo_pitch_depth_q24(fast_lfo_depth_amt(constrain(v, 0, 255)), LFO1_PITCH_DEPTH_SCALE);
+  LFO1toOSC1_q24 = lfo_pitch_depth_q24(fast_lfo_depth_norm<255>(val), LFO_COARSE_2_OCTAVES_Q24);
 #endif
 }
 
 static void SRAM_HOT(apply_param_lfo1_to_osc2)(int16_t v) {
+  uint16_t val = (uint16_t)constrain(v, 0, 255);
 #if defined(USE_FLOAT_VOICE_TASK)
-  LFO1toOSC2_f = lfo_pitch_depth_f(fast_lfo_depth_amt(constrain(v, 0, 255)), LFO1_PITCH_DEPTH_SCALE);
+  LFO1toOSC2_f = lfo_pitch_depth_f(fast_lfo_depth_norm<255>(val), LFO_4_OCTAVES);
 #else
-  LFO1toOSC2_q24 = lfo_pitch_depth_q24(fast_lfo_depth_amt(constrain(v, 0, 255)), LFO1_PITCH_DEPTH_SCALE);
+  LFO1toOSC2_q24 = lfo_pitch_depth_q24(fast_lfo_depth_norm<255>(val), LFO_COARSE_2_OCTAVES_Q24);
 #endif
 }
 
 static void SRAM_HOT(apply_param_lfo1_to_osc3)(int16_t v) {
+  uint16_t val = (uint16_t)constrain(v, 0, 255);
 #if defined(USE_FLOAT_VOICE_TASK)
-  LFO1toOSC3_f = lfo_pitch_depth_f(fast_lfo_depth_amt(constrain(v, 0, 255)), LFO1_PITCH_DEPTH_SCALE);
+  LFO1toOSC3_f = lfo_pitch_depth_f(fast_lfo_depth_norm<255>(val), LFO_4_OCTAVES);
 #else
-  LFO1toOSC3_q24 = lfo_pitch_depth_q24(fast_lfo_depth_amt(constrain(v, 0, 255)), LFO1_PITCH_DEPTH_SCALE);
+  LFO1toOSC3_q24 = lfo_pitch_depth_q24(fast_lfo_depth_norm<255>(val), LFO_COARSE_2_OCTAVES_Q24);
 #endif
 }
 
+// --- LFO2 Pitch Appliers ---
+
 static void SRAM_HOT(apply_param_lfo2_to_osc2)(int16_t v) {
+  uint16_t val = (uint16_t)constrain(v, 0, 255);
 #if defined(USE_FLOAT_VOICE_TASK)
-  LFO2toOSC2_f = lfo_pitch_depth_f(fast_lfo_depth_amt(v), LFO2_PITCH_DEPTH_SCALE);
+  LFO2toOSC2_f = lfo_pitch_depth_f(fast_lfo_depth_norm<255>(val), LFO_VIBRATO_2_SEMITONES);
 #else
-  LFO2toOSC2_q24 = lfo_pitch_depth_q24(fast_lfo_depth_amt(v), LFO2_PITCH_DEPTH_SCALE);
+  LFO2toOSC2_q24 = lfo_pitch_depth_q24(fast_lfo_depth_norm<255>(val), LFO_VIBRATO_2_SEMITONES_Q24);
 #endif
 }
 
 static void SRAM_HOT(apply_param_lfo2_to_osc3)(int16_t v) {
+  uint16_t val = (uint16_t)constrain(v, 0, 255);
 #if defined(USE_FLOAT_VOICE_TASK)
-  LFO2toOSC3_f = lfo_pitch_depth_f(fast_lfo_depth_amt(v), LFO2_PITCH_DEPTH_SCALE);
+  LFO2toOSC3_f = lfo_pitch_depth_f(fast_lfo_depth_norm<255>(val), LFO_VIBRATO_2_SEMITONES);
 #else
-  LFO2toOSC3_q24 = lfo_pitch_depth_q24(fast_lfo_depth_amt(v), LFO2_PITCH_DEPTH_SCALE);
+  LFO2toOSC3_q24 = lfo_pitch_depth_q24(fast_lfo_depth_norm<255>(val), LFO_VIBRATO_2_SEMITONES_Q24);
 #endif
 }
 
 static void SRAM_HOT(apply_param_lfo2_to_osc2_coarse)(int16_t v) {
+  uint16_t val = (uint16_t)constrain(v, 0, 511); 
 #if defined(USE_FLOAT_VOICE_TASK)
-  LFO2toOSC2_coarse_f = lfo_pitch_depth_f(fast_lfo_depth_amt(constrain(v, 0, 511)), LFO1_PITCH_DEPTH_SCALE);
+  LFO2toOSC2_coarse_f = lfo_pitch_depth_f(fast_lfo_depth_norm<511>(val), LFO_4_OCTAVES);
 #else
-  LFO2toOSC2_coarse_q24 = lfo_pitch_depth_q24(fast_lfo_depth_amt(constrain(v, 0, 511)), LFO1_PITCH_DEPTH_SCALE);
+  LFO2toOSC2_coarse_q24 = lfo_pitch_depth_q24(fast_lfo_depth_norm<511>(val), LFO_4_OCTAVES_Q24);
 #endif
 }
 
 static void SRAM_HOT(apply_param_lfo2_to_osc3_coarse)(int16_t v) {
+  uint16_t val = (uint16_t)constrain(v, 0, 511);
 #if defined(USE_FLOAT_VOICE_TASK)
-  LFO2toOSC3_coarse_f = lfo_pitch_depth_f(fast_lfo_depth_amt(constrain(v, 0, 511)), LFO1_PITCH_DEPTH_SCALE);
+  LFO2toOSC3_coarse_f = lfo_pitch_depth_f(fast_lfo_depth_norm<511>(val), LFO_4_OCTAVES);
 #else
-  LFO2toOSC3_coarse_q24 = lfo_pitch_depth_q24(fast_lfo_depth_amt(constrain(v, 0, 511)), LFO1_PITCH_DEPTH_SCALE);
+  LFO2toOSC3_coarse_q24 = lfo_pitch_depth_q24(fast_lfo_depth_norm<511>(val), LFO_4_OCTAVES_Q24);
 #endif
 }
  
@@ -513,7 +535,26 @@ static void SRAM_HOT(apply_param_adsr1_mode)(int16_t v) {
      mem_diag_runtime_enabled = true;
      break;
  #endif
- 
+ #if defined(USE_FLOAT_AMP_COMP)
+ case 20:
+   amp_comp_set_method(AMP_COMP_FLOAT_QUAD);
+   break;
+ case 21:
+   amp_comp_set_method(AMP_COMP_LUT);
+   break;
+ case 22:
+   amp_comp_set_method(AMP_COMP_FIXED);
+   break;
+#endif
+
+#if defined(AMP_COMP_BENCHMARK)
+ case 24:
+   amp_comp_bench_speed_pending = true;
+   break;
+ case 25:
+   amp_comp_bench_accuracy_pending = true;
+   break;
+#endif
    case 30:
      seed_fake_calibration_tables(true);
      break;
@@ -626,7 +667,9 @@ static void SRAM_HOT(apply_param_adsr1_mode)(int16_t v) {
      {PARAM_SYNC_MODE, apply_param_sync_mode},
      {PARAM_SOFT_SYNC, apply_param_soft_sync},
      {PARAM_SUBOSC_DIVIDE, apply_param_subosc_divide},
- 
+     // --- Digital Modulation ---
+     {PARAM_CROSSMOD_DEPTH, apply_param_crossmod_depth},
+     // --- LFOs ---
      {PARAM_LFO1_WAVEFORM, apply_param_lfo1_waveform},
      {PARAM_LFO2_WAVEFORM, apply_param_lfo2_waveform},
      {PARAM_LFO1_SPEED, apply_param_lfo1_speed},
@@ -644,9 +687,12 @@ static void SRAM_HOT(apply_param_adsr1_mode)(int16_t v) {
      {PARAM_ANALOG_DRIFT_AMOUNT, apply_param_analog_drift_amount},
      {PARAM_ANALOG_DRIFT_SPEED, apply_param_analog_drift_speed},
      {PARAM_ANALOG_DRIFT_SPREAD, apply_param_analog_drift_spread},
+     // --- Character ---
      {PARAM_CHARACTER, apply_param_character},
+     // --- Pulse Width ---
      {PARAM_PW_VALUE, apply_param_pw_value},
- 
+
+     // --- Envelope Modulations ---
      {PARAM_ADSR3_TO_OSC_SELECT, apply_param_adsr3_to_osc_select},
      {PARAM_ADSR3_TO_PWM, apply_param_adsr3_to_pwm},
      {PARAM_ADSR3_TO_DETUNE1, apply_param_adsr3_to_detune1},
@@ -662,11 +708,13 @@ static void SRAM_HOT(apply_param_adsr1_mode)(int16_t v) {
      {PARAM_ADSR3_DECAY_CURVE, apply_param_adsr3_decay_curve},
      {PARAM_ADSR3_RELEASE_CURVE, apply_param_adsr3_release_curve},
      {PARAM_VCF_TRIGGER_MODE, apply_param_vcf_trigger_mode},
-    
+
+     // --- Envelope Restart ---
      {PARAM_ADSR3_RESTART, apply_param_adsr3_restart},
      {PARAM_ADSR2_RESTART, apply_param_adsr2_restart},
      {PARAM_ADSR1_RESTART, apply_param_adsr1_restart},
 
+     // --- Envelope Mode ---
      {PARAM_ADSR3_MODE, apply_param_adsr3_mode},
      {PARAM_ADSR2_MODE, apply_param_adsr2_mode},
      {PARAM_ADSR1_MODE, apply_param_adsr1_mode},
@@ -827,29 +875,29 @@ static void SRAM_HOT(apply_param_adsr1_mode)(int16_t v) {
     LFO2Speed         = fast_exp_speed_5000(LFO2SpeedVal);
     LFO2_class.setMode0Freq(LFO2Speed, now_us);
   
-    // =========================================================================
+// =========================================================================
     // 3. LFO Pitch Depths (Q24 Math & Float)
     // =========================================================================
-    LFO1toDCOVal      = (uint16_t)presetParamShadow[PARAM_LFO1_TO_DCO];
-    #if defined(USE_FLOAT_VOICE_TASK)
-    LFO1toDCO_f           = lfo_pitch_depth_f(fast_lfo_depth_amt(LFO1toDCOVal), LFO1_PITCH_DEPTH_SCALE);
-    LFO1toOSC1_f          = lfo_pitch_depth_f(fast_lfo_depth_amt(constrain(presetParamShadow[PARAM_LFO1_TO_OSC1], 0, 255)), LFO1_PITCH_DEPTH_SCALE);
-    LFO1toOSC2_f          = lfo_pitch_depth_f(fast_lfo_depth_amt(constrain(presetParamShadow[PARAM_LFO1_TO_OSC2], 0, 255)), LFO1_PITCH_DEPTH_SCALE);
-    LFO1toOSC3_f          = lfo_pitch_depth_f(fast_lfo_depth_amt(constrain(presetParamShadow[PARAM_LFO1_TO_OSC3], 0, 255)), LFO1_PITCH_DEPTH_SCALE);
-    LFO2toOSC2_f          = lfo_pitch_depth_f(fast_lfo_depth_amt(presetParamShadow[PARAM_LFO2_TO_OSC2]), LFO2_PITCH_DEPTH_SCALE);
-    LFO2toOSC3_f          = lfo_pitch_depth_f(fast_lfo_depth_amt(presetParamShadow[PARAM_LFO2_TO_OSC3]), LFO2_PITCH_DEPTH_SCALE);
-    LFO2toOSC2_coarse_f   = lfo_pitch_depth_f(fast_lfo_depth_amt(constrain(presetParamShadow[PARAM_LFO2_TO_OSC2_COARSE], 0, 511)), LFO1_PITCH_DEPTH_SCALE);
-    LFO2toOSC3_coarse_f   = lfo_pitch_depth_f(fast_lfo_depth_amt(constrain(presetParamShadow[PARAM_LFO2_TO_OSC3_COARSE], 0, 511)), LFO1_PITCH_DEPTH_SCALE);
-  #else
-    LFO1toDCO_q24         = lfo_pitch_depth_q24(fast_lfo_depth_amt(LFO1toDCOVal), LFO1_PITCH_DEPTH_SCALE);
-    LFO1toOSC1_q24        = lfo_pitch_depth_q24(fast_lfo_depth_amt(constrain(presetParamShadow[PARAM_LFO1_TO_OSC1], 0, 255)), LFO1_PITCH_DEPTH_SCALE);
-    LFO1toOSC2_q24        = lfo_pitch_depth_q24(fast_lfo_depth_amt(constrain(presetParamShadow[PARAM_LFO1_TO_OSC2], 0, 255)), LFO1_PITCH_DEPTH_SCALE);
-    LFO1toOSC3_q24        = lfo_pitch_depth_q24(fast_lfo_depth_amt(constrain(presetParamShadow[PARAM_LFO1_TO_OSC3], 0, 255)), LFO1_PITCH_DEPTH_SCALE);
-    LFO2toOSC2_q24        = lfo_pitch_depth_q24(fast_lfo_depth_amt(presetParamShadow[PARAM_LFO2_TO_OSC2]), LFO2_PITCH_DEPTH_SCALE);
-    LFO2toOSC3_q24        = lfo_pitch_depth_q24(fast_lfo_depth_amt(presetParamShadow[PARAM_LFO2_TO_OSC3]), LFO2_PITCH_DEPTH_SCALE);
-    LFO2toOSC2_coarse_q24 = lfo_pitch_depth_q24(fast_lfo_depth_amt(constrain(presetParamShadow[PARAM_LFO2_TO_OSC2_COARSE], 0, 511)), LFO1_PITCH_DEPTH_SCALE);
-    LFO2toOSC3_coarse_q24 = lfo_pitch_depth_q24(fast_lfo_depth_amt(constrain(presetParamShadow[PARAM_LFO2_TO_OSC3_COARSE], 0, 511)), LFO1_PITCH_DEPTH_SCALE);
-  #endif
+    LFO1toDCOVal = (uint16_t)constrain(presetParamShadow[PARAM_LFO1_TO_DCO], 0, 511);
+#if defined(USE_FLOAT_VOICE_TASK)
+    LFO1toDCO_f           = lfo_pitch_depth_f(fast_lfo_depth_norm<511>(LFO1toDCOVal), LFO_4_OCTAVES);
+    LFO1toOSC1_f          = lfo_pitch_depth_f(fast_lfo_depth_norm<255>((uint16_t)constrain(presetParamShadow[PARAM_LFO1_TO_OSC1], 0, 255)), LFO_4_OCTAVES);
+    LFO1toOSC2_f          = lfo_pitch_depth_f(fast_lfo_depth_norm<255>((uint16_t)constrain(presetParamShadow[PARAM_LFO1_TO_OSC2], 0, 255)), LFO_4_OCTAVES);
+    LFO1toOSC3_f          = lfo_pitch_depth_f(fast_lfo_depth_norm<255>((uint16_t)constrain(presetParamShadow[PARAM_LFO1_TO_OSC3], 0, 255)), LFO_4_OCTAVES);
+    LFO2toOSC2_f          = lfo_pitch_depth_f(fast_lfo_depth_norm<255>((uint16_t)constrain(presetParamShadow[PARAM_LFO2_TO_OSC2], 0, 255)), LFO_VIBRATO_2_SEMITONES);
+    LFO2toOSC3_f          = lfo_pitch_depth_f(fast_lfo_depth_norm<255>((uint16_t)constrain(presetParamShadow[PARAM_LFO2_TO_OSC3], 0, 255)), LFO_VIBRATO_2_SEMITONES);
+    LFO2toOSC2_coarse_f   = lfo_pitch_depth_f(fast_lfo_depth_norm<511>((uint16_t)constrain(presetParamShadow[PARAM_LFO2_TO_OSC2_COARSE], 0, 511)), LFO_4_OCTAVES);
+    LFO2toOSC3_coarse_f   = lfo_pitch_depth_f(fast_lfo_depth_norm<511>((uint16_t)constrain(presetParamShadow[PARAM_LFO2_TO_OSC3_COARSE], 0, 511)), LFO_4_OCTAVES);
+#else
+    LFO1toDCO_q24         = lfo_pitch_depth_q24(fast_lfo_depth_norm<511>(LFO1toDCOVal), LFO_COARSE_2_OCTAVES_Q24);
+    LFO1toOSC1_q24        = lfo_pitch_depth_q24(fast_lfo_depth_norm<255>((uint16_t)constrain(presetParamShadow[PARAM_LFO1_TO_OSC1], 0, 255)), LFO_COARSE_2_OCTAVES_Q24);
+    LFO1toOSC2_q24        = lfo_pitch_depth_q24(fast_lfo_depth_norm<255>((uint16_t)constrain(presetParamShadow[PARAM_LFO1_TO_OSC2], 0, 255)), LFO_COARSE_2_OCTAVES_Q24);
+    LFO1toOSC3_q24        = lfo_pitch_depth_q24(fast_lfo_depth_norm<255>((uint16_t)constrain(presetParamShadow[PARAM_LFO1_TO_OSC3], 0, 255)), LFO_COARSE_2_OCTAVES_Q24);
+    LFO2toOSC2_q24        = lfo_pitch_depth_q24(fast_lfo_depth_norm<255>((uint16_t)constrain(presetParamShadow[PARAM_LFO2_TO_OSC2], 0, 255)), LFO_VIBRATO_2_SEMITONES_Q24);
+    LFO2toOSC3_q24        = lfo_pitch_depth_q24(fast_lfo_depth_norm<255>((uint16_t)constrain(presetParamShadow[PARAM_LFO2_TO_OSC3], 0, 255)), LFO_VIBRATO_2_SEMITONES_Q24);
+    LFO2toOSC2_coarse_q24 = lfo_pitch_depth_q24(fast_lfo_depth_norm<511>((uint16_t)constrain(presetParamShadow[PARAM_LFO2_TO_OSC2_COARSE], 0, 511)), LFO_COARSE_2_OCTAVES_Q24);
+    LFO2toOSC3_coarse_q24 = lfo_pitch_depth_q24(fast_lfo_depth_norm<511>((uint16_t)constrain(presetParamShadow[PARAM_LFO2_TO_OSC3_COARSE], 0, 511)), LFO_COARSE_2_OCTAVES_Q24);
+#endif
   
     // ADSR3 Detune
     ADSR3toDETUNE1           = presetParamShadow[PARAM_ADSR3_TO_DETUNE1];

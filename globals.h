@@ -104,8 +104,12 @@ volatile uint8_t NUM_VOICES = 1;
 volatile uint8_t STACK_VOICES = 1;
 
 volatile uint8_t voiceMode = 1;
-uint8_t syncMode = 0;
+volatile uint8_t syncMode = 0;
 volatile uint8_t oscPhaseSync = 0;
+
+
+// 0 to 32767 (Q15 format)
+volatile int16_t crossmod_depth = 0;
 
 bool pulseWaveOn = false;
 
@@ -170,13 +174,13 @@ static constexpr uint16_t DIV_COUNTER_CV          = 4095;
 
 static constexpr uint8_t MCU_PIN_UNASSIGNED = 0xFF;
 
-#if DCO_MCU_BOARD == DCO_MCU_WEACT_RP2040
+#if DCO_MCU_BOARD == DCO_MCU_WEACT_RP2040 
 static constexpr uint8_t RESET_PINS[NUM_OSCILLATORS] = { 29, 27, 19, 18, 15, 13, 12, 8 };
 static constexpr uint8_t RANGE_PINS[NUM_OSCILLATORS] = { 28, 22, 17, 16, 14, 11, 9, 7 };
 static constexpr uint8_t SMPS_PS_PIN = MCU_PIN_UNASSIGNED;  // GP23 is the onboard KEY
 static constexpr uint8_t USER_KEY_PIN = 23;                 // active-low, INPUT_PULLUP
 static constexpr uint8_t BOARD_FIX_PIN = 24;                // analog carrier rail
-#elif (DCO_MCU_BOARD == DCO_MCU_PICO) || (DCO_MCU_BOARD == DCO_MCU_PICO2)
+#elif (DCO_MCU_BOARD == DCO_MCU_PICO) || (DCO_MCU_BOARD == DCO_MCU_PICO2) || (DCO_MCU_BOARD == DCO_MCU_WEACT_RP2350)
 static constexpr uint8_t RESET_PINS[NUM_OSCILLATORS] = { 28, 27, 19, 18, 15, 13, 12, 8 };
 static constexpr uint8_t RANGE_PINS[NUM_OSCILLATORS] = { 26, 22, 17, 16, 14, 11, 9, 7 };
 static constexpr uint8_t SMPS_PS_PIN = 23;                  // RT6150 PS: drive HIGH
@@ -220,6 +224,7 @@ static constexpr int DCO_calibration_pin = 10;
 
 uint8_t RANGE_PWM_SLICES[NUM_OSCILLATORS];
 uint8_t RANGE_PWM_CHANNELS[NUM_OSCILLATORS];
+uint16_t RANGE_PWM[NUM_OSCILLATORS];
 uint8_t VCO_PWM_SLICES[NUM_OSCILLATORS];
 uint8_t PW_PWM_SLICES[NUM_PW_CHANNELS];
 #ifdef ENABLE_CV_OUTS
@@ -270,6 +275,7 @@ PIO pio[3] = { pio0, pio1, pio2 };
 PIO pio[2] = { pio0, pio1 };
 #endif
 
+uint8_t VOICE_RAW_NOTE[NUM_VOICES_TOTAL]; // Tracks the untouched MIDI key
 volatile uint8_t VOICE_NOTE_OSC1[NUM_VOICES_TOTAL] = {0};
 volatile uint8_t VOICE_NOTE_OSC2[NUM_VOICES_TOTAL] = {0};
 static uint8_t VOICE_MIDI_NOTE[NUM_VOICES_TOTAL];
@@ -326,176 +332,7 @@ uint32_t osc_last_y[NUM_OSCILLATORS] = {
   pioPulseLength, pioPulseLength, pioPulseLength, pioPulseLength
 };
 
-// Last clk_div handed to each SM. Writing Y consumes the OSR, so clk_div always has to
-// be re-pushed afterwards; without a remembered value the SM would read a shifted-out
-// OSR as its ramp count and shriek for one control frame. 200 is the slow "park" rate
-// used elsewhere during calibration.
-uint32_t osc_last_clk_div[NUM_OSCILLATORS] = { 200, 200, 200, 200, 200, 200, 200, 200 };
 
-// Soft sync: number of trailing ramp chunks that poll the master's reset pin.
-// 0 = hard sync through the sideset pin (no resolution cost).
-// 1..3 = soft sync with that many trailing polled chunks (receptive ~40% / ~67% / ~86%).
-// Only one poll program image is resident at a time; changing 1..3 reloads it.
-uint8_t softSyncChunks = 0;
-
-// Note-on OSC1/OSC2 restart when oscPhaseSync >= 1 (A/B listen + profiler).
-// 0 EXACT_Y: disable + period_split + load Y + jmp + enable_in_sync (default).
-// 1 SYNC_JMP: jmp only on running SMs (keep last Y; no disable / enable_in_sync).
-#ifndef NOTE_RETRIG_MODE_DEFAULT
-#define NOTE_RETRIG_MODE_DEFAULT 0
-#endif
-enum NoteRetrigMode : uint8_t {
-  NOTE_RETRIG_EXACT_Y  = 0,
-  NOTE_RETRIG_SYNC_JMP = 1,
-};
-volatile uint8_t note_retrig_mode = (uint8_t)NOTE_RETRIG_MODE_DEFAULT;
-volatile bool note_retrig_mode_ack_pending = false;
-
-static inline const char *note_retrig_mode_name(uint8_t m) {
-  return (m == NOTE_RETRIG_SYNC_JMP) ? "SYNC_JMP" : "EXACT_Y";
-}
-
-static inline void note_retrig_set_mode(uint8_t m) {
-  if (m > NOTE_RETRIG_SYNC_JMP) m = NOTE_RETRIG_EXACT_Y;
-  note_retrig_mode = m;
-  __dmb();
-}
-
-// Sub-oscillator divide ratio: 0 = off, 2 = one octave down, 4 = two octaves.
-uint8_t subOscDivide = 0;
-
-// Program-relative addresses.
-//   RESTART: `mov x, y`, the top of the reset pulse. Jumping here retriggers a cycle.
-//   PHASE_HOLD: last `jmp x--` before `mov x, y` / `set pins, 1` (loop_final). Preload X and
-//     jump here for a one-shot delay until OSC2's first flyback. On the old 8-chunk
-//     `frequency` program this was hardcoded jmp 10; on frequency_sync_4_jumps it is 9.
-//   RAMP_ENTRY[q]: leftover 90° chunk entries (unused by live phase-align).
-// Free and poll-1 share entry addresses {0,4,6,8}; poll-2/3 shift later entries because
-// polled chunks insert an extra instruction before each countdown.
-static constexpr uint8_t PIO_RESTART_ADDR_FREE = 10;
-static constexpr uint8_t PIO_RESTART_ADDR_SYNC[4] = { 10, 11, 12, 13 };  // index = softSyncChunks
-static constexpr uint8_t PIO_PHASE_HOLD_ADDR_FREE = 9;
-static constexpr uint8_t PIO_PHASE_HOLD_ADDR_SYNC[4] = { 9, 10, 11, 12 };  // index = softSyncChunks
-static constexpr uint8_t PIO_RAMP_ENTRY_FREE[4] = { 0, 4, 6, 8 };
-static constexpr uint8_t PIO_RAMP_ENTRY_SYNC_1[4] = { 0, 4, 6, 8 };
-static constexpr uint8_t PIO_RAMP_ENTRY_SYNC_2[4] = { 0, 4, 6, 9 };
-static constexpr uint8_t PIO_RAMP_ENTRY_SYNC_3[4] = { 0, 4, 7, 10 };
-
-static inline uint8_t soft_sync_chunks_clamped() {
-  uint8_t n = softSyncChunks;
-  if (n > 3) n = 3;
-  return n;
-}
-
-static inline uint32_t osc_program_base(uint8_t osc) {
-  const uint8_t blk = VOICE_TO_PIO[osc];
-  return osc_uses_sync_program[osc] ? pio_offset_sync[blk] : pio_offset_free[blk];
-}
-
-static inline uint32_t osc_restart_target(uint8_t osc) {
-  const uint8_t blk = VOICE_TO_PIO[osc];
-  if (!osc_uses_sync_program[osc]) {
-    return pio_offset_free[blk] + PIO_RESTART_ADDR_FREE;
-  }
-  return pio_offset_sync[blk] + PIO_RESTART_ADDR_SYNC[soft_sync_chunks_clamped()];
-}
-
-static inline uint32_t osc_phase_hold_target(uint8_t osc) {
-  const uint8_t blk = VOICE_TO_PIO[osc];
-  if (!osc_uses_sync_program[osc]) {
-    return pio_offset_free[blk] + PIO_PHASE_HOLD_ADDR_FREE;
-  }
-  return pio_offset_sync[blk] + PIO_PHASE_HOLD_ADDR_SYNC[soft_sync_chunks_clamped()];
-}
-
-// X preload for osc_phase_align_hold_stopped so the first flyback lands at
-// remaining ≈ total * (360 - deg) / 360. 0 → caller should jmp restart (0°).
-// RECIP_360_Q24 mul/shift; −3 is loop_final fallthrough + mov x,y + set pins,1.
-static inline uint32_t osc_phase_hold_x(uint32_t total_cycles, uint16_t deg) {
-  if (deg >= 360u) deg = (uint16_t)(deg % 360u);
-  if (deg == 0) return 0;
-  uint32_t per_deg = (uint32_t)(((uint64_t)total_cycles * RECIP_360_Q24 + (1u << 23)) >> 24);
-  uint32_t remaining = per_deg * (uint32_t)(360u - deg);
-  return (remaining > 3u) ? remaining - 3u : 0u;
-}
-
-static inline uint32_t osc_ramp_entry_target(uint8_t osc, uint8_t quarters) {
-  quarters &= 3;
-  const uint8_t blk = VOICE_TO_PIO[osc];
-  if (!osc_uses_sync_program[osc]) {
-    return pio_offset_free[blk] + PIO_RAMP_ENTRY_FREE[quarters];
-  }
-  switch (soft_sync_chunks_clamped()) {
-    case 2:  return pio_offset_sync[blk] + PIO_RAMP_ENTRY_SYNC_2[quarters];
-    case 3:  return pio_offset_sync[blk] + PIO_RAMP_ENTRY_SYNC_3[quarters];
-    default: return pio_offset_sync[blk] + PIO_RAMP_ENTRY_SYNC_1[quarters];
-  }
-}
-
-// Period model of whichever program this oscillator is running.
-static inline uint32_t osc_ramp_weight(uint8_t osc) {
-  if (!osc_uses_sync_program[osc]) return PIO_RAMP_WEIGHT_FREE;
-  return PIO_RAMP_WEIGHT_BY_CHUNKS[soft_sync_chunks_clamped()];
-}
-
-static inline uint32_t osc_period_overhead(uint8_t osc) {
-  if (!osc_uses_sync_program[osc]) return PIO_PERIOD_OVERHEAD_FREE;
-  return PIO_PERIOD_OVERHEAD_BY_CHUNKS[soft_sync_chunks_clamped()];
-}
-
-// Result of splitting a target period into the PIO's reset pulse and ramp chunks.
-struct PioPeriod {
-  uint32_t clk_div;  // per-chunk count pushed to the SM's OSR
-  uint32_t y;        // reset pulse width; pioPulseLength plus the division remainder
-};
-
-// Split `total_cycles` exactly into y + weight*clk_div + overhead.
-//
-// The remainder of the chunk division lands in the reset pulse rather than being rounded
-// away, so the generated period matches the target to the cycle instead of quantising to
-// `weight` cycles (about 0.2 cents at 7 kHz with weight 4). The pulse wobbles by
-// 0..weight-1 cycles, at most 13 ns at 225 MHz, which is nothing against a reset pulse
-// measured in microseconds.
-//
-// Caveat that shapes how this is used: `y` can only be pushed to the SM by way of the OSR
-// (put -> pull -> out y), and the OSR simultaneously holds clk_div for the four
-// `mov x, OSR` chunk reads. A Y update on a running SM therefore leaves a window where a
-// chunk can latch the pulse width as its ramp count. Callers must only push Y while the SM
-// is stopped, which in practice means at note-on.
-static inline PioPeriod pio_period_split(uint32_t total_cycles,
-                                         uint32_t weight,
-                                         uint32_t overhead) {
-  PioPeriod p;
-
-  // Guard the subtraction: very high frequencies can leave no room for a ramp.
-  uint32_t fixed = overhead + pioPulseLength;
-  if (total_cycles <= fixed) {
-    p.clk_div = 0;
-    p.y = pioPulseLength;
-    return p;
-  }
-
-  uint32_t ramp = total_cycles - fixed;
-  p.clk_div = ramp / weight;
-  p.y = pioPulseLength + (ramp % weight);
-  return p;
-}
-
-// clk_div for an oscillator whose Y is already loaded and must not be disturbed. Rounded
-// rather than exact, so the period error stays within +/- weight/2 cycles. Used every
-// control frame; pio_period_split() takes over at note-on, where Y can be rewritten and
-// the period becomes exact.
-static inline uint32_t pio_clk_div_for_y(uint32_t total_cycles,
-                                         uint32_t y,
-                                         uint32_t weight,
-                                         uint32_t overhead) {
-  uint32_t fixed = overhead + y;
-  if (total_cycles <= fixed) {
-    return 0;
-  }
-  uint32_t ramp = total_cycles - fixed;
-  return (ramp + weight / 2u) / weight;
-}
 
 uint8_t dataArray[4];
 

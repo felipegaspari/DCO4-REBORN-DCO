@@ -1,18 +1,35 @@
-#include "project_config.h"
-// #include "_shared/bench.h"
-
 #ifndef __BENCH_H__
 #define __BENCH_H__
 
 #pragma GCC optimize ("Os")
 
 #ifdef BENCHMARKING_ENABLED
-
+#include "project_config.h"
 #include "hardware/clocks.h"
 #include "hardware/structs/systick.h"
 #include "hardware/structs/timer.h"
+#include <stdio.h>
+#include <stdarg.h>
 
-// Defined in amp_comp_bench.ino; prints AMP_COMP_BENCHMARK speed/accuracy when pending.
+// Declaración forward de la función implementada en Serial.ino
+void mb_bench_text_drain();
+
+volatile bool bench_out_active = false;
+
+volatile bool bench_dump_request = false;
+volatile bool bench_periodic = false;
+volatile bool bench_core_ready[2] = { false, false };
+volatile uint8_t bench_period_gen = 0;
+
+// =============================================================================
+// SELECTOR DE MODO DE TELEMETRÍA / PROFILING
+// =============================================================================
+// Si no se definió ningún modo en DCO.ino, usamos RUNNING_AVERAGE por defecto:
+#if !defined(ENABLE_SWD_TELEMETRY) && !defined(RUNNING_AVERAGE)
+  #define RUNNING_AVERAGE
+#endif
+
+// Forward declarations de benchmarks específicos
 void print_amp_comp_bench();
 extern volatile bool pitch_interp_bench_speed_pending;
 extern volatile bool pitch_interp_bench_accuracy_pending;
@@ -27,8 +44,8 @@ void pio_probe_report_flush();
 static inline const char *bench_pitch_interp_mode_name() {
 #if PITCH_INTERP_MODE == PITCH_INTERP_FLOAT
   return "FLOAT";
-#elif PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_FAST
-  return "FLOAT_FAST";
+#elif PITCH_INTERP_MODE == PITCH_INTERP_FLOAT_CACHED
+  return "FLOAT_CACHED";
 #elif PITCH_INTERP_MODE == PITCH_INTERP_RATIO_Q16
   return "RATIO_Q16";
 #elif PITCH_INTERP_MODE == PITCH_INTERP_Q12
@@ -61,54 +78,64 @@ static inline const char *bench_pitch_interp_mode_name() {
 #endif
 
 #define BENCH_PROBES(X)                                                                         \
-  /* --- Core 0: loop() --- */                                                                  \
-  X(loop0_period,       0, BENCH_PERIOD_KIND, BENCH_T_MAIN, BENCH_NONE,          "loop period")         \
-  X(loop0_microsTimer,  0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,  "microsTimer")         \
-  X(loop0_midi,         0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,  "MIDI read")           \
-  X(loop0_midi_usb,     0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_midi,    "MIDI USB")            \
-  X(loop0_midi_din,     0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_midi,    "MIDI DIN Serial")     \
-  X(loop0_serial,       0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,  "serial panel/USB")    \
-  X(loop0_lfo1,         0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,  "LFO1")                \
-  X(loop0_lfo2,         0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,  "LFO2")                \
-  X(loop0_drift,        0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,  "drift LFOs")          \
-  X(loop0_adsr,         0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,  "ADSR_update")         \
-  X(loop0_noise,        0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,  "noise_gens")          \
-  X(loop0_noise_refill, 0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_noise,   "noise refill")        \
-  X(loop0_cv_outs,      0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,  "update_CV_outs")      \
-  X(loop0_set_parameters, 0, BENCH_CYC,       BENCH_T_MAIN, BENCH_loop0_period,  "set_parameters")     \
-  X(loop0_housekeeping, 0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,  "core0 housekeep")     \
-  /* --- Core 0: inside update_CV_outs --- */                                                   \
-  X(cv_ingest,          0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_cv_outs, "cv src ingest")      \
-  X(cv_matrix,          0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_cv_outs, "cv mod matrix")      \
-  X(cv_deltas,          0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_cv_outs, "cv extract deltas")  \
-  X(cv_lfo_subloop,     0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_cv_outs, "cv lfo subloop")     \
-  /* --- Core 1: loop1() --- */                                                                 \
-  X(loop1_period,       1, BENCH_PERIOD_KIND, BENCH_T_MAIN, BENCH_NONE,          "loop1 period")        \
-  X(loop1_microsTimer,  1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_period,  "microsTimer2")        \
-  X(voice_task,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_period,  "voice_task TOTAL")    \
-  /* --- Core 1: inside voice_task --- */                                                       \
-  X(vt_pitchbend,       1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "pitch bend")          \
-  X(vt_osc_detune,      1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "OSC2/3 detune")       \
-  X(vt_portamento,      1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "portamento")          \
-  X(vt_adsr_mod,        1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "ADSR modifier")       \
-  X(vt_unison_mod,      1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "unison modifier")     \
-  X(vt_drift_mod,       1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "drift modifier")      \
-  X(vt_modifiers,       1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "modifier sum")        \
-  X(vt_freq_scale_x,    1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "table x scaling")     \
-  X(vt_ratio_interp,    1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "ratio interpolate")   \
-  X(vt_freq_scale_post, 1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "apply ratio")         \
-  X(vt_clk_div,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "clkdiv math")         \
-  X(vt_phase_align,     1, BENCH_CYC,         BENCH_T_RARE, BENCH_voice_task,    "phase align")         \
-  X(vt_retrig_split,    1, BENCH_CYC,         BENCH_T_RARE, BENCH_voice_task,    "retrig period split") \
-  X(vt_chan_level,      1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "amp comp")            \
-  X(vt_pio_write,       1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "PIO put/exec")        \
-  BENCH_X_SUBOSC(X)                                                                             \
-  X(vt_note_retrig,     1, BENCH_CYC,         BENCH_T_RARE, BENCH_voice_task,    "note-on retrigger")   \
-  X(vt_retrig_sm_apply, 1, BENCH_CYC,         BENCH_T_RARE, BENCH_vt_note_retrig,"retrig SM apply")     \
-  X(vt_retrig_pwm,      1, BENCH_CYC,         BENCH_T_RARE, BENCH_vt_note_retrig,"retrig RANGE PWM")    \
-  X(vt_range_pwm,       1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "RANGE PWM")           \
-  X(vt_pwm_calc,        1, BENCH_CYC,         BENCH_T_FINE, BENCH_voice_task,    "PW arithmetic")       \
-  X(vt_pw_update,       1, BENCH_CYC,         BENCH_T_MAIN, BENCH_voice_task,    "PW level + write")
+/* --- Core 0: loop() --- */                                                                    \
+X(loop0_period,         0, BENCH_PERIOD_KIND, BENCH_T_MAIN, BENCH_NONE,             "loop period")         \
+X(loop0_microsTimer,    0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,     "microsTimer")         \
+X(loop0_midi,           0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,     "MIDI read")           \
+X(loop0_midi_usb,       0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_midi,       "MIDI USB")            \
+X(loop0_midi_din,       0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_midi,       "MIDI DIN Serial")     \
+X(loop0_serial,         0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,     "serial panel/USB")    \
+X(loop0_lfo1,           0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,     "LFO1")                \
+X(loop0_lfo2,           0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,     "LFO2")                \
+X(loop0_drift,          0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,     "drift LFOs")          \
+X(loop0_adsr,           0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,     "ADSR_update")         \
+X(loop0_noise,          0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,     "noise_gens")          \
+X(loop0_noise_refill,   0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_noise,      "noise refill")        \
+X(loop0_cv_outs,        0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,     "update_CV_outs")      \
+X(loop0_set_parameters, 0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,     "set_parameters")      \
+X(loop0_housekeeping,   0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_period,     "core0 housekeep")     \
+/* --- Core 0: inside update_CV_outs --- */                                                     \
+X(cv_ingest,            0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_cv_outs,    "cv src ingest")       \
+X(cv_matrix,            0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_cv_outs,    "cv mod matrix")       \
+X(cv_deltas,            0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_cv_outs,    "cv extract deltas")   \
+X(cv_lfo_subloop,       0, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop0_cv_outs,    "cv lfo subloop")      \
+X(mm_setup,             0, BENCH_CYC,         BENCH_T_MAIN, BENCH_cv_matrix,        "matrix memset/prep")  \
+X(mm_slot_accum,        0, BENCH_CYC,         BENCH_T_MAIN, BENCH_cv_matrix,        "matrix slot accum")   \
+X(mm_depth_feedback,    0, BENCH_CYC,         BENCH_T_MAIN, BENCH_cv_matrix,        "matrix depth mod")    \
+/* --- Core 1: loop1() --- */                                                                   \
+X(loop1_period,         1, BENCH_PERIOD_KIND, BENCH_T_MAIN, BENCH_NONE,             "loop1 period")        \
+X(loop1_microsTimer,    1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_period,     "microsTimer2")        \
+X(loop1_pio_defer,      1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_period,     "pio defer service")   \
+X(loop1_adsr_sync,      1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_period,     "adsr volatile sync")  \
+X(loop1_voice_task,     1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_period,     "voice_task TOTAL")    \
+X(loop1_housekeeping,   1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_period,     "core1 housekeep")     \
+/* --- Core 1: inside voice_task --- */                                                         \
+X(vt_task_setup,        1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "task init")           \
+X(vt_pitchbend,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "pitch bend")          \
+X(vt_task_prep,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "pointer hoisting")    \
+X(vt_osc_detune,        1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "OSC2/3 detune")       \
+X(vt_loop_prep,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "loop note prep")      \
+X(vt_portamento,        1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "portamento")          \
+X(vt_adsr_mod,          1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "ADSR modifier")       \
+X(vt_drift_mod,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "drift modifier")      \
+X(vt_unison_mod,        1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "unison modifier")     \
+X(vt_modifiers,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "modifier sum")        \
+X(vt_freq_scale_x,      1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "table x scaling")     \
+X(vt_ratio_interp,      1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "ratio interpolate")   \
+X(vt_freq_scale_post,   1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "apply ratio")         \
+X(vt_cross_mod,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "cross mod")           \
+X(vt_clk_div,           1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "clkdiv math")         \
+X(vt_note_retrig,       1, BENCH_CYC,         BENCH_T_RARE, BENCH_loop1_voice_task, "note-on retrigger")   \
+X(vt_phase_align,       1, BENCH_CYC,         BENCH_T_RARE, BENCH_vt_note_retrig,   "phase align")         \
+X(vt_retrig_split,      1, BENCH_CYC,         BENCH_T_RARE, BENCH_vt_note_retrig,   "retrig period split") \
+X(vt_chan_level,        1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "amp comp")            \
+X(vt_retrig_sm_apply,   1, BENCH_CYC,         BENCH_T_RARE, BENCH_loop1_voice_task, "retrig SM apply")     \
+X(vt_pio_write,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "PIO put/exec")        \
+X(vt_range_pwm,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "RANGE PWM")           \
+X(vt_pwm_calc,          1, BENCH_CYC,         BENCH_T_FINE, BENCH_loop1_voice_task, "PW arithmetic")       \
+X(vt_pw_update,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "PW level + write")    \
+BENCH_X_SUBOSC(X)                                                                                          \
+X(vt_teardown,          1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "task teardown")
 
 enum BenchId {
 #define BENCH_X(id, core, kind, tier, parent, label) BENCH_##id,
@@ -130,75 +157,57 @@ enum BenchId {
 #define BENCH_T_FINE 1
 #define BENCH_T_RARE 2
 
-#ifndef BENCH_STAGE_STRIDE
-#define BENCH_STAGE_STRIDE 9
-#endif
-#if BENCH_STAGE_STRIDE < 1
-#undef BENCH_STAGE_STRIDE
-#define BENCH_STAGE_STRIDE 1
-#endif
-
-uint32_t bench_overhead_cyc = 0;
-uint32_t bench_cycles_per_us = 1;
-uint32_t bench_period_max_raw = 0xFFFFFFFFu;
-
-uint32_t bench_window_start_us[2] = { 0, 0 };
-uint32_t bench_window_us[2] = { 0, 0 };
-
-#if BENCH_USE_SYSTICK
 #define BENCH_TIMER_MASK 0x00FFFFFFu
+
+// Fast zero-spill SysTick reader: compiles to a single 2-cycle LDR instruction
 static inline uint32_t bench_now(void) {
   return systick_hw->cvr;
 }
 static inline uint32_t bench_span(uint32_t start, uint32_t end) {
   return (start - end) & BENCH_TIMER_MASK;
 }
-#else
-#define BENCH_TIMER_MASK 0xFFFFFFFFu
-static inline uint32_t bench_now(void) {
-  return timer_hw->timerawl;
-}
-static inline uint32_t bench_span(uint32_t start, uint32_t end) {
-  return end - start;
-}
-#endif
 
 static inline uint32_t bench_us_now(void) {
   return timer_hw->timerawl;
 }
 
+// =============================================================================
+// GLOBAL CLOCK & CALIBRATION STATE
+// =============================================================================
+
+uint32_t bench_overhead_cyc = 0;
+uint32_t bench_cycles_per_us = 1;
+uint32_t bench_period_max_raw = 0xFFFFFFFFu;
+
 inline void bench_init_core() {
-  bench_cycles_per_us = clock_get_hz(clk_sys) / 1000000u;
-  if (bench_cycles_per_us == 0u) bench_cycles_per_us = 1u;
-#if BENCH_USE_SYSTICK
-  bench_period_max_raw = bench_cycles_per_us * (uint32_t)BENCH_PERIOD_MAX_US;
-#else
-  bench_period_max_raw = (uint32_t)BENCH_PERIOD_MAX_US;
-#endif
-  if (bench_period_max_raw == 0u) bench_period_max_raw = 1u;
+  uint32_t hz = clock_get_hz(clk_sys);
+  bench_cycles_per_us = (hz > 0) ? (hz / 1000000u) : 250u;
 
-#if BENCH_USE_SYSTICK
-  systick_hw->csr = 0u;
-  systick_hw->rvr = BENCH_TIMER_MASK;
-  systick_hw->cvr = 0u;
-  systick_hw->csr = 0x5u;
-#endif
+  #if BENCH_USE_SYSTICK
+    bench_period_max_raw = (uint32_t)BENCH_PERIOD_MAX_US * bench_cycles_per_us;
+  #else
+    bench_period_max_raw = (uint32_t)BENCH_PERIOD_MAX_US;
+  #endif
 
-  uint32_t best = 0xFFFFFFFFu;
-  for (int i = 0; i < 32; ++i) {
-    const uint32_t a = bench_now();
-    const uint32_t b = bench_now();
-    const uint32_t d = bench_span(a, b);
-    if (d < best) best = d;
+  #if BENCH_USE_SYSTICK
+    systick_hw->csr = 0u;
+    systick_hw->rvr = BENCH_TIMER_MASK;
+    systick_hw->cvr = 0u;
+    systick_hw->csr = 0x5u;
+  #endif
+
+  uint32_t min_ovh = 0xFFFFFFFFu;
+  for (int i = 0; i < 32; i++) {
+    uint32_t t0 = bench_now();
+    uint32_t t1 = bench_now();
+    uint32_t diff = bench_span(t0, t1);
+    if (diff < min_ovh) min_ovh = diff;
   }
-  bench_overhead_cyc = best;
-
-#ifdef RUNNING_AVERAGE
-  bench_window_start_us[get_core_num() & 1u] = bench_us_now();
-#endif
+  bench_overhead_cyc = min_ovh;
 }
-
-volatile bool bench_out_active = false;
+// =============================================================================
+// INFRAESTRUCTURA DE BUFFER USB (Disponible para state_machines.ino y PIO)
+// =============================================================================
 
 #define BENCH_OUT_CAP   6144
 #define BENCH_OUT_CHUNK 64
@@ -269,7 +278,142 @@ inline bool bench_out_drain_chunk() {
   return true;
 }
 
-#if defined(RUNNING_AVERAGE)
+
+// =============================================================================
+// MODO 1: ZERO-TAX SWD TELEMETRY (PlotJuggler)
+// =============================================================================
+#ifdef ENABLE_SWD_TELEMETRY
+
+#define BENCH_META_JSON_ROW(id, core, kind, tier, parent, label) \
+    "{\"id\":\"" #id "\",\"core\":" #core ",\"parent\":\"" #parent "\",\"label\":\"" label "\"},"
+
+#define BENCH_META_JSON_STR \
+    "@@BENCH_META_BEGIN@@[\n" \
+    BENCH_PROBES(BENCH_META_JSON_ROW) \
+    "{}\n" \
+    "]@@BENCH_META_END@@"
+
+extern "C" {
+  struct __attribute__((packed, aligned(4))) PicoBenchTelemetry {
+    #define BENCH_X_STRUCT(id, core, kind, tier, parent, label) uint32_t id;
+    BENCH_PROBES(BENCH_X_STRUCT)
+    #undef BENCH_X_STRUCT
+  };
+  extern volatile __attribute__((used)) PicoBenchTelemetry bench_telemetry;
+  extern volatile __attribute__((used)) const char bench_meta_json[];
+  
+  extern volatile uint32_t bench_acc[BENCH_COUNT];
+  extern const uint8_t bench_probe_core[BENCH_COUNT];
+}
+
+// -----------------------------------------------------------------------------
+// CHECK IF PERIOD-ONLY MODE IS REQUESTED FOR SWD
+// -----------------------------------------------------------------------------
+#if defined(ENABLE_SWD_PERIOD) || defined(RUNNING_AVERAGE_PERIOD)
+
+// In Period-Only mode, all inner stage probes compile to zero instructions:
+#define BENCH_BEGIN(id)         do {} while (0)
+#define BENCH_END(id)           do {} while (0)
+#define BENCH_FBEGIN(id)        do {} while (0)
+#define BENCH_FEND(id)          do {} while (0)
+#define BENCH_SAMPLE_TICK()     do {} while (0)
+#define BENCH_PATH_INC(field)   ((void)0)
+
+// Fast-averaged direct period measurement:
+#define BENCH_PERIOD(id) do { \
+  static uint32_t _prev_##id = 0; \
+  uint32_t _now_##id = systick_hw->cvr; \
+  if (_prev_##id != 0) { \
+    uint32_t _raw = (_prev_##id - _now_##id) & BENCH_TIMER_MASK; \
+    uint32_t _cur = bench_telemetry.id; \
+    if (_cur == 0) { \
+      bench_telemetry.id = _raw; \
+    } else if (_raw > _cur) { \
+      bench_telemetry.id = _cur + (((_raw - _cur) >> 2) + 1); \
+    } else { \
+      bench_telemetry.id = _cur - (((_cur - _raw) >> 3) + 1); \
+    } \
+  } \
+  _prev_##id = _now_##id; \
+} while (0)
+
+#else // Full Stage Breakdown Mode
+
+#define BENCH_BEGIN(id) uint32_t _t_start_##id = systick_hw->cvr
+
+#define BENCH_END(id) do { \
+  bench_acc[BENCH_##id] += (_t_start_##id - systick_hw->cvr) & BENCH_TIMER_MASK; \
+} while (0)
+
+#define BENCH_PERIOD(id) do { \
+  static uint32_t _prev_##id = 0; \
+  uint32_t _now_##id = systick_hw->cvr; \
+  if (_prev_##id != 0) { \
+    bench_acc[BENCH_##id] += (_prev_##id - _now_##id) & BENCH_TIMER_MASK; \
+  } \
+  _prev_##id = _now_##id; \
+} while (0)
+
+// Fast-Attack / Smooth-Decay Averager for all active probes
+#define BENCH_SAMPLE_TICK() do { \
+  uint8_t _c = get_core_num() & 1u; \
+  for (int i = 0; i < BENCH_COUNT; i++) { \
+    if (bench_probe_core[i] == _c) { \
+      uint32_t _span = bench_acc[i]; \
+      bench_acc[i] = 0; \
+      if (_span > 0) { \
+        volatile uint32_t* _p = (volatile uint32_t*)&bench_telemetry + i; \
+        uint32_t _cur = *_p; \
+        if (_cur == 0) { \
+          *_p = _span; \
+        } else if (_span > _cur) { \
+          *_p = _cur + (((_span - _cur) >> 1) + 1); \
+        } else { \
+          *_p = _cur - (((_cur - _span) >> 4) + 1); \
+        } \
+      } \
+    } \
+  } \
+} while (0)
+
+#define BENCH_FBEGIN(id)        BENCH_BEGIN(id)
+#define BENCH_FEND(id)          BENCH_END(id)
+#define BENCH_PATH_INC(field)   ((void)0)
+
+#endif // Period Mode vs Full Mode
+
+static inline void bench_service(uint8_t) {}
+static inline void bench_reset_all() {}
+static inline void bench_request_dump() {}
+static inline void bench_toggle_periodic() {}
+
+inline void bench_poll_core0() {
+  if (bench_cdc_rx_pending()) return;
+  if (pio_probe_report_pending && !bench_out_active) {
+    pio_probe_report_flush();
+  }
+  bench_out_drain_chunk();
+}
+
+///////// END OF ENABLE_SWD_TELEMETRY ///////////
+
+
+#elif defined(RUNNING_AVERAGE)
+// =============================================================================
+// MODO 2: RUNNING_AVERAGE CLÁSICO (Serial Dumps)
+// =============================================================================
+
+#ifndef BENCH_STAGE_STRIDE
+#define BENCH_STAGE_STRIDE 9
+#endif
+#if BENCH_STAGE_STRIDE < 1
+#undef BENCH_STAGE_STRIDE
+#define BENCH_STAGE_STRIDE 1
+#endif
+
+
+uint32_t bench_window_start_us[2] = { 0, 0 };
+uint32_t bench_window_us[2] = { 0, 0 };
 
 struct BenchDesc {
   uint8_t core;
@@ -340,11 +484,6 @@ static inline void bench_path_amp_walk_steps(uint32_t steps) {
 static inline void bench_path_walk_steps(uint32_t) {}
 static inline void bench_path_amp_walk_steps(uint32_t) {}
 #endif
-
-volatile bool bench_dump_request = false;
-volatile bool bench_core_ready[2] = { false, false };
-volatile bool bench_periodic = false;
-volatile uint8_t bench_period_gen = 0;
 
 uint32_t bench_sample_ctr[2] = { 0, 0 };
 bool bench_stage_on[2] = { false, false };
@@ -444,11 +583,12 @@ static inline void bench_add_raw(uint8_t id, uint32_t d) {
 #endif
 
 #ifdef RUNNING_AVERAGE_PERIOD
-#define BENCH_SAMPLE_TICK() ((void)0)
-#define BENCH_BEGIN(id)  ((void)0)
-#define BENCH_END(id)    ((void)0)
-#define BENCH_FBEGIN(id) ((void)0)
-#define BENCH_FEND(id)   ((void)0)
+// When PERIOD mode is on, all stage probes compile to no-ops:
+#define BENCH_SAMPLE_TICK()     do {} while (0)
+#define BENCH_BEGIN(id)         do {} while (0)
+#define BENCH_END(id)           do {} while (0)
+#define BENCH_FBEGIN(id)        do {} while (0)
+#define BENCH_FEND(id)          do {} while (0)
 #else
 #define BENCH_SAMPLE_TICK()                                               \
   do {                                                                    \
@@ -464,16 +604,17 @@ static inline void bench_add_raw(uint8_t id, uint32_t d) {
 
 #define BENCH_BEGIN(id) volatile uint32_t bench_t_##id = bench_stage_begin(BENCH_##id)
 #define BENCH_END(id)   bench_stage_end(BENCH_##id, bench_t_##id)
+
 #ifdef RUNNING_AVERAGE_FINE
 #define BENCH_FBEGIN(id) BENCH_BEGIN(id)
 #define BENCH_FEND(id)   BENCH_END(id)
 #else
-#define BENCH_FBEGIN(id) ((void)0)
-#define BENCH_FEND(id)   ((void)0)
+#define BENCH_FBEGIN(id) do {} while (0)
+#define BENCH_FEND(id)   do {} while (0)
 #endif
 #endif
 
-static constexpr uint32_t BENCH_MIN_WINDOW_US = 1000000u; // 1 s
+static constexpr uint32_t BENCH_MIN_WINDOW_US = 1000000u;
 
 inline void bench_service(uint8_t core) {
   if (!bench_dump_request || bench_core_ready[core]) return;
@@ -508,6 +649,16 @@ inline void bench_reset_all() {
   bench_path_snap = BenchPathStat{};
   bench_window_start_us[0] = bench_window_start_us[1] = bench_us_now();
   bench_period_gen++;
+}
+
+inline void bench_request_dump() {
+  bench_dump_request = true;
+  bench_core_ready[0] = false;
+  bench_core_ready[1] = false;
+}
+
+inline void bench_toggle_periodic() {
+  bench_periodic = !bench_periodic;
 }
 
 inline uint64_t bench_to_us100(uint64_t raw, uint8_t kind) {
@@ -775,7 +926,7 @@ inline void bench_print_report() {
            "amp_cal=%s",
            mcu, voice, bench_pitch_interp_mode_name(), amp, cv,
            amp_comp_method_name(amp_comp_method), clkdiv,
-           note_retrig_mode_name(note_retrig_mode),
+           //note_retrig_mode_name(note_retrig_mode),
            autotune_amp_method_name(autotuneAmpMethod));
   bench_out_println(line);
 
@@ -910,13 +1061,13 @@ inline void bench_poll_core0() {
     bench_out_drain_chunk();
   }
 
-  if (!bench_out_active && note_retrig_mode_ack_pending) {
-    note_retrig_mode_ack_pending = false;
-    bench_out_reset();
-    bench_out_printf("note_retrig=%s\n", note_retrig_mode_name(note_retrig_mode));
-    bench_out_active = (bench_out_len > 0u);
-    bench_out_drain_chunk();
-  }
+  // if (!bench_out_active && note_retrig_mode_ack_pending) {
+  //   note_retrig_mode_ack_pending = false;
+  //   bench_out_reset();
+  //   bench_out_printf("note_retrig=%s\n", note_retrig_mode_name(note_retrig_mode));
+  //   bench_out_active = (bench_out_len > 0u);
+  //   bench_out_drain_chunk();
+  // }
 
   if (!bench_out_active &&
       (amp_comp_bench_speed_pending || amp_comp_bench_accuracy_pending)) {
@@ -943,45 +1094,28 @@ inline void bench_poll_core0() {
   }
 }
 
-#else  // !RUNNING_AVERAGE
+#endif // RUNNING_AVERAGE
 
-#define BENCH_BEGIN(id)  ((void)0)
-#define BENCH_END(id)    ((void)0)
-#define BENCH_PERIOD(id) ((void)0)
-#define BENCH_SAMPLE_TICK() ((void)0)
-#define BENCH_FBEGIN(id) ((void)0)
-#define BENCH_FEND(id)   ((void)0)
-#define BENCH_PATH_INC(field) ((void)0)
-static inline void bench_path_walk_steps(uint32_t) {}
-static inline void bench_path_amp_walk_steps(uint32_t) {}
+#else // !BENCHMARKING_ENABLED
 
-inline void bench_service(uint8_t) {}
-inline void bench_reset_all() {}
-
-inline void bench_poll_core0() {
-  if (bench_cdc_rx_pending()) {
-    return;
-  }
-  if (pio_probe_report_pending && !bench_out_active) {
-    pio_probe_report_flush();
-  }
-  bench_out_drain_chunk();
-}
-
-#endif  // RUNNING_AVERAGE
-
-#else  // !BENCHMARKING_ENABLED
-
+// Modo de Producción (Compila a nada absoluto)
 #define BENCH_BEGIN(x)          do {} while (0)
 #define BENCH_END(x)            do {} while (0)
 #define BENCH_PERIOD(x)         do {} while (0)
 #define BENCH_SAMPLE_TICK()     do {} while (0)
+#define BENCH_FBEGIN(x)         do {} while (0)
+#define BENCH_FEND(x)           do {} while (0)
+#define BENCH_PATH_INC(field)   ((void)0)
 
 static const bool bench_out_active = false;
-static inline void bench_request_dump() {}
+static inline void bench_init_core() {}
+static inline void bench_service(uint8_t) {}
 static inline void bench_reset_all() {}
+static inline void bench_poll_core0() {}
+static inline void mb_bench_text_drain() {}
+static inline void bench_request_dump() {}
 static inline void bench_toggle_periodic() {}
 
 #endif // BENCHMARKING_ENABLED
 
-#endif  // __BENCH_H__
+#endif // __BENCH_H__

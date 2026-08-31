@@ -100,7 +100,7 @@ static inline uint32_t cdb_pio(uint32_t total, uint32_t y, uint32_t w, uint32_t 
 // GOLD_REF: true-Hz llround (both engines).
 static inline uint32_t cdb_clk_div_gold_ref(uint32_t sys_hz, double hz,
                                             uint32_t y, uint32_t w, uint32_t k) {
-  return cdb_pio(clkdiv_gold_hz_total_cycles(sys_hz, hz), y, w, k);
+  return cdb_pio(clkdiv_gold_total_cycles_Hz(sys_hz, hz), y, w, k);
 }
 
 #ifdef USE_FLOAT_VOICE_TASK
@@ -111,9 +111,9 @@ static inline uint32_t cdb_clk_div_by_method(uint8_t method, uint32_t sys_hz,
   if (method == CDB_GOLD_REF) return cdb_clk_div_gold_ref(sys_hz, hz, y, w, k);
   const float freq_f = (float)hz;
   if (method == CDB_GOLD_LIVE)
-    return cdb_pio(clkdiv_gold_hz_total_cycles(sys_hz, (double)freq_f), y, w, k);
+    return cdb_pio(clkdiv_gold_total_cycles_Hz(sys_hz, (double)freq_f), y, w, k);
   if (method == CDB_FLOAT_LIVE)
-    return cdb_pio(clkdiv_float_hz_total_cycles(sys_hz, freq_f), y, w, k);
+    return cdb_pio(clkdiv_float_total_cycles_Hz(sys_hz, freq_f), y, w, k);
   const int64_t q24 = cdb_float_hz_to_q24(freq_f);
   if (method == CDB_Q16)
     return cdb_pio(clkdiv_q16_total_cycles(sys_hz, q24), y, w, k);
