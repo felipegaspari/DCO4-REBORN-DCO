@@ -555,6 +555,12 @@ static void SRAM_HOT(apply_param_adsr1_mode)(int16_t v) {
    amp_comp_bench_accuracy_pending = true;
    break;
 #endif
+    case 28:
+    pitch_interp_bench_speed_pending = true;
+    break;
+    case 29:
+    pitch_interp_bench_accuracy_pending = true;
+    break;
    case 30:
      seed_fake_calibration_tables(true);
      break;

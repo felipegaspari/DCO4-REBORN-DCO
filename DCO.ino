@@ -192,7 +192,7 @@
 // #define ENABLE_SWD_PERIOD 
 
 #define RUNNING_AVERAGE
-#define RUNNING_AVERAGE_PERIOD
+//#define RUNNING_AVERAGE_PERIOD
 
 #if defined(ENABLE_SWD_TELEMETRY)
   // SWD telemetry enabled, use its specific functions.
