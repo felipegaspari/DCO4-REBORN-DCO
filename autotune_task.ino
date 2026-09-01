@@ -1,8 +1,8 @@
 // =============================================================================
 // DCO AUTOTUNE & CALIBRATION TASK MANAGER (autotune_task.ino)
 // =============================================================================
-// This file centralizes all calibration routines: manual, automated, and sweeps.
-// It completely replaces the legacy 'voice_task_autotune' function.
+// Centralizes all calibration routines: manual, automated, and sweeps.
+// Fully adapted for Hardware DMA Dithering.
 
 // -----------------------------------------------------------------------------
 // 1. Hardware Calibration Driver
@@ -19,8 +19,12 @@ void autotune_drive_core(uint8_t osc, float freqHz, uint16_t ampValue) {
     pio_sm_put(pioN, sm1N, clk_div);
     pio_sm_exec(pioN, sm1N, pio_encode_pull(false, false));
   
+    // 1. Update memory variable
     write_range_pwm(osc, ampValue);
-  }
+
+    // 2. ADAPTATION: Push directly into the DMA Dither buffer!
+    flush_voice_pwm();
+}
   
 // =============================================================================
 // 2. Manual Calibration Loop (UI / Trimpot / PW editing)
@@ -41,7 +45,7 @@ void autotune_manual_task() {
   bool isPwEdit   = cal_stage_is_pw_edit(manualCalibrationStage);
   bool isSquare   = cal_stage_is_square(manualCalibrationStage);
   
-  // SURGICAL FIX: Enable pulse for both Square wave stages AND PW edit stages
+  // Enable pulse for both Square wave stages AND PW edit stages
   bool wantPulse  = (isSquare || isPwEdit);
 
   // =========================================================================
@@ -60,9 +64,14 @@ void autotune_manual_task() {
         pio_sm_set_enabled(pioN, sm1N, false);
         pio_sm_put(pioN, sm1N, 0);
         pio_sm_exec(pioN, sm1N, pio_encode_pull(false, false));
+        
+        // ADAPTATION: Update memory variable
         write_range_pwm(i, 0);
       }
     }
+
+    // ADAPTATION: Push zeroed levels to DMA buffer immediately
+    flush_voice_pwm();
 
     // Analog Discharge Drain pause when switching physical oscillators
     if (oscChanged && lastDCO != 0xFF) {
@@ -82,16 +91,17 @@ void autotune_manual_task() {
   // =========================================================================
   if (wantPulse && osc_has_pw(currentDCO)) {
     // Pulse / PW Edit Stage: Actively drive active channel with its PW_CENTER value
-    // and mute all other PW channels
     apply_pw_center_solo(pwCh);
+    flush_voice_pwm(); // ADAPTATION: Commit PW center to DMA
   } else {
-    // Saw / Tri Stage: Mute ALL Pulse channels to completely isolate the analog waveform
+    // Saw / Tri Stage: Mute ALL Pulse channels via DMA-safe writers
     for (uint8_t ch = 0; ch < NUM_PW_CHANNELS; ch++) {
       if (PW_PINS[ch] != PW_PIN_UNASSIGNED) {
-        pwm_set_chan_level(PW_PWM_SLICES[ch], pwm_gpio_to_channel(PW_PINS[ch]), 0);
+        voice_write_pw(ch, 0); // ADAPTATION: Safe DMA-backed writer
         PW[ch] = 0;
       }
     }
+    flush_voice_pwm(); // ADAPTATION: Push muted PW to DMA
   }
 
   // =========================================================================
@@ -115,7 +125,7 @@ void autotune_manual_task() {
 
   float freqHz = note_to_freq(DCO_calibration_current_note);
 
-  // 4. Drive target oscillator
+  // 4. Drive target oscillator (automatically calls flush_voice_pwm())
   autotune_drive_core(currentDCO, freqHz, ampCompCalibrationVal);
 
   if (stageChanged) {
@@ -136,25 +146,19 @@ void autotune_manual_task() {
 // -----------------------------------------------------------------------------
 void autotune_loop_task() {
 
-    // =========================================================================
+  // =========================================================================
   // 1. CACHE AND NEUTRALIZE SYNC TOPOLOGY
   // =========================================================================
-  // Calibration requires 100% free-running oscillators. If a preset had Hard/Soft 
-  // sync enabled, we must sever the PIO pin cross-linking so parked masters 
-  // don't freeze the slave state machines.
-  manualCalSavedSyncMode     = syncMode;
-  manualCalSavedOscPhaseSync = oscPhaseSync;
+  manualCalSavedSyncMode       = syncMode;
+  manualCalSavedOscPhaseSync   = oscPhaseSync;
   manualCalSavedSoftSyncChunks = softSyncChunks;
 
   softSyncChunks = 0;
-  syncMode     = 0;
-  oscPhaseSync = 0;
-  setSyncMode(); // Reconfigures all PIOs for independent free-running operation
-
-
+  syncMode       = 0;
+  oscPhaseSync   = 0;
+  setSyncMode(); 
 
   // Trap Core 1 here as long as calibration is active.
-  // This allows delay(), micros(), and Serial to function perfectly!
   while (calibrationFlag || calibrationVerifyRequested) {
     
     if (calibrationFlag) {
@@ -171,19 +175,18 @@ void autotune_loop_task() {
       run_calibration_verify_sweep();
     }
     
-    // Process serial/MIDI buffers briefly to prevent USB lockups during manual mode
+    // Process serial/MIDI buffers briefly to prevent USB lockups
     tight_loop_contents(); 
   }
-
 
   // =========================================================================
   // 3. RESTORE SYNC TOPOLOGY & ENGINE STATE
   // =========================================================================
   softSyncChunks = manualCalSavedSoftSyncChunks;
-  syncMode     = manualCalSavedSyncMode;
-  oscPhaseSync = manualCalSavedOscPhaseSync;
+  syncMode       = manualCalSavedSyncMode;
+  oscPhaseSync   = manualCalSavedOscPhaseSync;
   
-  setSyncMode(); // Re-link the PIOs if they were synced prior to calibration
+  setSyncMode(); 
 
   oscPhaseSync = manualCalSavedOscPhaseSync;
   if (oscPhaseSync < 2) {
@@ -205,9 +208,13 @@ void autotune_loop_task() {
       }
     }
   }
+
   for (int i = 0; i < NUM_VOICES_TOTAL; i++) {
     note_on_flag[i] = 1;
   }
 
   restore_voice_engine_after_calibration();
+
+  // ADAPTATION: Guarantee all channels are flushed to DMA upon leaving calibration
+  flush_voice_pwm();
 }

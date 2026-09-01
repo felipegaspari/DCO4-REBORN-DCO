@@ -3,9 +3,14 @@
 #include "include_all.h"
 #include <limits.h>
 #include <math.h>
+#include "hardware/sync.h"
 
 // Enable/disable detailed DCO debug report (including OSC1 frequency stages)
 #define DCO_DEBUG_REPORT 0
+
+static uint16_t pending_range_pwm[NUM_OSCILLATORS] = {0};
+static uint32_t pending_clk_div[NUM_OSCILLATORS]   = {0};
+static bool     range_sync_pending[NUM_OSCILLATORS] = {false};
 
 void SRAM_HOT(amp_chan_levels_fixed)(int64_t freq_q24_A, int64_t freq_q24_B,
                                   uint8_t oscA, uint8_t oscB, uint16_t *outA,
@@ -331,6 +336,59 @@ static constexpr float Q24_TO_FLOAT = 1.0f / 16777216.0f;
 static float SRAM_HOT(q24_to_float)(int32_t q) { return (float)q * Q24_TO_FLOAT; }
 
 #endif // USE_FLOAT_VOICE_TASK
+
+
+
+//=================================================================================
+// Helper to instantly phase-update the PIO countdown for a frequency change.
+// This prevents audible clicks and lag by scaling the currently executing chunk's
+// remaining time to match the new frequency's period ratio.
+static inline void SRAM_HOT(update_osc_clk_div_instantly)(PIO pio, uint sm, uint8_t osc, uint32_t new_div) {
+    uint32_t old_div = osc_last_clk_div[osc];
+    
+    if (old_div != new_div) {
+        // Disable interrupts to ensure the PIO doesn't wrap while we calculate
+        uint32_t irq = save_and_disable_interrupts();
+        
+        uint32_t pc = pio_sm_get_pc(pio, sm);
+        
+        // PC == 0 is the capacitor discharge pulse (wrap target) in all our sync programs.
+        // If PC == 0, scaling X would corrupt the discharge pulse width (Y) and cause clicks.
+        if (pc != 0) {
+            // Flush any stale RX data
+            while (!pio_sm_is_rx_fifo_empty(pio, sm)) {
+                (void)pio_sm_get(pio, sm);
+            }
+            
+            // 1. Shift X into the ISR
+            pio_sm_exec(pio, sm, pio_encode_in(pio_x, 32));
+            // 2. EXPLICITLY PUSH ISR to the RX FIFO so the CPU can read it!
+            pio_sm_exec(pio, sm, pio_encode_push(false, false));
+            
+            // 3. Now it is safe to read
+            uint32_t current_x = pio_sm_get(pio, sm);
+            
+            // If X is very small, we might wrap before the CPU finishes this math.
+            // 150 cycles is a safe margin to guarantee we beat the wrap.
+            if (current_x > 150 && old_div > 0) {
+                // Project the phase: Scale remaining ticks by the frequency ratio
+                uint32_t new_x = (uint32_t)(((uint64_t)current_x * new_div) / old_div);
+                
+                // Overwrite X mid-instruction
+                pio_sm_put(pio, sm, new_x);
+                pio_sm_exec(pio, sm, pio_encode_pull(false, false));
+                pio_sm_exec(pio, sm, pio_encode_mov(pio_x, pio_osr));
+            }
+        }
+        
+        // Always queue the new divider in the OSR for all subsequent chunks
+        pio_sm_put(pio, sm, new_div);
+        pio_sm_exec(pio, sm, pio_encode_pull(false, false));
+        
+        restore_interrupts(irq);
+        osc_last_clk_div[osc] = new_div;
+    }
+}
 
 #ifndef USE_FLOAT_VOICE_TASK
 // Fixed-point realtime voice engine (portamento, modifiers, clkdiv, amp,
@@ -1096,7 +1154,6 @@ void SRAM_HOT(voice_task_float)() {
       uint32_t total_cycles1 = clkdiv_live_total_cycles(sys_hz_f, pio_freqA_Hz);
       uint32_t total_cycles2 = clkdiv_live_total_cycles(sys_hz_f, pio_freqB_Hz);
 
-      // Fetch parameters using normal function calls (no angle brackets)
       uint32_t wA, kA, wB, kB;
       get_osc_params(DCO_A, wA, kA);
       get_osc_params(DCO_B, wB, kB);
@@ -1106,7 +1163,7 @@ void SRAM_HOT(voice_task_float)() {
       BENCH_END(vt_clk_div);
 
 
-      // Prep variables for retrig (Covered inside vt_note_retrig to ensure 0 unprobed cycles)
+      // Prep variables for retrig 
       BENCH_BEGIN(vt_note_retrig);
       uint32_t phaseHoldX = 0;
       PioPeriod retrig_p1{};
@@ -1126,29 +1183,27 @@ void SRAM_HOT(voice_task_float)() {
       }
       BENCH_END(vt_note_retrig);
 
-
       BENCH_BEGIN(vt_chan_level);
       uint16_t chanLevel, chanLevel2;
       switch (sm) {
           case 1: {
               float maxFreq = (freqA_Hz > freqB_Hz) ? freqA_Hz : freqB_Hz;
-              chanLevel = get_chan_level_for_engine(maxFreq, DCO_A);
+              chanLevel  = get_chan_level_for_engine(maxFreq, DCO_A);
               chanLevel2 = get_chan_level_for_engine(freqB_Hz, DCO_B);
               break;
           }
           case 2: {
               float maxFreq = (freqA_Hz > freqB_Hz) ? freqA_Hz : freqB_Hz;
-              chanLevel = get_chan_level_for_engine(freqA_Hz, DCO_A);
+              chanLevel  = get_chan_level_for_engine(freqA_Hz, DCO_A);
               chanLevel2 = get_chan_level_for_engine(maxFreq, DCO_B);
               break;
           }
           default:
-              chanLevel = get_chan_level_for_engine(freqA_Hz, DCO_A);
+              chanLevel  = get_chan_level_for_engine(freqA_Hz, DCO_A);
               chanLevel2 = get_chan_level_for_engine(freqB_Hz, DCO_B);
               break;
       }
       BENCH_END(vt_chan_level);
-
 
       PIO pioN_A = pio[VOICE_TO_PIO[DCO_A]];
       PIO pioN_B = pio[VOICE_TO_PIO[DCO_B]];
@@ -1158,6 +1213,7 @@ void SRAM_HOT(voice_task_float)() {
       if (is_note_on) {
           BENCH_BEGIN(vt_retrig_sm_apply);
           if (oscPhaseSync >= 1) {
+              // Phase sync mode: Hard phase reset
               if (note_retrig_mode != NOTE_RETRIG_SYNC_JMP) {
                   uint32_t maskAB = (1u << sm1N) | (1u << sm2N);
                   pio_set_sm_mask_enabled(pioN_A, maskAB, false);
@@ -1175,22 +1231,44 @@ void SRAM_HOT(voice_task_float)() {
 
                   pio_enable_sm_mask_in_sync(pioN_A, maskAB);
               } else {
+                  pio_sm_put(pioN_A, sm1N, clk_div1);
+                  pio_sm_put(pioN_B, sm2N, clk_div2);
+                  pio_sm_exec(pioN_A, sm1N, pio_encode_pull(false, true));
+                  pio_sm_exec(pioN_B, sm2N, pio_encode_pull(false, true));
                   pio_sm_exec(pioN_A, sm1N, pio_encode_jmp(osc_restart_target(DCO_A)));
                   pio_sm_exec(pioN_B, sm2N, pio_encode_jmp(osc_restart_target(DCO_B)));
+                  osc_last_clk_div[DCO_A] = clk_div1;
+                  osc_last_clk_div[DCO_B] = clk_div2;
               }
+          } else {
+              // =================================================================
+              // FREE-RUNNING OSCILLATORS (oscPhaseSync == 0):
+              // Pull new divider AND force X to take it immediately!
+              // This shortens the current ramp to the new note instantly without
+              // forcing a hard phase restart.
+              // =================================================================
+              update_osc_clk_div_instantly(pioN_A, sm1N, DCO_A, clk_div1);
+              update_osc_clk_div_instantly(pioN_B, sm2N, DCO_B, clk_div2);
+              
+              // 🚀 THE MAGIC INSTRUCTION: Replaces the old delay in X immediately!
+              // pio_sm_exec(pioN_A, sm1N, pio_encode_mov(pio_x, pio_osr));
+              // pio_sm_exec(pioN_B, sm1N, pio_encode_mov(pio_x, pio_osr));
+
+              osc_last_clk_div[DCO_A] = clk_div1;
+              osc_last_clk_div[DCO_B] = clk_div2;
           }
           BENCH_END(vt_retrig_sm_apply);
+
       } else {
+          // Normal running frame: update clk_div continuously for vibrato/LFOs
           BENCH_BEGIN(vt_pio_write);
-          pio_sm_put(pioN_A, sm1N, clk_div1);
-          pio_sm_put(pioN_B, sm2N, clk_div2);
-          pio_sm_exec(pioN_A, sm1N, pio_encode_pull(false, false));
-          pio_sm_exec(pioN_B, sm2N, pio_encode_pull(false, false));
+          update_osc_clk_div_instantly(pioN_A, sm1N, DCO_A, clk_div1);
+          update_osc_clk_div_instantly(pioN_B, sm2N, DCO_B, clk_div2);
+
           osc_last_clk_div[DCO_A] = clk_div1;
           osc_last_clk_div[DCO_B] = clk_div2;
           BENCH_END(vt_pio_write);
       }
-
 
       BENCH_BEGIN(vt_range_pwm);
       // Calculate Range levels

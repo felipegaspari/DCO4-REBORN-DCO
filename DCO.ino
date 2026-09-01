@@ -280,7 +280,7 @@
 #define ENABLE_PIO_RESET_INVERT
 #endif
 
-
+//#define ENABLE_PIO_RESET_INVERT
 // =============================================================================
 // CALIBRATION — auto-cal boot defaults
 // =============================================================================

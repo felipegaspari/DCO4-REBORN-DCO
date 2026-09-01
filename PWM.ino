@@ -102,10 +102,15 @@ void init_range_pio_dither() {
 }
 #endif  // RANGE0_PIO_DITHER_TEST
 
-// 2D Array of DMA Ring Buffers. MUST be aligned to a 32-byte boundary for ring wrap!
-// 12 slices max * 8 words = 384 bytes in SRAM.
-static uint32_t dither_ring_buffers[12][PWM_DITHER_STEPS] __attribute__((aligned(32)));
-static int dither_dma_chans[12];
+#include "PWM.h"
+#include "globals.h"
+
+// Define the global instances matching PWM.h exactly
+PwmDirectRoute active_voice_routes[12] = {};
+uint8_t num_voice_routes = 0;
+const uint16_t PWM_STATIC_ZERO = 0;
+
+static uint32_t dither_ring_buffers[12][PWM_DITHER_STEPS] __attribute__((aligned(PWM_DITHER_BYTES)));
 
 void init_pwm() {
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
@@ -128,7 +133,7 @@ void init_pwm() {
   }
 
   // =========================================================================
-  // BIND DIRECT HARDWARE POINTERS & ALLOCATE DMA SAFELY
+  // BIND DIRECT HARDWARE POINTERS & ALLOCATE DMA (Strict 1:1 Slice Order)
   // =========================================================================
   num_voice_routes = 0;
 
@@ -137,6 +142,7 @@ void init_pwm() {
     const uint16_t* p_b = &PWM_STATIC_ZERO;
     bool slice_used = false;
 
+    // 1. Check Range Oscillators
     for (int i = 0; i < NUM_OSCILLATORS; i++) {
       if (RANGE_PWM_SLICES[i] != 0xFF && RANGE_PWM_SLICES[i] == s) {
         if (RANGE_PWM_CHANNELS[i] == 0) p_a = &RANGE_PWM[i];
@@ -145,6 +151,7 @@ void init_pwm() {
       }
     }
 
+    // 2. Check PW Channels
     for (int i = 0; i < NUM_PW_CHANNELS; i++) {
       if (PW_PWM_SLICES[i] != 0xFF && PW_PWM_SLICES[i] == s) {
         uint8_t chan = PW_PINS[i] & 1u;
@@ -161,7 +168,6 @@ void init_pwm() {
       active_voice_routes[num_voice_routes].src_b = p_b;
       active_voice_routes[num_voice_routes].dma_buffer = dither_ring_buffers[num_voice_routes];
 
-      // SAFE CLAIM: `false` prevents CPU panic. If it returns -1, the fallback logic takes over.
       int dma_chan = dma_claim_unused_channel(false);
       active_voice_routes[num_voice_routes].dma_chan = dma_chan;
 
@@ -170,19 +176,15 @@ void init_pwm() {
         channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
         channel_config_set_read_increment(&c, true);
         channel_config_set_write_increment(&c, false);
-        
-        // Pace transfer perfectly to PWM cycle
         channel_config_set_dreq(&c, pwm_get_dreq(s));
-        
-        // Read Ring wrap: 2^5 = 32 Bytes = 8 words
-        channel_config_set_ring(&c, false, 5);
+        channel_config_set_ring(&c, false, PWM_DMA_RING_SIZE_BITS);
 
         dma_channel_configure(
           dma_chan, 
           &c,
           &pwm_hw->slice[s].cc,                         
           active_voice_routes[num_voice_routes].dma_buffer, 
-          0xFFFFFFFF, // Start with maximum possible transfer count
+          0xFFFFFFFF,
           true                                          
         );
       }
@@ -195,7 +197,6 @@ void init_pwm() {
   init_cv_pwm();
 #endif
 }
-
 #ifdef ENABLE_CV_OUTS
 
 // Init cutoff / resonance / VCA PWM (12-bit CV domain). Reso1 shares slice with RANGE OSC2.
