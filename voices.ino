@@ -1217,7 +1217,9 @@ void SRAM_HOT(voice_task_float)() {
           pw_calc = (pw_calc < 0) ? 0 : ((pw_calc > max_pw) ? max_pw : pw_calc);
       
           PW_PWM[i] = get_PW_level_interpolated<PW_SWEEP_FULL>((uint16_t)pw_calc, DCO_A, freqA_Hz);
-        } 
+        } else {
+          PW_PWM[i] = 0;
+        }
       }
       BENCH_END(vt_pwm_calc);
   } // end loop
