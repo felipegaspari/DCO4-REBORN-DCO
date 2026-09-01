@@ -1,5 +1,10 @@
-#ifdef RANGE0_PIO_DITHER_TEST
 #include "hardware/dma.h"
+
+#ifdef RANGE0_PIO_DITHER_TEST
+
+
+
+
 
 // osc0/1: pio1 SM2/SM3 (SM0=subosc, SM1=noise). osc2: pio0 SM3 (SM0–2=voices).
 static const uint8_t RANGE_PIO_BLOCK[NUM_OSCILLATORS] = { 1, 1, 0 };
@@ -97,35 +102,33 @@ void init_range_pio_dither() {
 }
 #endif  // RANGE0_PIO_DITHER_TEST
 
-// Configure range PWM (per DCO, DIV_COUNTER) and PW PWM (per osc, DIV_COUNTER_PW). Called from setup1().
+// 2D Array of DMA Ring Buffers. MUST be aligned to a 32-byte boundary for ring wrap!
+// 12 slices max * 8 words = 384 bytes in SRAM.
+static uint32_t dither_ring_buffers[12][PWM_DITHER_STEPS] __attribute__((aligned(32)));
+static int dither_dma_chans[12];
+
 void init_pwm() {
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
-#ifdef RANGE0_PIO_DITHER_TEST
-    RANGE_PWM_SLICES[i] = 0xFF;
-    RANGE_PWM_CHANNELS[i] = 0;
-    continue;
-#endif
     gpio_set_function(RANGE_PINS[i], GPIO_FUNC_PWM);
     RANGE_PWM_SLICES[i] = pwm_gpio_to_slice_num(RANGE_PINS[i]);
     RANGE_PWM_CHANNELS[i] = pwm_gpio_to_channel(RANGE_PINS[i]);
-    pwm_set_wrap(RANGE_PWM_SLICES[i], DIV_COUNTER);
+    pwm_set_wrap(RANGE_PWM_SLICES[i], DIV_COUNTER >> PWM_DITHER_BITS);
     pwm_set_enabled(RANGE_PWM_SLICES[i], true);
   }
 
-  for (int i = 0; i < NUM_PW_CHANNELS; i++)
-  {
+  for (int i = 0; i < NUM_PW_CHANNELS; i++) {
     if (PW_PINS[i] == PW_PIN_UNASSIGNED) {
-      PW_PWM_SLICES[i] = 0xFF;  // not a real slice — level_pwm share checks must ignore
+      PW_PWM_SLICES[i] = 0xFF;
       continue;
     }
     gpio_set_function(PW_PINS[i], GPIO_FUNC_PWM);
     PW_PWM_SLICES[i] = pwm_gpio_to_slice_num(PW_PINS[i]);
-    pwm_set_wrap(PW_PWM_SLICES[i], DIV_COUNTER_PW);
+    pwm_set_wrap(PW_PWM_SLICES[i], DIV_COUNTER_PW >> PWM_DITHER_BITS);
     pwm_set_enabled(PW_PWM_SLICES[i], true);
   }
 
-// =========================================================================
-  // BIND DIRECT HARDWARE POINTERS (Evaluated once at boot)
+  // =========================================================================
+  // BIND DIRECT HARDWARE POINTERS & ALLOCATE DMA SAFELY
   // =========================================================================
   num_voice_routes = 0;
 
@@ -134,7 +137,6 @@ void init_pwm() {
     const uint16_t* p_b = &PWM_STATIC_ZERO;
     bool slice_used = false;
 
-    // 1. Check Range Oscillators
     for (int i = 0; i < NUM_OSCILLATORS; i++) {
       if (RANGE_PWM_SLICES[i] != 0xFF && RANGE_PWM_SLICES[i] == s) {
         if (RANGE_PWM_CHANNELS[i] == 0) p_a = &RANGE_PWM[i];
@@ -143,7 +145,6 @@ void init_pwm() {
       }
     }
 
-    // 2. Check PW Channels
     for (int i = 0; i < NUM_PW_CHANNELS; i++) {
       if (PW_PWM_SLICES[i] != 0xFF && PW_PWM_SLICES[i] == s) {
         uint8_t chan = PW_PINS[i] & 1u;
@@ -153,11 +154,39 @@ void init_pwm() {
       }
     }
 
-    // 3. Store direct pointers
     if (slice_used) {
+      active_voice_routes[num_voice_routes].slice_num = s;
       active_voice_routes[num_voice_routes].hw_cc = &pwm_hw->slice[s].cc;
       active_voice_routes[num_voice_routes].src_a = p_a;
       active_voice_routes[num_voice_routes].src_b = p_b;
+      active_voice_routes[num_voice_routes].dma_buffer = dither_ring_buffers[num_voice_routes];
+
+      // SAFE CLAIM: `false` prevents CPU panic. If it returns -1, the fallback logic takes over.
+      int dma_chan = dma_claim_unused_channel(false);
+      active_voice_routes[num_voice_routes].dma_chan = dma_chan;
+
+      if (dma_chan >= 0) {
+        dma_channel_config c = dma_channel_get_default_config(dma_chan);
+        channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
+        channel_config_set_read_increment(&c, true);
+        channel_config_set_write_increment(&c, false);
+        
+        // Pace transfer perfectly to PWM cycle
+        channel_config_set_dreq(&c, pwm_get_dreq(s));
+        
+        // Read Ring wrap: 2^5 = 32 Bytes = 8 words
+        channel_config_set_ring(&c, false, 5);
+
+        dma_channel_configure(
+          dma_chan, 
+          &c,
+          &pwm_hw->slice[s].cc,                         
+          active_voice_routes[num_voice_routes].dma_buffer, 
+          0xFFFFFFFF, // Start with maximum possible transfer count
+          true                                          
+        );
+      }
+
       num_voice_routes++;
     }
   }
@@ -318,3 +347,60 @@ void write_cv_pwm() {
 }
 
 #endif  // ENABLE_CV_OUTS
+
+void print_dma_pwm_report() {
+  uint8_t active_count = 0;
+  uint8_t fallback_count = 0;
+
+  Serial.println("\n========== [ PWM DMA ALLOCATION REPORT ] ==========");
+  for (uint8_t i = 0; i < num_voice_routes; i++) {
+    int chan = active_voice_routes[i].dma_chan;
+    if (chan >= 0) {
+      active_count++;
+      Serial.printf("  Route %02d | PWM Slice %02d -> DMA Ch %02d [DITHER ACTIVE]\n", 
+                    i, active_voice_routes[i].slice_num, chan);
+    } else {
+      fallback_count++;
+      Serial.printf("  Route %02d | PWM Slice %02d -> [FALLBACK / STANDARD PWM]\n", 
+                    i, active_voice_routes[i].slice_num);
+    }
+  }
+  Serial.println("---------------------------------------------------");
+  Serial.printf("  Total Routes: %d | Dithered: %d | Fallback: %d\n", 
+                num_voice_routes, active_count, fallback_count);
+  
+  if (fallback_count > 0) {
+    Serial.println("  [!] WARNING: Some slices dropped to fallback standard PWM.");
+  } else {
+    Serial.println("  [*] SUCCESS: All PWM slices are fully DMA-dithered.");
+  }
+  Serial.println("===================================================\n");
+}
+
+void print_mcu_dma_map() {
+  Serial.println("\n========== [ MCU DMA CHANNEL ALLOCATION MAP ] ==========");
+  
+  // NUM_DMA_CHANNELS is 12 on RP2040, 16 on RP2350
+  for (uint i = 0; i < NUM_DMA_CHANNELS; i++) {
+    bool claimed = dma_channel_is_claimed(i);
+    
+    // Check if this specific channel is used by our PWM dither engine
+    int pwm_route = -1;
+    for (uint8_t r = 0; r < num_voice_routes; r++) {
+      if (active_voice_routes[r].dma_chan == (int)i) {
+        pwm_route = r;
+        break;
+      }
+    }
+
+    if (pwm_route >= 0) {
+      Serial.printf("  DMA Ch %02d: [CLAIMED] -> PWM Dither (Route %02d, Slice %02d)\n", 
+                    i, pwm_route, active_voice_routes[pwm_route].slice_num);
+    } else if (claimed) {
+      Serial.printf("  DMA Ch %02d: [CLAIMED] -> Other Peripheral (UART / PIO / Drivers)\n", i);
+    } else {
+      Serial.printf("  DMA Ch %02d: [FREE]\n", i);
+    }
+  }
+  Serial.println("=========================================================\n");
+}

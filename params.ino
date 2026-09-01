@@ -511,6 +511,12 @@ static void SRAM_HOT(apply_param_adsr1_mode)(int16_t v) {
    case 3:
      pio_period_probe(0, 50000);
      break;
+     case 5:
+     print_dma_pwm_report();
+     break;
+   case 6:
+     print_mcu_dma_map();
+     break;
  
  #ifdef RUNNING_AVERAGE
    case 10:
