@@ -207,20 +207,17 @@
    {
      static uint32_t last_1ms_tick = 0;
      const uint32_t now_us = micros();
-     if (now_us - last_1ms_tick >= 201) {
+     if (now_us - last_1ms_tick >= 501) {
        BENCH_BEGIN(cv_lfo_subloop);
        last_1ms_tick = now_us;
  
        int32_t l1_speed_mod = (int32_t)LFO1SpeedVal + mod_matrix_get_dest_fast<DEST_LFO1_SPEED>(0);
-       l1_speed_mod = constrain(l1_speed_mod, 0, 4095);
        LFO1_class.setMode0Freq(fast_exp_speed_5000((uint16_t)l1_speed_mod), now_us);
  
        int32_t l2_speed_mod = (int32_t)LFO2SpeedVal + mod_matrix_get_dest_fast<DEST_LFO2_SPEED>(0);
-       l2_speed_mod = constrain(l2_speed_mod, 0, 4095);
        LFO2_class.setMode0Freq(fast_exp_speed_5000((uint16_t)l2_speed_mod), now_us);
  
        int32_t l3_speed_mod = (int32_t)LFO3SpeedVal + mod_matrix_get_dest_fast<DEST_LFO3_SPEED>(0);
-       l3_speed_mod = constrain(l3_speed_mod, 0, 4095);
        LFO3_class.setMode0Freq(fast_exp_speed_5000((uint16_t)l3_speed_mod), now_us);
        BENCH_END(cv_lfo_subloop);
      }

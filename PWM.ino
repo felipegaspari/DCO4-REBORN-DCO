@@ -106,13 +106,19 @@ void init_range_pio_dither() {
 #include "globals.h"
 
 // Define the global instances matching PWM.h exactly
-PwmDirectRoute active_voice_routes[12] = {};
+PwmDirectRoute active_voice_routes[NUM_OSCILLATORS + NUM_PW_CHANNELS] = {};
 uint8_t num_voice_routes = 0;
+int8_t slice_to_route_map[NUM_PWM_SLICES] = {};
 const uint16_t PWM_STATIC_ZERO = 0;
 
-static uint32_t dither_ring_buffers[12][PWM_DITHER_STEPS] __attribute__((aligned(PWM_DITHER_BYTES)));
+static uint32_t dither_ring_buffers[NUM_OSCILLATORS + NUM_PW_CHANNELS][PWM_DITHER_STEPS] __attribute__((aligned(PWM_DITHER_BYTES)));
 
 void init_pwm() {
+  for (int i = 0; i < NUM_PWM_SLICES; i++) {
+    slice_to_route_map[i] = -1;
+  }
+
+  // 1. Range Oscillators (These USE 16-step DMA Dithering @ ~285 kHz)
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
     gpio_set_function(RANGE_PINS[i], GPIO_FUNC_PWM);
     RANGE_PWM_SLICES[i] = pwm_gpio_to_slice_num(RANGE_PINS[i]);
@@ -121,6 +127,7 @@ void init_pwm() {
     pwm_set_enabled(RANGE_PWM_SLICES[i], true);
   }
 
+  // 2. PW Channels (Native 10-bit, NO DITHER, Clean 146.5 kHz Carrier)
   for (int i = 0; i < NUM_PW_CHANNELS; i++) {
     if (PW_PINS[i] == PW_PIN_UNASSIGNED) {
       PW_PWM_SLICES[i] = 0xFF;
@@ -128,30 +135,34 @@ void init_pwm() {
     }
     gpio_set_function(PW_PINS[i], GPIO_FUNC_PWM);
     PW_PWM_SLICES[i] = pwm_gpio_to_slice_num(PW_PINS[i]);
-    pwm_set_wrap(PW_PWM_SLICES[i], DIV_COUNTER_PW >> PWM_DITHER_BITS);
+    PW_PWM_CHANNELS[i] = pwm_gpio_to_channel(PW_PINS[i]);
+    // Full 10-bit wrap: 1023 (1024 ticks -> 150 MHz / 1024 = 146.48 kHz)
+    pwm_set_wrap(PW_PWM_SLICES[i], DIV_COUNTER_PW - 1);
     pwm_set_enabled(PW_PWM_SLICES[i], true);
   }
 
   // =========================================================================
-  // BIND DIRECT HARDWARE POINTERS & ALLOCATE DMA (Strict 1:1 Slice Order)
+  // BIND DIRECT HARDWARE POINTERS (Range = DMA Dither, PW = Direct Register)
   // =========================================================================
   num_voice_routes = 0;
 
-  for (int s = 0; s < 12; s++) {
+  for (int s = 0; s < NUM_PWM_SLICES; s++) {
     const uint16_t* p_a = &PWM_STATIC_ZERO;
     const uint16_t* p_b = &PWM_STATIC_ZERO;
     bool slice_used = false;
+    bool is_dithered_range = false;
 
-    // 1. Check Range Oscillators
+    // Check Range Oscillators
     for (int i = 0; i < NUM_OSCILLATORS; i++) {
       if (RANGE_PWM_SLICES[i] != 0xFF && RANGE_PWM_SLICES[i] == s) {
         if (RANGE_PWM_CHANNELS[i] == 0) p_a = &RANGE_PWM[i];
         else                            p_b = &RANGE_PWM[i];
         slice_used = true;
+        is_dithered_range = true;
       }
     }
 
-    // 2. Check PW Channels
+    // Check PW Channels
     for (int i = 0; i < NUM_PW_CHANNELS; i++) {
       if (PW_PWM_SLICES[i] != 0xFF && PW_PWM_SLICES[i] == s) {
         uint8_t chan = PW_PINS[i] & 1u;
@@ -166,29 +177,40 @@ void init_pwm() {
       active_voice_routes[num_voice_routes].hw_cc = &pwm_hw->slice[s].cc;
       active_voice_routes[num_voice_routes].src_a = p_a;
       active_voice_routes[num_voice_routes].src_b = p_b;
-      active_voice_routes[num_voice_routes].dma_buffer = dither_ring_buffers[num_voice_routes];
 
-      int dma_chan = dma_claim_unused_channel(false);
-      active_voice_routes[num_voice_routes].dma_chan = dma_chan;
+      // ONLY claim and configure DMA for Range slices!
+      if (is_dithered_range) {
+        active_voice_routes[num_voice_routes].dma_buffer = dither_ring_buffers[num_voice_routes];
 
-      if (dma_chan >= 0) {
-        dma_channel_config c = dma_channel_get_default_config(dma_chan);
-        channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
-        channel_config_set_read_increment(&c, true);
-        channel_config_set_write_increment(&c, false);
-        channel_config_set_dreq(&c, pwm_get_dreq(s));
-        channel_config_set_ring(&c, false, PWM_DMA_RING_SIZE_BITS);
+        int dma_chan = dma_claim_unused_channel(false);
+        active_voice_routes[num_voice_routes].dma_chan = dma_chan;
 
-        dma_channel_configure(
-          dma_chan, 
-          &c,
-          &pwm_hw->slice[s].cc,                         
-          active_voice_routes[num_voice_routes].dma_buffer, 
-          0xFFFFFFFF,
-          true                                          
-        );
+        if (dma_chan >= 0) {
+          dma_channel_config c = dma_channel_get_default_config(dma_chan);
+          channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
+          channel_config_set_read_increment(&c, true);
+          channel_config_set_write_increment(&c, false);
+          channel_config_set_dreq(&c, pwm_get_dreq(s));
+          channel_config_set_ring(&c, false, PWM_DMA_RING_SIZE_BITS);
+
+          dma_channel_configure(
+            dma_chan, 
+            &c,
+            &pwm_hw->slice[s].cc,                         
+            active_voice_routes[num_voice_routes].dma_buffer, 
+            0xFFFFFFFF,
+            true                                          
+          );
+        }
+      } else {
+        // PW Route: Native 10-bit direct register write (NO DMA, NO DITHER)
+        active_voice_routes[num_voice_routes].dma_buffer = nullptr;
+        active_voice_routes[num_voice_routes].dma_chan = -1;
       }
 
+      active_voice_routes[num_voice_routes].last_ab = 0xFFFFFFFF;
+      slice_to_route_map[s] = num_voice_routes;
+      
       num_voice_routes++;
     }
   }

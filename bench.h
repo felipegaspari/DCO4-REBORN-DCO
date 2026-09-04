@@ -133,7 +133,7 @@ X(vt_retrig_sm_apply,   1, BENCH_CYC,         BENCH_T_RARE, BENCH_loop1_voice_ta
 X(vt_pio_write,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "PIO put/exec")        \
 X(vt_range_pwm,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "RANGE PWM")           \
 X(vt_pwm_calc,          1, BENCH_CYC,         BENCH_T_FINE, BENCH_loop1_voice_task, "PW arithmetic")       \
-X(vt_pw_update,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "PW level + write")    \
+X(vt_pw_update,         1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "PW  write")    \
 BENCH_X_SUBOSC(X)                                                                                          \
 X(vt_teardown,          1, BENCH_CYC,         BENCH_T_MAIN, BENCH_loop1_voice_task, "task teardown")
 

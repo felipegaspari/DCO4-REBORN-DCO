@@ -118,8 +118,8 @@
        <curve name="Core 1/loop1 period/voice_task TOTAL/RANGE PWM/_avg"/>
        <curve name="Core 1/loop1 period/voice_task TOTAL/PW arithmetic"/>
        <curve name="Core 1/loop1 period/voice_task TOTAL/PW arithmetic/_avg"/>
-       <curve name="Core 1/loop1 period/voice_task TOTAL/PW level + write"/>
-       <curve name="Core 1/loop1 period/voice_task TOTAL/PW level + write/_avg"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/PW  write"/>
+       <curve name="Core 1/loop1 period/voice_task TOTAL/PW  write/_avg"/>
        <curve name="Core 1/loop1 period/voice_task TOTAL/task teardown"/>
        <curve name="Core 1/loop1 period/voice_task TOTAL/task teardown/_avg"/>
       </plot>

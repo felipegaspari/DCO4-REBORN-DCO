@@ -22,7 +22,9 @@ void set_subosc_divide(uint8_t divide);
 // boot/topology paths use osc_load_period_stopped() which still FJOIN-clears TX.
 
 static inline pio_hw_t *osc_pio_hw(uint8_t osc) {
-  return (VOICE_TO_PIO[osc] == 0) ? pio0_hw : pio1_hw;
+  // Zero branches. Evaluates to PIO0_BASE (0x50200000) or PIO1_BASE (0x50300000).
+  // Compiles to a single shift-left (LSL) and add instruction.
+  return (pio_hw_t *)(PIO0_BASE + (VOICE_TO_PIO[osc] << 20));
 }
 
 static inline void osc_load_period_stopped_noclear(uint8_t osc, uint32_t y, uint32_t clk_div) {
@@ -44,28 +46,39 @@ static inline void osc_load_period_stopped_noclear(uint8_t osc, uint32_t y, uint
 
 // Note-on EXACT_Y after the frame's pio put+pull: TX is empty, so FJOIN clear is skipped.
 // Hoists pull/out encodings once and loads OSC A then B back-to-back.
-static inline void osc_load_periods_stopped_noclear(uint8_t osc_a, uint32_t y_a, uint32_t clk_div_a,
-                                                   uint8_t osc_b, uint32_t y_b, uint32_t clk_div_b) {
-  pio_hw_t *const hw = osc_pio_hw(osc_a);
+static inline void SRAM_HOT(osc_load_periods_stopped_noclear)(
+  uint8_t osc_a, uint32_t y_a, uint32_t clk_div_a,
+  uint8_t osc_b, uint32_t y_b, uint32_t clk_div_b) 
+{
+  // Caching instruction constants in CPU registers (r4-r11) prior to memory writes
+  register const uint pull_instr = pio_encode_pull(false, false);
+  register const uint out_y_instr = pio_encode_out(pio_y, 31);
+  
+  pio_hw_t *const hw = osc_pio_hw(osc_a); // Assumes osc_b is on the same PIO block!
   const uint sm_a = VOICE_TO_SM[osc_a];
   const uint sm_b = VOICE_TO_SM[osc_b];
-  const uint pull_instr = pio_encode_pull(false, false);
-  const uint out_y_instr = pio_encode_out(pio_y, 31);
-
+  
+  // OSC A
   hw->txf[sm_a] = y_a;
   hw->sm[sm_a].instr = pull_instr;
   hw->sm[sm_a].instr = out_y_instr;
-  osc_last_y[osc_a] = y_a;
+  
   hw->txf[sm_a] = clk_div_a;
   hw->sm[sm_a].instr = pull_instr;
-  osc_last_clk_div[osc_a] = clk_div_a;
-
+  
+  // OSC B
   hw->txf[sm_b] = y_b;
   hw->sm[sm_b].instr = pull_instr;
   hw->sm[sm_b].instr = out_y_instr;
-  osc_last_y[osc_b] = y_b;
+  
   hw->txf[sm_b] = clk_div_b;
   hw->sm[sm_b].instr = pull_instr;
+  
+  // Update tracking at the end to allow consecutive volatile writes 
+  // to pipeline over the RP2350 memory bus without stalls.
+  osc_last_y[osc_a] = y_a;
+  osc_last_clk_div[osc_a] = clk_div_a;
+  osc_last_y[osc_b] = y_b;
   osc_last_clk_div[osc_b] = clk_div_b;
 }
 

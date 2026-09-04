@@ -2,17 +2,15 @@
 // syncMode 1: B's sideset drives A's reset (A slave, B master).
 // syncMode 2: A's sideset drives B's reset (B slave, A master).
 static inline int pair_slave(int voice) {
-  const int a = voice * 2;
-  if (syncMode == 1) return a;
-  if (syncMode == 2) return a + 1;
-  return -1;
+  if (__builtin_expect(syncMode == 0, 0)) return -1;
+  // syncMode 1 -> a + 0; syncMode 2 -> a + 1
+  return (voice << 1) + (syncMode - 1); 
 }
 
 static inline int pair_master(int voice) {
-  const int a = voice * 2;
-  if (syncMode == 1) return a + 1;
-  if (syncMode == 2) return a;
-  return -1;
+  if (__builtin_expect(syncMode == 0, 0)) return -1;
+  // syncMode 1 -> a + 1; syncMode 2 -> a + 0
+  return (voice << 1) + (2 - syncMode); 
 }
 
 // Give the slave a lower state machine index than its master within the PIO block.
@@ -164,23 +162,34 @@ void start_voice_sms() {
 // cycle so sync pairs do not tear.
 void osc_reload_reset_pulse_all(uint32_t y) {
   uint32_t enableMask[2] = { 0, 0 };
-
+  
+  // Pillar II: Restrict pointers to guarantee no memory aliasing during hardware writes
+  const uint32_t* __restrict p_last_y = osc_last_y;
+  uint32_t* __restrict p_last_clk = osc_last_clk_div;
+  
+  // Pillar VI: Unroll PIO halt loop to avoid pipeline branch stalls
+  _Pragma("GCC unroll 8")
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
-    const uint8_t blk = VOICE_TO_PIO[i];
-    const uint8_t sm = VOICE_TO_SM[i];
-    pio_sm_set_enabled(pio[blk], sm, false);
-    enableMask[blk] |= (1u << sm);
+      const uint8_t blk = VOICE_TO_PIO[i];
+      const uint8_t sm = VOICE_TO_SM[i];
+      pio_sm_set_enabled(pio[blk], sm, false);
+      enableMask[blk] |= (1u << sm);
   }
-
+  
+  _Pragma("GCC unroll 8")
   for (int i = 0; i < NUM_OSCILLATORS; i++) {
-    const uint32_t weight = osc_ramp_weight(i);
-    const uint32_t overhead = osc_period_overhead(i);
-    const uint32_t total =
-        osc_last_y[i] + weight * osc_last_clk_div[i] + overhead;
-    const uint32_t clk_div = pio_clk_div_for_y(total, y, weight, overhead);
-    osc_load_period_stopped(i, y, clk_div);
+      const uint32_t weight = osc_ramp_weight(i);
+      const uint32_t overhead = osc_period_overhead(i);
+      
+      // Pillar III: Isolate addition to force a 1-cycle MLA (Multiply-Accumulate)
+      // total = base + (weight * clk_div)
+      const uint32_t base_cycles = p_last_y[i] + overhead;
+      const uint32_t total = base_cycles + (weight * p_last_clk[i]); 
+      
+      const uint32_t clk_div = pio_clk_div_for_y(total, y, weight, overhead);
+      osc_load_period_stopped(i, y, clk_div);
   }
-
+  
   pio_enable_sm_mask_in_sync(pio[0], enableMask[0]);
   pio_enable_sm_mask_in_sync(pio[1], enableMask[1]);
 }

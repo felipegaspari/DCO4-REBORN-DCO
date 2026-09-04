@@ -188,27 +188,30 @@
 
 
 #ifdef BENCHMARKING_ENABLED
-#define ENABLE_SWD_TELEMETRY
-// #define ENABLE_SWD_PERIOD 
 
-//#define RUNNING_AVERAGE
-//#define RUNNING_AVERAGE_PERIOD
+//#define ENABLE_SWD_TELEMETRY
+
+#define RUNNING_AVERAGE
 
 #if defined(ENABLE_SWD_TELEMETRY)
   // SWD telemetry enabled, use its specific functions.
-#elif defined(RUNNING_AVERAGE_PERIOD)
-  // Only period probes active, no fine-grained sampling.
-#define RUNNING_AVERAGE_PERIOD
-#elif defined(RUNNING_AVERAGE_FINE)
-  // Fine-grained sampling enabled.
-#define RUNNING_AVERAGE_FINE
-#define RUNNING_AVERAGE
+  #define ENABLE_SWD_PERIOD 
+
 #elif defined(RUNNING_AVERAGE)
   // Basic running average sampling enabled.
+  // ENABLE_MEM_DIAG: SRAM/heap dump (cmd 13) + loop/loop1 polls. Default on.
+// Comment out for a zero-cost match to pre-mem_diag period-only dumps.
+// Runtime 14/15 disable/enable polls without rebuild (dump 13 ignored while off).
+//#define ENABLE_MEM_DIAG
+#define RUNNING_AVERAGE_PERIOD
+#if defined(RUNNING_AVERAGE_PERIOD)
+  // Only period probes active, no fine-grained sampling.
+#elif defined(RUNNING_AVERAGE_FINE)
+  // Fine-grained sampling enabled.
+#endif
 #else
   // BENCHMARKING_ENABLED is defined, but no specific mode selected.
-  // Default to RUNNING_AVERAGE_PERIOD for minimal overhead.
-  // #define RUNNING_AVERAGE_PERIOD
+
 #endif
 
 // #define BENCH_PATH_STATS
@@ -222,10 +225,7 @@
 #ifndef BENCH_PERIOD_MAX_US
 #define BENCH_PERIOD_MAX_US 20000
 #endif
-// ENABLE_MEM_DIAG: SRAM/heap dump (cmd 13) + loop/loop1 polls. Default on.
-// Comment out for a zero-cost match to pre-mem_diag period-only dumps.
-// Runtime 14/15 disable/enable polls without rebuild (dump 13 ignored while off).
-//#define ENABLE_MEM_DIAG
+
 
 // Amp-comp speed/accuracy reports (debug cmds 24–25); needs RUNNING_AVERAGE + USE_FLOAT_AMP_COMP.
 //#define AMP_COMP_BENCHMARK
@@ -303,7 +303,7 @@
 // #define PW_SWEEP_MODE_DEFAULT PW_SWEEP_HALF_HIGH
 
 // Debug level for autotune
-#define AUTOTUNE_DEBUG_LEVEL 2
+#define AUTOTUNE_DEBUG_LEVEL 1
 
 // =======================================================================
 // PRESETS OPTIONS
@@ -457,6 +457,8 @@ void setup1() {
   // Select amplitude-compensation precompute based on engine type.
   precompute_amp_comp_for_engine();
 
+  precompute_pw_regions();
+
   calibrationFlag = false;
   manualCalibrationFlag = false;
   firstTuneFlag = false;
@@ -536,7 +538,6 @@ void SRAM_HOT(loop)() {
     BENCH_END(loop0_set_parameters);
   }
 
- 
     BENCH_BEGIN(loop0_lfo1);
     LFO1();
     BENCH_END(loop0_lfo1);
