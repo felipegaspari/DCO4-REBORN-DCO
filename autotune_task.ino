@@ -26,6 +26,26 @@ void autotune_drive_core(uint8_t osc, float freqHz, uint16_t ampValue) {
     flush_voice_pwm();
 }
   
+static void cal_pin_diagnose() {
+  const uint p = DCO_calibration_pin;
+  const bool hadPu = gpio_is_pulled_up(p);
+  const bool hadPd = gpio_is_pulled_down(p);
+
+  Serial.printf("[CAL_PIN] gp=%u funcsel=%d dir=%s pu=%d pd=%d in=%d\n",
+                p, (int)gpio_get_function(p),
+                gpio_is_dir_out(p) ? "OUT" : "IN", hadPu, hadPd, gpio_get(p));
+
+  gpio_pull_up(p);   delayMicroseconds(200);
+  const int up = gpio_get(p);
+  gpio_pull_down(p); delayMicroseconds(200);
+  const int dn = gpio_get(p);
+
+  // RESTAURAR el estado original: el bus wired-NOR depende del pull-up.
+  gpio_set_pulls(p, hadPu, hadPd);
+
+  Serial.printf("[CAL_PIN] pull-up->%d pull-down->%d (pulls restaurados pu=%d pd=%d)\n",
+                up, dn, gpio_is_pulled_up(p), gpio_is_pulled_down(p));
+}
 // =============================================================================
 // 2. Manual Calibration Loop (UI / Trimpot / PW editing)
 // =============================================================================
@@ -37,7 +57,7 @@ void autotune_manual_task() {
     calSyncNeutralRequested = false;
     setSyncMode();
   }
-
+  cal_pin_diagnose();
   currentDCO = cal_manual_osc();
   const uint8_t pwCh = cal_pw_channel(currentDCO);
   
@@ -64,8 +84,10 @@ void autotune_manual_task() {
         pio_sm_set_enabled(pioN, sm1N, false);
         pio_sm_put(pioN, sm1N, 0);
         pio_sm_exec(pioN, sm1N, pio_encode_pull(false, false));
-        
-        // ADAPTATION: Update memory variable
+
+        // FIX: el set(pio_pins,1) anterior era un no-op (SET sin mapear).
+        pio_park_osc_reset((uint8_t)i, PIO_RESET_PARK_LEVEL);
+
         write_range_pwm(i, 0);
       }
     }
@@ -97,13 +119,12 @@ void autotune_manual_task() {
     // Saw / Tri Stage: Mute ALL Pulse channels via DMA-safe writers
     for (uint8_t ch = 0; ch < NUM_PW_CHANNELS; ch++) {
       if (PW_PINS[ch] != PW_PIN_UNASSIGNED) {
-        voice_write_pw(ch, 0); // ADAPTATION: Safe DMA-backed writer
-        PW[ch] = 0;
+        voice_write_pw(ch, MUTE_PW_CHANNEL); 
+        PW[ch] = MUTE_PW_CHANNEL;
       }
     }
     flush_voice_pwm(); // ADAPTATION: Push muted PW to DMA
   }
-
   // =========================================================================
   // 3. CONTINUOUS LIVE UPDATE (Calculate Target Pitch & Amplitude)
   // =========================================================================

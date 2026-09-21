@@ -750,8 +750,12 @@ static void SRAM_HOT(apply_param_adsr3_release)(int16_t v) { ADSR3_release = (ui
  // 7. PRESET STORE, CALIBRATION DUMP & RECALL
  // =============================================================================
  
- static void apply_param_preset_save(int16_t v) { preset_store_save((uint8_t)v); }
- static void apply_param_preset_load(int16_t v) { preset_store_load((uint8_t)v); }
+ static void apply_param_preset_save(int16_t v) { preset_store_save((uint8_t)v);}
+ static void SRAM_HOT(apply_param_preset_load)(int16_t v) {
+  // Execute a full, live-audition load using the lightning-fast DMA pipeline
+  currentPresetSlot = (uint8_t)v;
+  preset_store_load((uint8_t)v);
+}
  static void apply_param_preset_dump(int16_t v) { preset_store_dump((int16_t)v); }
  static void apply_param_cal_dump(int16_t v)    { preset_store_cal_dump(v); }
  static void SRAM_HOT(apply_param_ui_preset_scroll)(int16_t v) {

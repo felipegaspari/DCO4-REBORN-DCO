@@ -1,3 +1,53 @@
+// ========================================================
+// TRIANGLE CORE PIO (Weight = 4, Overhead = 11, 50% Sym)
+// ========================================================
+uint pio_offset_triangle[2];
+
+#define dco_triangle_wrap_target 0
+#define dco_triangle_wrap 10
+
+static const uint16_t dco_triangle_program_instructions[] = {
+            //     .wrap_target
+    // --- HIGH PHASE (Weight = 2, Overhead = 5) ---
+    0xb027, //  0: mov    x, osr          side 1
+    0x1041, //  1: jmp    x--, 1          side 1
+    0xb027, //  2: mov    x, osr          side 1
+    0x1043, //  3: jmp    x--, 3          side 1
+    0xb042, //  4: nop                    side 1
+
+    // --- LOW PHASE (Weight = 2, Overhead = 6) ---
+    0xa027, //  5: mov    x, osr          side 0
+    0x0046, //  6: jmp    x--, 6          side 0
+    0xa027, //  7: mov    x, osr          side 0
+    0x0048, //  8: jmp    x--, 8          side 0
+    0xa042, //  9: nop                    side 0
+    0xa042, // 10: nop                    side 0
+            //     .wrap
+};
+
+static const struct pio_program dco_triangle_program = {
+    .instructions = dco_triangle_program_instructions,
+    .length = 11,
+    .origin = -1,
+};
+
+static inline pio_sm_config dco_triangle_program_get_default_config(uint offset) {
+    pio_sm_config c = pio_get_default_sm_config();
+    sm_config_set_wrap(&c, offset + dco_triangle_wrap_target, offset + dco_triangle_wrap);
+    sm_config_set_sideset(&c, 1, false, false); 
+    return c;
+}
+
+void dco_triangle_init(PIO pio, uint sm, uint offset, uint pin) {
+    pio_sm_config c = dco_triangle_program_get_default_config(offset);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+    sm_config_set_sideset_pins(&c, pin);
+    pio_gpio_init(pio, pin);
+    pio_sm_init(pio, sm, offset, &c);
+}
+// ========================================================
+
+
 // Per-voice even/odd pairing (DCO_A = v*2, DCO_B = v*2+1).
 // syncMode 1: B's sideset drives A's reset (A slave, B master).
 // syncMode 2: A's sideset drives B's reset (B slave, A master).
@@ -68,6 +118,7 @@ void init_pio() {
   const uint8_t syncChunks = softSyncChunks > 0 ? softSyncChunks : 1;
   for (int blk = 0; blk < 2; blk++) {
     pio_offset_free[blk] = pio_add_program(pio[blk], &frequency_sync_4_jumps_program);
+    pio_offset_triangle[blk] = pio_add_program(pio[blk], &dco_triangle_program);
     pio_loaded_sync_chunks[blk] = 0;
     ensure_soft_sync_program((uint8_t)blk, syncChunks);
   }
@@ -133,13 +184,26 @@ void start_voice_sms() {
 
     pio_sm_clear_fifos(pio[blk], sm);
 
-    if (softSync && i == slave) {
-      frequency_sync_poll_init(pio[blk], sm, pio_offset_sync[blk], RESET_PINS[i], sidesetPin,
-                               RESET_PINS[master], chunks);
-      osc_uses_sync_program[i] = true;
-    } else {
-      frequency_sync_4_jumps(pio[blk], sm, pio_offset_free[blk], RESET_PINS[i], sidesetPin);
+
+    // ==========================================
+    // NEW LOGIC: Odd indices (OSC B) get Triangle, 
+    // Even indices (OSC A) keep normal sync/free behavior
+    // ==========================================
+    if (i % 2 != 0) { 
+      // It's OSC B (Triangle Core)
+      dco_triangle_init(pio[blk], sm, pio_offset_triangle[blk], RESET_PINS[i]);
       osc_uses_sync_program[i] = false;
+    } 
+    else {
+      // It's OSC A (Sawtooth Core)
+      if (softSync && i == slave) {
+        frequency_sync_poll_init(pio[blk], sm, pio_offset_sync[blk], RESET_PINS[i], sidesetPin,
+                                 RESET_PINS[master], chunks);
+        osc_uses_sync_program[i] = true;
+      } else {
+        frequency_sync_4_jumps(pio[blk], sm, pio_offset_free[blk], RESET_PINS[i], sidesetPin);
+        osc_uses_sync_program[i] = false;
+      }
     }
 
     osc_load_period_stopped(i, pioPulseLength, osc_last_clk_div[i]);

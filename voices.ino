@@ -570,12 +570,18 @@ void SRAM_HOT(voice_task_float)() {
   static constexpr float EPS_FLOAT = (float)Q24_ONE_EPS * (1.0f / 16777216.0f);
 
   // 5. Global PWM LFO delta & Base PWM Pre-calculation
+#if PW_SWEEP_MODE_DEFAULT == PW_SWEEP_FULL
+  // DCO4: Bipolar LFO swing
   const int32_t lfo2_pw_delta = ((int32_t)LFO2Level * (int32_t)LFO2toPW) >> 15;
+#else
+  // HALF Modes: Shift bipolar LFO (-32768..+32767) into unipolar positive (0..32767)
+  const int32_t lfo2_pw_delta = ((uint32_t)(LFO2Level + 32768) * (uint32_t)LFO2toPW) >> 15;
+#endif
 
   // Character Engine Output
-  const float char_pitch_delta_f = char_pitch_scale_q15 ? character_pitch_delta_float() : 0.0f;
-  const int32_t char_pw_delta_i = (int32_t)character_pw_delta();
-  const int32_t char_amp_mod_factor  = char_amp_scale_q15   ? character_amp_delta()         : 0;
+  const float char_pitch_delta_f =  character ? character_pitch_delta_float() : 0.0f;
+  const int32_t char_pw_delta_i = character ? (int32_t)character_pw_delta() : 0;
+  const int32_t char_amp_mod_factor  = character ? character_amp_delta() : 0;
 
   // Hoist loop-invariant additions out of the voice loop
   const float global_mods = calcPitchbend + EPS_FLOAT + char_pitch_delta_f + masterTuning_local;
@@ -1001,21 +1007,34 @@ RANGE_PWM[DCO_B] = character ? char_val_B : chanLevel2;
     if (timer99microsFlag2) {
       if (pulseWaveOn) {
         BENCH_BEGIN(vt_pwm_calc);
+
+#if PW_SWEEP_MODE_DEFAULT == PW_SWEEP_FULL
         const int32_t adsr3_delta = ((int32_t)adsr3_lvl[i] * (int32_t)ADSR3toPWM) >> 15;
-        // Hoisted base_pw_val eliminates 2 redundant additions per voice
+#else
+        // Shift >> 14 scales the unmodified ADSR3toPWM to the full 2048 span
+        const int32_t adsr3_delta = ((int32_t)adsr3_lvl[i] * (int32_t)ADSR3toPWM) >> 14;
+#endif
+
+        // m_pw is already scaled correctly by the mod matrix - added directly at 1:1
         int32_t pw_calc = base_pw_val + adsr3_delta + (int32_t)m_pw[i];
 
-        // RP2350 OPTIMIZED: Truly Branchless Nested Clamp
-        // Forces GCC to evaluate bounds completely in registers (IT Blocks)
+        // RP2350 OPTIMIZED: Truly Branchless Nested Clamp (0 to 2047)
         const int32_t max_pw = (int32_t)(DIV_COUNTER_PW - 1);
         pw_calc = (pw_calc < 0) ? 0 : ((pw_calc > max_pw) ? max_pw : pw_calc);
 
-        PW_PWM[i] = get_PW_level_interpolated<PW_SWEEP_FULL>((uint16_t)pw_calc, DCO_A, freqA_Hz);
+        // Unified 3-Point Interpolator natively routes the compile flag
+        PW_PWM[i] = get_PW_level_interpolated<PW_SWEEP_MODE_DEFAULT>((uint16_t)pw_calc, DCO_A, freqA_Hz);
+
         BENCH_END(vt_pwm_calc);
       } else {
+#if PW_SWEEP_MODE_DEFAULT == PW_SWEEP_FULL
         PW_PWM[i] = 0;
+#else
+        PW_PWM[i] = DIV_COUNTER_PW; // HALF modes anchor 50% at 0V
+#endif
       }
     }
+    
   } // end loop
 
   BENCH_BEGIN(vt_teardown);
